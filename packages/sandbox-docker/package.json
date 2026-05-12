@@ -13,7 +13,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "Dockerfile.box"
   ],
   "scripts": {
     "build": "tsup",
@@ -24,7 +25,8 @@
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
-    "@agentbox/core": "workspace:*"
+    "@agentbox/core": "workspace:*",
+    "execa": "^9.5.2"
   },
   "devDependencies": {
     "@types/node": "^22.10.1",

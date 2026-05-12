@@ -6,13 +6,10 @@ describe('@agentbox/sandbox-docker', () => {
     expect(dockerProvider.name).toBe('docker');
   });
 
-  it('list() resolves to an empty array on a fresh host', async () => {
-    await expect(dockerProvider.list()).resolves.toEqual([]);
-  });
-
-  it('start() throws not-implemented until the provider is built', async () => {
-    await expect(
-      dockerProvider.start({ workspacePath: '/tmp/x', agent: 'claude-code' }),
-    ).rejects.toThrow(/not yet implemented/);
+  it('pause/resume/stop/destroy are still stubs (next task)', async () => {
+    await expect(dockerProvider.pause('a')).rejects.toThrow(/not yet implemented/);
+    await expect(dockerProvider.resume('a')).rejects.toThrow(/not yet implemented/);
+    await expect(dockerProvider.stop('a')).rejects.toThrow(/not yet implemented/);
+    await expect(dockerProvider.destroy('a')).rejects.toThrow(/not yet implemented/);
   });
 });

@@ -21,6 +21,7 @@
   "dependencies": {
     "@agentbox/core": "workspace:*",
     "@agentbox/sandbox-docker": "workspace:*",
+    "@clack/prompts": "^0.9.0",
     "commander": "^12.1.0"
   },
   "devDependencies": {
