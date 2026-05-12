@@ -15,6 +15,12 @@ export interface BoxRecord {
   upperVolume: string;
   nodeModulesVolume: string;
   snapshotDir: string | null;
+  /**
+   * Host-side path to the agentbox-ctl unix socket bind-mounted into the
+   * container at /run/agentbox/ctl.sock. Absent for boxes created before this
+   * field existed (treated as "ctl not available").
+   */
+  socketPath?: string;
   createdAt: string; // ISO-8601
 }
 

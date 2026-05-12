@@ -1,6 +1,6 @@
 import { execa } from 'execa';
 import { readdir, rm, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { BoxState } from '@agentbox/core';
 import {
   inspectContainer,
@@ -16,6 +16,7 @@ import {
   unpauseContainer,
 } from './docker.js';
 import { mountOverlay, verifyOverlay, type OverlayCheck } from './overlay.js';
+import { launchCtlDaemon } from './ctl.js';
 import { SNAPSHOTS_ROOT } from './snapshot.js';
 import {
   findBox,
@@ -98,6 +99,12 @@ export async function startBox(idOrName: string): Promise<StartedBox> {
   await startContainer(box.container);
   await mountOverlay(box.container);
   const overlayChecks = await verifyOverlay(box.container);
+  if (box.socketPath) {
+    // The daemon died with the container; relaunch it. Best-effort, same as
+    // create.ts — a missing config or other startup issue shouldn't block
+    // resumption of the box itself.
+    await launchCtlDaemon(box.container, box.socketPath);
+  }
   return { record: box, overlayChecks };
 }
 
@@ -189,6 +196,18 @@ export async function destroyBox(
     }
   }
 
+  if (box.socketPath) {
+    // The per-box runtime dir holds the ctl socket; clean it up alongside
+    // volumes so destroy leaves no residue under ~/.agentbox/boxes/.
+    const boxRunDir = dirname(box.socketPath);
+    const boxRoot = dirname(boxRunDir);
+    try {
+      await rm(boxRoot, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  }
+
   await removeBoxRecord(box.id);
 
   return { record: box, removedContainer, removedVolumes, removedSnapshot };
@@ -238,9 +257,7 @@ export async function pruneBoxes(opts: PruneOptions = {}): Promise<PruneResult> 
     const liveVolumes = await listAgentboxVolumes();
     const liveSnapshotDirs = await listSnapshotDirs();
     // The state we'd have AFTER step 1 runs: missing-state records gone.
-    const survivingBoxes = boxes.filter(
-      (b) => !missingRecords.some((m) => m.id === b.id),
-    );
+    const survivingBoxes = boxes.filter((b) => !missingRecords.some((m) => m.id === b.id));
     const expectedContainers = new Set(survivingBoxes.map((b) => b.container));
     const expectedVolumes = new Set(
       survivingBoxes.flatMap((b) => [b.upperVolume, b.nodeModulesVolume]),

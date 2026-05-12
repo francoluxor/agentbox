@@ -60,9 +60,10 @@ export async function runBox(spec: RunBoxSpec): Promise<string> {
 export async function execInBox(
   container: string,
   cmd: string[],
-  opts: { user?: string } = {},
+  opts: { user?: string; detach?: boolean } = {},
 ): Promise<DockerExecResult> {
   const args: string[] = ['exec'];
+  if (opts.detach) args.push('-d');
   if (opts.user) args.push('--user', opts.user);
   args.push(container, ...cmd);
   const result = await execa('docker', args, { reject: false });
@@ -82,11 +83,9 @@ export async function removeVolume(name: string): Promise<void> {
 }
 
 export async function containerExists(name: string): Promise<boolean> {
-  const result = await execa(
-    'docker',
-    ['container', 'inspect', '--format', '{{.Id}}', name],
-    { reject: false },
-  );
+  const result = await execa('docker', ['container', 'inspect', '--format', '{{.Id}}', name], {
+    reject: false,
+  });
   return result.exitCode === 0;
 }
 
@@ -117,11 +116,9 @@ export async function startContainer(name: string): Promise<void> {
 }
 
 export async function inspectContainerStatus(name: string): Promise<ContainerRuntimeState> {
-  const result = await execa(
-    'docker',
-    ['inspect', '--format', '{{.State.Status}}', name],
-    { reject: false },
-  );
+  const result = await execa('docker', ['inspect', '--format', '{{.State.Status}}', name], {
+    reject: false,
+  });
   if (result.exitCode !== 0) return 'missing';
   const status = (result.stdout ?? '').trim();
   switch (status) {
@@ -152,11 +149,9 @@ export async function inspectContainer(name: string): Promise<unknown | null> {
 }
 
 export async function inspectVolumeMountpoint(name: string): Promise<string | null> {
-  const result = await execa(
-    'docker',
-    ['volume', 'inspect', '--format', '{{.Mountpoint}}', name],
-    { reject: false },
-  );
+  const result = await execa('docker', ['volume', 'inspect', '--format', '{{.Mountpoint}}', name], {
+    reject: false,
+  });
   if (result.exitCode !== 0) return null;
   return (result.stdout ?? '').trim() || null;
 }

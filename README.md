@@ -46,10 +46,13 @@ docker exec -it agentbox-<id> bash
 agentbox create [-w <path>] [-n <name>] [--snapshot | --no-snapshot] [--attach] [-y]
 agentbox list                       # alias: ls
 agentbox inspect <box> [--json]
+agentbox status <box> [--json]                  # services managed by the in-box agentbox-ctl daemon
+agentbox logs <box> <service> [-f] [-n <tail>]  # tail or stream a service's stdout/stderr
+# inside a box: agentbox-ctl validate [path]    # check agentbox.yaml shape without starting the daemon
 agentbox pause <box>                # docker pause — 0 CPU, RAM stays mapped
 agentbox unpause <box>              # docker unpause — sub-second resume
 agentbox stop <box>                 # docker stop — preserves upper + node_modules volumes
-agentbox start <box>                # docker start + re-mount the FUSE overlay
+agentbox start <box>                # docker start + re-mount the FUSE overlay + relaunch ctl daemon
 agentbox destroy <box> [-y] [--keep-snapshot]   # alias: rm — discards upper volume
 agentbox prune [--dry-run] [--all] [-y]         # default: drops "missing" state records
 ```
@@ -76,10 +79,80 @@ agentbox prune --all              # clean up any orphan containers/volumes/snaps
 apps/cli/                 → published as `agentbox` (the npm bin, commander-based)
 packages/core/            → @agentbox/core — sandbox provider interface, types
 packages/sandbox-docker/  → @agentbox/sandbox-docker — local Docker provider
+packages/ctl/             → @agentbox/ctl — in-box supervisor daemon (`agentbox-ctl`)
 docs/architecture.md      → the FUSE-overlay design + lifecycle rationale
 ```
 
 Remote sandbox adapters (E2B, Modal, Daytona, Vercel Sandbox) will be added as separate packages.
+
+## Running services inside a box (`agentbox.yaml`)
+
+Each box ships with `agentbox-ctl`, a supervisor that reads `/workspace/agentbox.yaml` (i.e. an `agentbox.yaml` at the root of your project) and keeps the declared services alive. It starts automatically on `agentbox create` and `agentbox start`.
+
+```yaml
+# agentbox.yaml — at the project root
+services:
+  web:
+    command: pnpm dev
+    cwd: apps/web                # relative to /workspace
+    env:
+      PORT: '3000'
+  worker:
+    command: ['node', 'dist/worker.js']
+    restart: always              # always | on-failure (default) | never
+    backoff:
+      initial_ms: 1000
+      max_ms: 60000
+      factor: 2
+```
+
+Inspecting from the host:
+
+```sh
+agentbox status mybox                       # table of services + state + pid + restarts
+agentbox logs mybox web --tail 200          # recent stdout/stderr
+agentbox logs mybox web -f                  # stream live
+```
+
+Or from inside the box:
+
+```sh
+docker exec -it agentbox-mybox bash
+agentbox-ctl status
+agentbox-ctl restart web
+agentbox-ctl reload                         # re-read agentbox.yaml, diff-apply
+agentbox-ctl logs worker -f
+```
+
+Per-service log files live at `/var/log/agentbox/<service>.log` inside the container. The supervisor's control socket is at `/run/agentbox/ctl.sock` (also bind-mounted to `~/.agentbox/boxes/<id>/run/ctl.sock` on the host for diagnostics). Host-side `agentbox status` and `agentbox logs` reach the daemon by shelling into the container — connecting to the bind-mounted socket directly doesn't work across Docker Desktop / OrbStack's VM boundary.
+
+### Editor support (autocomplete + validation)
+
+A JSON Schema ships with `@agentbox/ctl` at `packages/ctl/schema/agentbox.schema.json`. Add this comment to the top of your `agentbox.yaml` and any YAML-LSP-aware editor (VS Code with the Red Hat **YAML** extension, JetBrains IDEs, Cursor, neovim with `yaml-language-server`) gives you key completion, hover docs, and inline error squiggles:
+
+```yaml
+# yaml-language-server: $schema=<path-or-url-to-schema>
+```
+
+Three ways to point at the schema, in order of convenience:
+
+1. **Inside this repo** — nothing to do. `.vscode/settings.json` already maps `agentbox.yaml` → the in-tree schema.
+2. **Your own project, with `@agentbox/ctl` installed** — use the local path: `# yaml-language-server: $schema=./node_modules/@agentbox/ctl/schema/agentbox.schema.json`.
+3. **Anywhere else** — point at a hosted copy of `agentbox.schema.json` (URL form). Once we publish the schema, the docs here will link to the canonical URL.
+
+### `agentbox-ctl validate`
+
+To check an `agentbox.yaml` without booting a container — useful from CI or an editor task:
+
+```sh
+docker exec -it agentbox-mybox agentbox-ctl validate              # /workspace/agentbox.yaml
+# or against an arbitrary file:
+docker exec -it agentbox-mybox agentbox-ctl validate /tmp/x.yaml
+```
+
+Exit code 0 with `OK: N service(s)`, or 2 with the first error (e.g. `services.web.backoff.max_ms must be >= initial_ms`).
+
+`agentbox create` runs the same validator on the host **before** any container work, so a broken `agentbox.yaml` fails create early instead of silently crashing the in-box daemon.
 
 ## Development
 

@@ -42,9 +42,7 @@ export const destroyCommand = new Command('destroy')
         log.info(`container: ${box.container}`);
         log.info(`upper:     ${box.upperVolume}`);
         if (box.snapshotDir) {
-          log.info(
-            `snapshot:  ${box.snapshotDir}${opts.keepSnapshot ? ' (will be kept)' : ''}`,
-          );
+          log.info(`snapshot:  ${box.snapshotDir}${opts.keepSnapshot ? ' (will be kept)' : ''}`);
         }
         const ok = await confirm({
           message: 'Destroy this box?',

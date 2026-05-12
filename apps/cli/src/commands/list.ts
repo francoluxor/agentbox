@@ -33,12 +33,13 @@ function renderTable(boxes: ListedBox[]): string {
   ]);
   const header = ['ID', 'NAME', 'STATE', 'IMAGE', 'CREATED', 'WORKSPACE'];
   const all = [header, ...rows];
-  const widths = header.map((_, col) =>
-    Math.max(...all.map((r) => (r[col] ?? '').length)),
-  );
+  const widths = header.map((_, col) => Math.max(...all.map((r) => (r[col] ?? '').length)));
   return all
     .map((row) =>
-      row.map((cell, i) => (cell ?? '').padEnd(widths[i] ?? 0)).join('  ').trimEnd(),
+      row
+        .map((cell, i) => (cell ?? '').padEnd(widths[i] ?? 0))
+        .join('  ')
+        .trimEnd(),
     )
     .join('\n');
 }

@@ -50,11 +50,7 @@ describe('findExcludedDirs', () => {
   it('finds excluded dirs at any depth without descending into them', async () => {
     const matches = await findExcludedDirs(root);
     const rel = matches.map((p) => p.slice(root.length + 1)).sort();
-    expect(rel).toEqual([
-      'node_modules',
-      'packages/a/dist',
-      'packages/a/node_modules',
-    ]);
+    expect(rel).toEqual(['node_modules', 'packages/a/dist', 'packages/a/node_modules']);
   });
 
   it('does not return non-excluded dirs', async () => {

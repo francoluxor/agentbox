@@ -1,6 +1,7 @@
 import type { SandboxProvider } from '@agentbox/core';
 
 export { createBox, type CreateBoxOptions, type CreatedBox } from './create.js';
+export { execInBox, type DockerExecResult } from './docker.js';
 export { DEFAULT_BOX_IMAGE } from './image.js';
 export { EXCLUDE_DIRS, SNAPSHOTS_ROOT, snapshotPathFor } from './snapshot.js';
 export {

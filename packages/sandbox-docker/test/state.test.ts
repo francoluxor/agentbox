@@ -2,13 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  readState,
-  recordBox,
-  removeBoxRecord,
-  writeState,
-  type BoxRecord,
-} from '../src/state.js';
+import { readState, recordBox, removeBoxRecord, writeState, type BoxRecord } from '../src/state.js';
 
 describe('state.ts', () => {
   let dir: string;
@@ -69,7 +63,10 @@ describe('state.ts', () => {
   });
 
   it('rejects malformed state', async () => {
-    await writeState({ version: 999, boxes: [] } as unknown as Parameters<typeof writeState>[0], file);
+    await writeState(
+      { version: 999, boxes: [] } as unknown as Parameters<typeof writeState>[0],
+      file,
+    );
     await expect(readState(file)).rejects.toThrow(/unrecognized state file shape/);
   });
 

@@ -81,9 +81,7 @@ export interface CreateSnapshotResult {
  * After the copy, prune all `EXCLUDE_DIRS` directories so the snapshot is free
  * of platform-specific artifacts before it becomes the overlay's lower layer.
  */
-export async function createSnapshot(
-  opts: CreateSnapshotOptions,
-): Promise<CreateSnapshotResult> {
+export async function createSnapshot(opts: CreateSnapshotOptions): Promise<CreateSnapshotResult> {
   const source = resolve(opts.source);
   const destination = resolve(opts.destination);
   const excluded = opts.excluded ?? EXCLUDE_DIRS;

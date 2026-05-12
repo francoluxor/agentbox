@@ -30,8 +30,16 @@ RUN apt-get update \
         build-essential \
         git \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /workspace /host-src /upper /snapshot \
-    && chmod 755 /workspace /host-src /upper /snapshot
+    && mkdir -p /workspace /host-src /upper /snapshot /run/agentbox /var/log/agentbox \
+    && chmod 755 /workspace /host-src /upper /snapshot \
+    && chown vscode:vscode /run/agentbox /var/log/agentbox
+
+# agentbox-ctl: the in-container supervisor + CLI. Build context is the
+# monorepo root, so packages/ctl/dist is the prebuilt bundle from
+# `pnpm --filter @agentbox/ctl build`. The CLI is bundled with all deps
+# inlined (see tsup config), so a single COPY is enough.
+COPY packages/ctl/dist/bin.cjs /usr/local/bin/agentbox-ctl
+RUN chmod +x /usr/local/bin/agentbox-ctl
 
 # Default to the vscode user (UID 1000) provided by base:ubuntu. The overlay
 # mount itself happens via `docker exec --user root`, so this is just the

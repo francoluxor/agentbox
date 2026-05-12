@@ -9,7 +9,14 @@ describe('agentbox create command', () => {
   it('declares the documented options', () => {
     const flags = createCommand.options.map((o) => o.long);
     expect(flags).toEqual(
-      expect.arrayContaining(['--workspace', '--name', '--snapshot', '--image', '--attach', '--yes']),
+      expect.arrayContaining([
+        '--workspace',
+        '--name',
+        '--snapshot',
+        '--image',
+        '--attach',
+        '--yes',
+      ]),
     );
   });
 

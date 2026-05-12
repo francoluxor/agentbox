@@ -21,7 +21,9 @@ function totalRemovals(r: PruneResult): number {
 function summary(r: PruneResult): string {
   const lines: string[] = [];
   if (r.removedRecords.length > 0) {
-    lines.push(`  state records (${String(r.removedRecords.length)}): ${r.removedRecords.join(', ')}`);
+    lines.push(
+      `  state records (${String(r.removedRecords.length)}): ${r.removedRecords.join(', ')}`,
+    );
   }
   if (r.removedContainers.length > 0) {
     lines.push(
@@ -29,7 +31,9 @@ function summary(r: PruneResult): string {
     );
   }
   if (r.removedVolumes.length > 0) {
-    lines.push(`  volumes       (${String(r.removedVolumes.length)}): ${r.removedVolumes.join(', ')}`);
+    lines.push(
+      `  volumes       (${String(r.removedVolumes.length)}): ${r.removedVolumes.join(', ')}`,
+    );
   }
   if (r.removedSnapshotDirs.length > 0) {
     lines.push(

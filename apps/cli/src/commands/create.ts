@@ -99,7 +99,9 @@ export const createCommand = new Command('create')
       log.error(msg);
       // Help the user clean up partial state.
       try {
-        const running = execSync('docker ps --format "{{.Names}}"', { stdio: ['ignore', 'pipe', 'ignore'] })
+        const running = execSync('docker ps --format "{{.Names}}"', {
+          stdio: ['ignore', 'pipe', 'ignore'],
+        })
           .toString()
           .split('\n')
           .filter((n) => n.startsWith('agentbox-'));

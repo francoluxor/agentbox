@@ -1,12 +1,14 @@
 import { randomBytes } from 'node:crypto';
-import { stat } from 'node:fs/promises';
+import { mkdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { ConfigError, loadConfig } from '@agentbox/ctl';
 import { containerExists, dockerInfo, ensureVolume, runBox } from './docker.js';
 import { DEFAULT_BOX_IMAGE, ensureImage } from './image.js';
 import { mountOverlay, verifyOverlay, type OverlayCheck } from './overlay.js';
 import { recordBox, type BoxRecord } from './state.js';
 import { createSnapshot, snapshotPathFor } from './snapshot.js';
+import { launchCtlDaemon } from './ctl.js';
 
 export interface CreateBoxOptions {
   workspacePath: string;
@@ -58,6 +60,24 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     throw new Error(`workspace does not exist: ${workspace}`);
   }
 
+  // Pre-flight agentbox.yaml validation on the host so the user sees the real
+  // ConfigError instead of an opaque "socket did not appear" timeout from the
+  // detached daemon exec later. The daemon re-validates inside the box anyway
+  // — defence in depth, and necessary because the file lives in the overlay
+  // and can be edited after create.
+  const cfgPath = join(workspace, 'agentbox.yaml');
+  if (await pathExists(cfgPath)) {
+    try {
+      const cfg = await loadConfig(cfgPath);
+      log(`agentbox.yaml validated (${String(cfg.services.length)} service(s))`);
+    } catch (err) {
+      if (err instanceof ConfigError) {
+        throw new Error(`agentbox.yaml validation failed:\n  ${err.message}`);
+      }
+      throw err;
+    }
+  }
+
   await dockerInfo();
   log('docker daemon reachable');
 
@@ -89,7 +109,12 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
   await ensureVolume(nodeModulesVolume);
   log(`prepared volumes ${upperVolume}, ${nodeModulesVolume}`);
 
+  const socketDir = join(homedir(), '.agentbox', 'boxes', id, 'run');
+  const socketPath = join(socketDir, 'ctl.sock');
+  await mkdir(socketDir, { recursive: true });
+
   const extraVolumes = await buildAgentMounts();
+  extraVolumes.push(`${socketDir}:/run/agentbox`);
   for (const v of extraVolumes) log(`mounting agent dir: ${v}`);
 
   await runBox({
@@ -107,9 +132,7 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     await mountOverlay(containerName);
     log('fuse-overlayfs mounted at /workspace');
   } catch (err) {
-    log(
-      `overlay mount failed; leaving container ${containerName} running so you can inspect it`,
-    );
+    log(`overlay mount failed; leaving container ${containerName} running so you can inspect it`);
     throw err;
   }
 
@@ -121,6 +144,10 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
   }
   log('overlay verified');
 
+  const ctl = await launchCtlDaemon(containerName, socketPath);
+  if (ctl.up) log('agentbox-ctl daemon up');
+  else log(`agentbox-ctl daemon did not become reachable: ${ctl.reason}`);
+
   const record: BoxRecord = {
     id,
     name: opts.name ?? id,
@@ -131,10 +158,10 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     upperVolume,
     nodeModulesVolume,
     snapshotDir,
+    socketPath,
     createdAt: new Date().toISOString(),
   };
   await recordBox(record);
 
   return { record, overlayChecks, imageBuilt: built };
 }
-

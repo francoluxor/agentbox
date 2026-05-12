@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentbox.dev/schema/agentbox.schema.json",
+  "title": "AgentBox box configuration",
+  "description": "Declarative config consumed by agentbox-ctl (the in-container supervisor). Sits at /workspace/agentbox.yaml.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "services": {
+      "type": "object",
+      "description": "Map of service name → service spec. Names must match [A-Za-z0-9_-]+.",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[A-Za-z0-9_-]+$": { "$ref": "#/$defs/service" }
+      }
+    }
+  },
+  "$defs": {
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command"],
+      "properties": {
+        "command": {
+          "description": "Shell string (run via `bash -c`) or argv array. Non-empty.",
+          "oneOf": [
+            { "type": "string", "minLength": 1 },
+            {
+              "type": "array",
+              "items": { "type": "string" },
+              "minItems": 1
+            }
+          ]
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Working directory. Relative paths resolve against /workspace."
+        },
+        "env": {
+          "type": "object",
+          "description": "Extra environment variables. Values must be scalars (string, number, or boolean) — they are coerced to strings.",
+          "additionalProperties": {
+            "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }]
+          }
+        },
+        "autostart": {
+          "type": "boolean",
+          "description": "Start automatically when the daemon boots.",
+          "default": true
+        },
+        "restart": {
+          "description": "When to restart after the process exits. `always` ignores exit code, `on-failure` (default) restarts only on non-zero, `never` leaves it dead.",
+          "enum": ["always", "on-failure", "never"],
+          "default": "on-failure"
+        },
+        "backoff": { "$ref": "#/$defs/backoff" }
+      }
+    },
+    "backoff": {
+      "type": "object",
+      "description": "Exponential backoff between restart attempts. The runtime validator additionally enforces max_ms >= initial_ms.",
+      "additionalProperties": false,
+      "properties": {
+        "initial_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 500,
+          "description": "Delay before the first retry, in milliseconds."
+        },
+        "max_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 30000,
+          "description": "Cap for the retry delay, in milliseconds. Must be >= initial_ms."
+        },
+        "factor": {
+          "type": "number",
+          "minimum": 1,
+          "default": 2,
+          "description": "Multiplier applied to the delay after each failed restart."
+        }
+      }
+    }
+  }
+}

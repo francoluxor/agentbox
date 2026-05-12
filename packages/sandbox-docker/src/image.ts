@@ -6,9 +6,12 @@ export const DEFAULT_BOX_IMAGE = 'agentbox/box:dev';
 
 const here = dirname(fileURLToPath(import.meta.url));
 // src/ is one level under the package root at build/dev time; the Dockerfile
-// sits at the package root next to package.json.
+// sits at the package root next to package.json. The build *context* is the
+// monorepo root because the image bakes in packages/ctl/dist/bin.js.
 const PACKAGE_ROOT = resolve(here, '..');
+const REPO_ROOT = resolve(PACKAGE_ROOT, '..', '..');
 export const DOCKERFILE_PATH = resolve(PACKAGE_ROOT, 'Dockerfile.box');
+export const BUILD_CONTEXT_DIR = REPO_ROOT;
 
 export async function imageExists(ref: string): Promise<boolean> {
   const result = await execa('docker', ['image', 'inspect', ref], { reject: false });
@@ -25,13 +28,12 @@ export interface BuildImageOptions {
 export async function buildImage(opts: BuildImageOptions = {}): Promise<string> {
   const ref = opts.ref ?? DEFAULT_BOX_IMAGE;
   const dockerfile = opts.dockerfile ?? DOCKERFILE_PATH;
-  const contextDir = opts.contextDir ?? PACKAGE_ROOT;
+  const contextDir = opts.contextDir ?? BUILD_CONTEXT_DIR;
 
-  const subprocess = execa(
-    'docker',
-    ['build', '-t', ref, '-f', dockerfile, contextDir],
-    { stderr: 'pipe', stdout: 'pipe' },
-  );
+  const subprocess = execa('docker', ['build', '-t', ref, '-f', dockerfile, contextDir], {
+    stderr: 'pipe',
+    stdout: 'pipe',
+  });
 
   if (opts.onProgress) {
     const forward = (chunk: Buffer | string): void => {

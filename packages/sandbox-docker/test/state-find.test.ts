@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { findBox, type BoxRecord, type StateFile } from '../src/state.js';
 
-const mk = (
-  id: string,
-  name: string,
-  overrides: Partial<BoxRecord> = {},
-): BoxRecord => ({
+const mk = (id: string, name: string, overrides: Partial<BoxRecord> = {}): BoxRecord => ({
   id,
   name,
   container: `agentbox-${name}`,

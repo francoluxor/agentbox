@@ -73,11 +73,9 @@ export async function verifyOverlay(container: string): Promise<OverlayCheck[]> 
   });
 
   // 2. write into the overlay.
-  const write = await execInBox(
-    container,
-    ['bash', '-lc', `touch /workspace/${sentinel}`],
-    { user: 'root' },
-  );
+  const write = await execInBox(container, ['bash', '-lc', `touch /workspace/${sentinel}`], {
+    user: 'root',
+  });
   checks.push({
     name: 'write through overlay succeeds',
     ok: write.exitCode === 0,
@@ -85,11 +83,9 @@ export async function verifyOverlay(container: string): Promise<OverlayCheck[]> 
   });
 
   // 3. write landed in the upper volume.
-  const upper = await execInBox(
-    container,
-    ['bash', '-lc', `test -f /upper/upper/${sentinel}`],
-    { user: 'root' },
-  );
+  const upper = await execInBox(container, ['bash', '-lc', `test -f /upper/upper/${sentinel}`], {
+    user: 'root',
+  });
   checks.push({
     name: 'write lands in /upper (cow target)',
     ok: upper.exitCode === 0,
@@ -100,11 +96,9 @@ export async function verifyOverlay(container: string): Promise<OverlayCheck[]> 
   });
 
   // 4. lower remained untouched.
-  const lower = await execInBox(
-    container,
-    ['bash', '-lc', `test ! -e /host-src/${sentinel}`],
-    { user: 'root' },
-  );
+  const lower = await execInBox(container, ['bash', '-lc', `test ! -e /host-src/${sentinel}`], {
+    user: 'root',
+  });
   checks.push({
     name: 'lower (/host-src) untouched',
     ok: lower.exitCode === 0,
