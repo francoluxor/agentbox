@@ -6,6 +6,8 @@ export interface DockerExecResult {
   stderr: string;
 }
 
+export type ContainerRuntimeState = 'running' | 'paused' | 'stopped' | 'missing';
+
 export async function dockerInfo(): Promise<void> {
   const result: Result = await execa('docker', ['info'], { reject: false });
   if (result.exitCode !== 0) {
@@ -71,8 +73,12 @@ export async function execInBox(
   };
 }
 
-export async function removeBox(container: string): Promise<void> {
+export async function removeContainer(container: string): Promise<void> {
   await execa('docker', ['rm', '-f', container], { reject: false });
+}
+
+export async function removeVolume(name: string): Promise<void> {
+  await execa('docker', ['volume', 'rm', name], { reject: false });
 }
 
 export async function containerExists(name: string): Promise<boolean> {
@@ -94,3 +100,91 @@ export async function ensureVolume(name: string): Promise<void> {
   await execa('docker', ['volume', 'create', name]);
 }
 
+export async function pauseContainer(name: string): Promise<void> {
+  await execa('docker', ['pause', name]);
+}
+
+export async function unpauseContainer(name: string): Promise<void> {
+  await execa('docker', ['unpause', name]);
+}
+
+export async function stopContainer(name: string): Promise<void> {
+  await execa('docker', ['stop', name]);
+}
+
+export async function startContainer(name: string): Promise<void> {
+  await execa('docker', ['start', name]);
+}
+
+export async function inspectContainerStatus(name: string): Promise<ContainerRuntimeState> {
+  const result = await execa(
+    'docker',
+    ['inspect', '--format', '{{.State.Status}}', name],
+    { reject: false },
+  );
+  if (result.exitCode !== 0) return 'missing';
+  const status = (result.stdout ?? '').trim();
+  switch (status) {
+    case 'running':
+      return 'running';
+    case 'paused':
+      return 'paused';
+    case 'created':
+    case 'exited':
+    case 'dead':
+    case 'restarting':
+    case 'removing':
+      return 'stopped';
+    default:
+      return 'missing';
+  }
+}
+
+export async function inspectContainer(name: string): Promise<unknown | null> {
+  const result = await execa('docker', ['inspect', name], { reject: false });
+  if (result.exitCode !== 0) return null;
+  try {
+    const parsed = JSON.parse(result.stdout ?? 'null') as unknown[];
+    return Array.isArray(parsed) ? (parsed[0] ?? null) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function inspectVolumeMountpoint(name: string): Promise<string | null> {
+  const result = await execa(
+    'docker',
+    ['volume', 'inspect', '--format', '{{.Mountpoint}}', name],
+    { reject: false },
+  );
+  if (result.exitCode !== 0) return null;
+  return (result.stdout ?? '').trim() || null;
+}
+
+const AGENTBOX_PREFIX = 'agentbox-';
+
+export async function listAgentboxContainers(): Promise<string[]> {
+  const result = await execa(
+    'docker',
+    ['ps', '-a', '--filter', `name=^${AGENTBOX_PREFIX}`, '--format', '{{.Names}}'],
+    { reject: false },
+  );
+  if (result.exitCode !== 0) return [];
+  return (result.stdout ?? '')
+    .split('\n')
+    .map((s) => s.trim())
+    .filter((s) => s.startsWith(AGENTBOX_PREFIX));
+}
+
+export async function listAgentboxVolumes(): Promise<string[]> {
+  const result = await execa(
+    'docker',
+    ['volume', 'ls', '--filter', `name=^${AGENTBOX_PREFIX}`, '--format', '{{.Name}}'],
+    { reject: false },
+  );
+  if (result.exitCode !== 0) return [];
+  return (result.stdout ?? '')
+    .split('\n')
+    .map((s) => s.trim())
+    .filter((s) => s.startsWith(AGENTBOX_PREFIX));
+}

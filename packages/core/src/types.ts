@@ -1,6 +1,6 @@
 export type BoxId = string;
 
-export type BoxState = 'running' | 'paused' | 'stopped' | 'destroyed';
+export type BoxState = 'running' | 'paused' | 'stopped' | 'destroyed' | 'missing';
 
 export type AgentKind = 'claude-code' | 'codex' | (string & {});
 

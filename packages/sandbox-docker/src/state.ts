@@ -54,3 +54,52 @@ export async function recordBox(box: BoxRecord, path: string = STATE_FILE): Prom
   };
   await writeState(next, path);
 }
+
+export async function removeBoxRecord(id: string, path: string = STATE_FILE): Promise<boolean> {
+  const state = await readState(path);
+  const before = state.boxes.length;
+  const next: StateFile = {
+    version: 1,
+    boxes: state.boxes.filter((b) => b.id !== id),
+  };
+  if (next.boxes.length === before) return false;
+  await writeState(next, path);
+  return true;
+}
+
+export type FindBoxResult =
+  | { kind: 'ok'; box: BoxRecord }
+  | { kind: 'none' }
+  | { kind: 'ambiguous'; matches: BoxRecord[] };
+
+/**
+ * Resolve a user-supplied identifier against the state file. Matching
+ * precedence mirrors `docker`'s container reference resolution:
+ *
+ *   1. exact id
+ *   2. unique id prefix
+ *   3. exact name
+ *   4. exact container name
+ *
+ * Returns `'ambiguous'` if step 2 finds more than one match (steps 1, 3, 4
+ * are exact-match so they cannot be ambiguous on their own).
+ */
+export function findBox(idOrName: string, state: StateFile): FindBoxResult {
+  const q = idOrName.trim();
+  if (q.length === 0) return { kind: 'none' };
+
+  const exactId = state.boxes.find((b) => b.id === q);
+  if (exactId) return { kind: 'ok', box: exactId };
+
+  const prefixMatches = state.boxes.filter((b) => b.id.startsWith(q));
+  if (prefixMatches.length === 1) return { kind: 'ok', box: prefixMatches[0]! };
+  if (prefixMatches.length > 1) return { kind: 'ambiguous', matches: prefixMatches };
+
+  const byName = state.boxes.find((b) => b.name === q);
+  if (byName) return { kind: 'ok', box: byName };
+
+  const byContainer = state.boxes.find((b) => b.container === q);
+  if (byContainer) return { kind: 'ok', box: byContainer };
+
+  return { kind: 'none' };
+}

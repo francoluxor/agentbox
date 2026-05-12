@@ -2,13 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import {
-  containerExists,
-  dockerInfo,
-  ensureVolume,
-  removeBox,
-  runBox,
-} from './docker.js';
+import { containerExists, dockerInfo, ensureVolume, runBox } from './docker.js';
 import { DEFAULT_BOX_IMAGE, ensureImage } from './image.js';
 import { mountOverlay, verifyOverlay, type OverlayCheck } from './overlay.js';
 import { recordBox, type BoxRecord } from './state.js';
@@ -144,4 +138,3 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
   return { record, overlayChecks, imageBuilt: built };
 }
 
-export { removeBox };

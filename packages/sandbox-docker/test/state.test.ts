@@ -2,7 +2,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { readState, recordBox, writeState, type BoxRecord } from '../src/state.js';
+import {
+  readState,
+  recordBox,
+  removeBoxRecord,
+  writeState,
+  type BoxRecord,
+} from '../src/state.js';
 
 describe('state.ts', () => {
   let dir: string;
@@ -65,5 +71,33 @@ describe('state.ts', () => {
   it('rejects malformed state', async () => {
     await writeState({ version: 999, boxes: [] } as unknown as Parameters<typeof writeState>[0], file);
     await expect(readState(file)).rejects.toThrow(/unrecognized state file shape/);
+  });
+
+  it('removeBoxRecord removes by id and reports whether anything matched', async () => {
+    const a: BoxRecord = {
+      id: 'aaaaaaaa',
+      name: 'alpha',
+      container: 'agentbox-alpha',
+      image: 'agentbox/box:dev',
+      workspacePath: '/tmp/ws',
+      lowerPath: '/tmp/ws',
+      upperVolume: 'agentbox-upper-aaaaaaaa',
+      nodeModulesVolume: 'agentbox-nm-aaaaaaaa',
+      snapshotDir: null,
+      createdAt: '2026-05-12T12:00:00.000Z',
+    };
+    const b: BoxRecord = { ...a, id: 'bbbbbbbb', name: 'beta', container: 'agentbox-beta' };
+    await recordBox(a, file);
+    await recordBox(b, file);
+
+    const removed = await removeBoxRecord('aaaaaaaa', file);
+    expect(removed).toBe(true);
+
+    const after = await readState(file);
+    expect(after.boxes.map((r) => r.id)).toEqual(['bbbbbbbb']);
+
+    // No-op on unknown id.
+    const removedAgain = await removeBoxRecord('aaaaaaaa', file);
+    expect(removedAgain).toBe(false);
   });
 });

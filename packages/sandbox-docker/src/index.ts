@@ -1,27 +1,45 @@
 import type { SandboxProvider } from '@agentbox/core';
 
-export {
-  createBox,
-  type CreateBoxOptions,
-  type CreatedBox,
-} from './create.js';
+export { createBox, type CreateBoxOptions, type CreatedBox } from './create.js';
 export { DEFAULT_BOX_IMAGE } from './image.js';
 export { EXCLUDE_DIRS, SNAPSHOTS_ROOT, snapshotPathFor } from './snapshot.js';
 export {
   STATE_DIR,
   STATE_FILE,
+  findBox,
   readState,
+  recordBox,
+  removeBoxRecord,
   type BoxRecord,
+  type FindBoxResult,
   type StateFile,
 } from './state.js';
 export { OverlayError, type OverlayCheck } from './overlay.js';
+export {
+  AmbiguousBoxError,
+  BoxNotFoundError,
+  destroyBox,
+  inspectBox,
+  listBoxes,
+  pauseBox,
+  pruneBoxes,
+  snapshotPresent,
+  startBox,
+  stopBox,
+  unpauseBox,
+  type DestroyOptions,
+  type DestroyResult,
+  type InspectedBox,
+  type ListedBox,
+  type PruneOptions,
+  type PruneResult,
+  type StartedBox,
+} from './lifecycle.js';
 
 const notYet = (op: string): never => {
   throw new Error(`@agentbox/sandbox-docker: ${op} is not yet implemented`);
 };
 
-// SandboxProvider conformance is wired up incrementally as we implement the
-// rest of the lifecycle. For now only the create-equivalent (`start`) is real.
 export const dockerProvider: SandboxProvider = {
   name: 'docker',
   async start(opts) {
@@ -38,27 +56,35 @@ export const dockerProvider: SandboxProvider = {
       createdAt: new Date(record.createdAt),
     };
   },
-  async pause() {
-    return notYet('pause');
+  async pause(id) {
+    const { pauseBox } = await import('./lifecycle.js');
+    await pauseBox(id);
   },
-  async resume() {
-    return notYet('resume');
+  async resume(id) {
+    const { unpauseBox } = await import('./lifecycle.js');
+    await unpauseBox(id);
   },
-  async stop() {
-    return notYet('stop');
+  async stop(id) {
+    const { stopBox } = await import('./lifecycle.js');
+    await stopBox(id);
   },
-  async destroy() {
-    return notYet('destroy');
+  async destroy(id) {
+    const { destroyBox } = await import('./lifecycle.js');
+    await destroyBox(id);
   },
   async list() {
-    const { readState } = await import('./state.js');
-    const { boxes } = await readState();
+    const { listBoxes } = await import('./lifecycle.js');
+    const boxes = await listBoxes();
     return boxes.map((b) => ({
       id: b.id,
-      state: 'running' as const,
+      state: b.state,
       agent: 'claude-code' as const,
       workspacePath: b.workspacePath,
       createdAt: new Date(b.createdAt),
     }));
   },
 };
+
+// notYet is no longer reachable from the public API. Keep it for now in case
+// future provider methods need it before they're implemented.
+void notYet;

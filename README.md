@@ -40,6 +40,36 @@ docker exec -it agentbox-<id> bash
 # inside: cd /workspace; ls; echo hi > note.txt; ls /upper/upper/
 ```
 
+## Commands
+
+```sh
+agentbox create [-w <path>] [-n <name>] [--snapshot | --no-snapshot] [--attach] [-y]
+agentbox list                       # alias: ls
+agentbox inspect <box> [--json]
+agentbox pause <box>                # docker pause — 0 CPU, RAM stays mapped
+agentbox unpause <box>              # docker unpause — sub-second resume
+agentbox stop <box>                 # docker stop — preserves upper + node_modules volumes
+agentbox start <box>                # docker start + re-mount the FUSE overlay
+agentbox destroy <box> [-y] [--keep-snapshot]   # alias: rm — discards upper volume
+agentbox prune [--dry-run] [--all] [-y]         # default: drops "missing" state records
+```
+
+`<box>` resolves against `~/.agentbox/state.json` in this order: exact id → unique id prefix → exact name → exact container name. So `agentbox destroy abc1` works as long as the prefix is unique.
+
+Quick tour:
+
+```sh
+agentbox create -n alpha          # spin one up
+agentbox list                     # see it
+agentbox inspect alpha            # state, overlay status, volume mountpoint, sizes
+agentbox pause alpha              # freeze (TS server cache, RAM all stays)
+agentbox unpause alpha            # resume
+agentbox stop alpha               # full shutdown
+agentbox start alpha              # restart + re-mount the overlay
+agentbox destroy alpha            # nuke it (prompts to confirm — `-y` to skip)
+agentbox prune --all              # clean up any orphan containers/volumes/snapshots
+```
+
 ## Layout
 
 ```
@@ -94,10 +124,18 @@ pnpm clean       # nuke dist/ + .turbo/ + node_modules/
 
 ### Tearing down test boxes
 
-During testing you'll create lots of boxes. To wipe them all:
+During testing you'll create lots of boxes. The clean way:
 
 ```sh
-docker ps -a --filter "name=agentbox-" --format "{{.Names}}"
+agentbox list                     # see what's there
+agentbox prune --all -y           # remove orphan containers/volumes/snapshot dirs
+# or, to nuke one by one:
+agentbox destroy <id|name> -y
+```
+
+If something goes really sideways and `agentbox` itself can't reach a clean state, the raw escape hatch is:
+
+```sh
 docker rm -f $(docker ps -aq --filter "name=agentbox-")
 docker volume ls -q | grep "^agentbox-" | xargs -r docker volume rm
 rm -rf ~/.agentbox/snapshots/*
