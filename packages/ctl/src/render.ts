@@ -1,16 +1,35 @@
-import type { ServiceStatus } from './types.js';
+import type { ServiceStatus, TaskStatus } from './types.js';
 
 export function renderStatusTable(rows: ServiceStatus[]): string {
   if (rows.length === 0) return '(no services configured)';
-  const headers = ['NAME', 'STATE', 'PID', 'RESTARTS', 'LAST EXIT', 'COMMAND'];
+  const headers = ['NAME', 'STATE', 'PID', 'RESTARTS', 'LAST EXIT', 'BLOCKED ON', 'COMMAND'];
   const data: string[][] = rows.map((r) => [
     r.name,
     r.state,
     r.pid === null ? '-' : String(r.pid),
     String(r.restarts),
     r.lastExitCode === null ? '-' : String(r.lastExitCode),
-    truncate(r.command, 50),
+    r.blockedOn.length === 0 ? '-' : r.blockedOn.join(','),
+    truncate(r.command, 40),
   ]);
+  return renderTable(headers, data);
+}
+
+export function renderTaskTable(rows: TaskStatus[]): string {
+  if (rows.length === 0) return '(no tasks configured)';
+  const headers = ['NAME', 'STATE', 'EXIT', 'STARTED', 'FINISHED', 'COMMAND'];
+  const data: string[][] = rows.map((r) => [
+    r.name,
+    r.state,
+    r.lastExitCode === null ? '-' : String(r.lastExitCode),
+    r.startedAt ?? '-',
+    r.finishedAt ?? '-',
+    truncate(r.command, 40),
+  ]);
+  return renderTable(headers, data);
+}
+
+function renderTable(headers: string[], data: string[][]): string {
   const widths = headers.map((h, i) =>
     Math.max(h.length, ...data.map((row) => (row[i] ?? '').length)),
   );

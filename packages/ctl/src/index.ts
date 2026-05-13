@@ -6,8 +6,11 @@ export type {
   ReloadResult,
   ServiceState,
   ServiceStatus,
+  StatusReply,
   TaskState,
   TaskStatus,
+  WaitReadyArgs,
+  WaitReadyReply,
 } from './types.js';
 export {
   DEFAULT_CLAUDE_SESSION_NAME,
@@ -19,6 +22,9 @@ export {
   claudeSession,
   ping,
   status,
+  taskStatus,
+  waitReady,
+  runTask,
   logs,
   restart,
   reload,
@@ -27,7 +33,7 @@ export {
   type ConnectOptions,
   type LogsResult,
 } from './client.js';
-export { renderStatusTable } from './render.js';
+export { renderStatusTable, renderTaskTable } from './render.js';
 export {
   parseConfig,
   loadConfig,

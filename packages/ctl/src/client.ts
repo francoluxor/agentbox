@@ -6,6 +6,10 @@ import type {
   LogEvent,
   ReloadResult,
   ServiceStatus,
+  StatusReply,
+  TaskStatus,
+  WaitReadyArgs,
+  WaitReadyReply,
 } from './types.js';
 
 export interface ConnectOptions {
@@ -62,8 +66,31 @@ export async function ping(opts: ConnectOptions): Promise<'pong'> {
   return sendOneShot<'pong'>(opts, { op: 'ping' });
 }
 
-export async function status(opts: ConnectOptions): Promise<ServiceStatus[]> {
-  return sendOneShot<ServiceStatus[]>(opts, { op: 'status' });
+export async function status(opts: ConnectOptions): Promise<StatusReply> {
+  return sendOneShot<StatusReply>(opts, { op: 'status' });
+}
+
+export async function taskStatus(opts: ConnectOptions): Promise<TaskStatus[]> {
+  return sendOneShot<TaskStatus[]>(opts, { op: 'task-status' });
+}
+
+export async function waitReady(
+  opts: ConnectOptions,
+  args: WaitReadyArgs = {},
+): Promise<WaitReadyReply> {
+  return sendOneShot<WaitReadyReply>(opts, {
+    op: 'wait-ready',
+    timeoutMs: args.timeoutMs,
+    units: args.units,
+  });
+}
+
+export async function runTask(
+  opts: ConnectOptions,
+  name: string,
+  force?: boolean,
+): Promise<TaskStatus> {
+  return sendOneShot<TaskStatus>(opts, { op: 'run-task', name, force });
 }
 
 export async function restart(opts: ConnectOptions, service: string): Promise<ServiceStatus> {

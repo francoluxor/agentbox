@@ -4,6 +4,8 @@ import { daemonCommand } from './commands/daemon.js';
 import { statusCommand } from './commands/status.js';
 import { logsCommand } from './commands/logs.js';
 import { validateCommand } from './commands/validate.js';
+import { waitReadyCommand } from './commands/wait-ready.js';
+import { runTaskCommand } from './commands/run-task.js';
 import {
   reloadCommand,
   restartCommand,
@@ -27,6 +29,8 @@ program.addCommand(stopServiceCommand);
 program.addCommand(startServiceCommand);
 program.addCommand(reloadCommand);
 program.addCommand(claudeSessionCommand);
+program.addCommand(waitReadyCommand);
+program.addCommand(runTaskCommand);
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   const msg = err instanceof Error ? err.message : String(err);

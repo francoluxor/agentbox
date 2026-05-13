@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { status } from '../client.js';
 import { DEFAULT_SOCKET_PATH } from '../types.js';
-import { renderStatusTable } from '../render.js';
+import { renderStatusTable, renderTaskTable } from '../render.js';
 
 interface StatusOptions {
   socket: string;
@@ -9,14 +9,19 @@ interface StatusOptions {
 }
 
 export const statusCommand = new Command('status')
-  .description('Show service status from the running daemon')
+  .description('Show service + task status from the running daemon')
   .option('--socket <path>', 'unix socket path', DEFAULT_SOCKET_PATH)
   .option('-j, --json', 'machine-readable JSON output')
   .action(async (opts: StatusOptions) => {
-    const list = await status({ socketPath: opts.socket });
+    const reply = await status({ socketPath: opts.socket });
     if (opts.json) {
-      process.stdout.write(JSON.stringify(list, null, 2) + '\n');
+      process.stdout.write(JSON.stringify(reply, null, 2) + '\n');
       return;
     }
-    process.stdout.write(renderStatusTable(list) + '\n');
+    if (reply.tasks.length > 0) {
+      process.stdout.write('TASKS\n');
+      process.stdout.write(renderTaskTable(reply.tasks) + '\n\n');
+    }
+    process.stdout.write('SERVICES\n');
+    process.stdout.write(renderStatusTable(reply.services) + '\n');
   });

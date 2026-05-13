@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { startServer } from '../src/socket.js';
 import { Supervisor } from '../src/supervisor.js';
-import { claudeSession, ping, status, logs } from '../src/client.js';
+import { claudeSession, ping, status, taskStatus, waitReady, logs } from '../src/client.js';
 import type { ServiceSpec } from '../src/config.js';
 import type { Server } from 'node:net';
 
@@ -60,10 +60,25 @@ describe('socket protocol', () => {
     expect(await ping({ socketPath: sock })).toBe('pong');
   });
 
-  it('returns service status list', async () => {
-    const list = await status({ socketPath: sock });
-    expect(list).toHaveLength(1);
-    expect(list[0]!.name).toBe('svc');
+  it('returns service + task status list', async () => {
+    const reply = await status({ socketPath: sock });
+    expect(reply.services).toHaveLength(1);
+    expect(reply.services[0]!.name).toBe('svc');
+    expect(reply.tasks).toHaveLength(0);
+    // blockedOn defaults to [] for unblocked services.
+    expect(reply.services[0]!.blockedOn).toEqual([]);
+  });
+
+  it('task-status returns the task list', async () => {
+    const tasks = await taskStatus({ socketPath: sock });
+    expect(tasks).toEqual([]);
+  });
+
+  it('wait-ready returns ready=true when the only service is up', async () => {
+    // Give the service a tick to enter 'running'.
+    await new Promise((r) => setTimeout(r, 100));
+    const result = await waitReady({ socketPath: sock }, { timeoutMs: 2000 });
+    expect(result.ready).toBe(true);
   });
 
   it('returns initial log lines without follow', async () => {

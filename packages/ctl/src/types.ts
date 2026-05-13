@@ -18,9 +18,25 @@ export interface ServiceStatus {
   restarts: number;
   lastExitCode: number | null;
   startedAt: string | null;
+  readyAt: string | null;
   nextRetryAt: string | null;
+  blockedOn: string[];
   command: string;
 }
+
+export interface StatusReply {
+  services: ServiceStatus[];
+  tasks: TaskStatus[];
+}
+
+export interface WaitReadyArgs {
+  timeoutMs?: number;
+  units?: string[];
+}
+
+export type WaitReadyReply =
+  | { ready: true }
+  | { ready: false; timedOut: string[]; failed: string[] };
 
 export interface TaskStatus {
   name: string;
@@ -47,6 +63,9 @@ export interface ReloadResult {
 
 export type CtlRequest =
   | { op: 'status' }
+  | { op: 'task-status' }
+  | { op: 'wait-ready'; timeoutMs?: number; units?: string[] }
+  | { op: 'run-task'; name: string; force?: boolean }
   | { op: 'logs'; service: string; tail?: number; follow?: boolean }
   | { op: 'restart'; service: string }
   | { op: 'stop'; service: string }

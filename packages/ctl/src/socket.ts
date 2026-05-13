@@ -64,7 +64,35 @@ async function handleConnection(sock: Socket, opts: ServerOptions): Promise<void
       return;
     }
     case 'status': {
-      writeLine(sock, { ok: true, data: opts.supervisor.list() });
+      const data = {
+        services: opts.supervisor.list(),
+        tasks: opts.supervisor.listTasks(),
+      };
+      writeLine(sock, { ok: true, data });
+      sock.end();
+      return;
+    }
+    case 'task-status': {
+      writeLine(sock, { ok: true, data: opts.supervisor.listTasks() });
+      sock.end();
+      return;
+    }
+    case 'wait-ready': {
+      const data = await opts.supervisor.waitReady({
+        timeoutMs: req.timeoutMs,
+        units: req.units,
+      });
+      writeLine(sock, { ok: true, data });
+      sock.end();
+      return;
+    }
+    case 'run-task': {
+      try {
+        const data = await opts.supervisor.runTask(req.name, req.force);
+        writeLine(sock, { ok: true, data });
+      } catch (err) {
+        writeLine(sock, { ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
       sock.end();
       return;
     }

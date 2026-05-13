@@ -16,6 +16,8 @@ import type {
   ServiceStatus,
   TaskState,
   TaskStatus,
+  WaitReadyArgs,
+  WaitReadyReply,
 } from './types.js';
 
 const RING_SIZE = 1000;
@@ -73,6 +75,7 @@ export class ServiceRunner extends EventEmitter<ServiceRunnerEvents> implements 
   private restarts = 0;
   private lastExitCode: number | null = null;
   private startedAt: Date | null = null;
+  private readyAt: Date | null = null;
   private nextRetryAt: Date | null = null;
   private retryTimer: NodeJS.Timeout | null = null;
   private currentDelayMs = 0;
@@ -146,7 +149,7 @@ export class ServiceRunner extends EventEmitter<ServiceRunnerEvents> implements 
     this.start();
   }
 
-  getStatus(): ServiceStatus {
+  getStatus(blockedOn: string[] = []): ServiceStatus {
     return {
       name: this.spec.name,
       state: this.state,
@@ -154,7 +157,9 @@ export class ServiceRunner extends EventEmitter<ServiceRunnerEvents> implements 
       restarts: this.restarts,
       lastExitCode: this.lastExitCode,
       startedAt: this.startedAt ? this.startedAt.toISOString() : null,
+      readyAt: this.readyAt ? this.readyAt.toISOString() : null,
       nextRetryAt: this.nextRetryAt ? this.nextRetryAt.toISOString() : null,
+      blockedOn,
       command: describeCommand(this.spec.command),
     };
   }
@@ -166,6 +171,14 @@ export class ServiceRunner extends EventEmitter<ServiceRunnerEvents> implements 
   private setState(next: ServiceState): void {
     if (this.state === next) return;
     this.state = next;
+    // Stamp readyAt when the service first becomes available — either reaching
+    // 'running' for unprobed services, or 'ready' for probed ones.
+    if (
+      (next === 'running' && !this.spec.readyWhen) ||
+      next === 'ready'
+    ) {
+      this.readyAt = new Date();
+    }
     this.emit('state', next);
   }
 
@@ -480,6 +493,7 @@ export interface SupervisorOptions {
 
 interface SupervisorEvents {
   log: [LogEvent];
+  change: [];
 }
 
 export class Supervisor extends EventEmitter<SupervisorEvents> {
@@ -499,6 +513,10 @@ export class Supervisor extends EventEmitter<SupervisorEvents> {
     for (const t of cfg.tasks) this.addTaskUnit(t);
     for (const s of cfg.services) this.addServiceUnit(s);
     this.schedule();
+  }
+
+  private emitChange(): void {
+    this.emit('change');
   }
 
   private addServiceUnit(spec: ServiceSpec): ServiceRunner {
@@ -530,7 +548,9 @@ export class Supervisor extends EventEmitter<SupervisorEvents> {
   list(): ServiceStatus[] {
     const out: ServiceStatus[] = [];
     for (const u of this.units.values()) {
-      if (u.kind === 'service') out.push((u as ServiceRunner).getStatus());
+      if (u.kind === 'service') {
+        out.push((u as ServiceRunner).getStatus(this.computeBlockedOn(u.name)));
+      }
     }
     return out;
   }
@@ -541,6 +561,83 @@ export class Supervisor extends EventEmitter<SupervisorEvents> {
       if (u.kind === 'task') out.push((u as TaskRunner).getStatus());
     }
     return out;
+  }
+
+  private computeBlockedOn(name: string): string[] {
+    const unit = this.units.get(name);
+    if (!unit) return [];
+    const needs = this.deps.get(name) ?? [];
+    if (needs.length === 0) return [];
+    if (unit.kind === 'service') {
+      const s = (unit as ServiceRunner).getState();
+      if (s !== 'pending' && s !== 'waiting') return [];
+    } else {
+      const s = (unit as TaskRunner).getState();
+      if (s !== 'pending' && s !== 'waiting') return [];
+    }
+    return needs.filter((d) => !this.satisfied.has(d));
+  }
+
+  async waitReady(args: WaitReadyArgs): Promise<WaitReadyReply> {
+    const targets = args.units && args.units.length > 0 ? args.units : this.autostartNames();
+    const timeoutMs = args.timeoutMs ?? 60_000;
+    if (targets.length === 0 || this.areAllReady(targets)) return { ready: true };
+
+    return new Promise<WaitReadyReply>((resolve) => {
+      const onChange = (): void => {
+        if (this.areAllReady(targets)) {
+          cleanup();
+          resolve({ ready: true });
+        }
+      };
+      const cleanup = (): void => {
+        clearTimeout(timer);
+        this.off('change', onChange);
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        const d = this.diagnose(targets);
+        resolve({ ready: false, timedOut: d.notYet, failed: d.failed });
+      }, timeoutMs);
+      this.on('change', onChange);
+    });
+  }
+
+  async runTask(name: string, force?: boolean): Promise<TaskStatus> {
+    const t = this.getTask(name);
+    if (!t) throw new Error(`unknown task: ${name}`);
+    if (t.getState() === 'done' && !force) return t.getStatus();
+    if (t.getState() === 'running') return t.getStatus();
+    t.resetForRerun();
+    this.schedule();
+    return t.getStatus();
+  }
+
+  private autostartNames(): string[] {
+    const out: string[] = [];
+    for (const u of this.units.values()) {
+      if (u.kind === 'task') out.push(u.name);
+      else if ((u as ServiceRunner).spec.autostart) out.push(u.name);
+    }
+    return out;
+  }
+
+  private areAllReady(targets: string[]): boolean {
+    for (const name of targets) {
+      if (this.failed.has(name)) return false;
+      if (!this.satisfied.has(name)) return false;
+    }
+    return true;
+  }
+
+  private diagnose(targets: string[]): { notYet: string[]; failed: string[] } {
+    const notYet: string[] = [];
+    const failed: string[] = [];
+    for (const name of targets) {
+      if (this.failed.has(name)) failed.push(name);
+      else if (!this.satisfied.has(name)) notYet.push(name);
+    }
+    return { notYet, failed };
   }
 
   get(name: string): ServiceRunner | undefined {
@@ -642,6 +739,7 @@ export class Supervisor extends EventEmitter<SupervisorEvents> {
       this.failed.delete(name);
       this.schedule();
     }
+    this.emitChange();
   }
 
   private onServiceState(name: string, state: ServiceState): void {
@@ -655,12 +753,11 @@ export class Supervisor extends EventEmitter<SupervisorEvents> {
         this.satisfied.add(name);
         this.schedule();
       }
-      return;
-    }
-    if (state === 'crashed' && !this.satisfied.has(name)) {
+    } else if (state === 'crashed' && !this.satisfied.has(name)) {
       this.failed.add(name);
       this.schedule();
     }
+    this.emitChange();
   }
 
   /**

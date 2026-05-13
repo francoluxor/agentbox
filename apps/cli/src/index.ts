@@ -13,6 +13,7 @@ import { startCommand } from './commands/start.js';
 import { statusCommand } from './commands/status.js';
 import { stopCommand } from './commands/stop.js';
 import { unpauseCommand } from './commands/unpause.js';
+import { waitCommand } from './commands/wait.js';
 
 const program = new Command();
 
@@ -25,6 +26,7 @@ program.addCommand(inspectCommand);
 program.addCommand(openCommand);
 program.addCommand(pathCommand);
 program.addCommand(statusCommand);
+program.addCommand(waitCommand);
 program.addCommand(logsCommand);
 program.addCommand(pauseCommand);
 program.addCommand(unpauseCommand);

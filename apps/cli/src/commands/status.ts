@@ -1,6 +1,11 @@
 import { log } from '@clack/prompts';
 import { Command } from 'commander';
-import { renderStatusTable, type ClaudeSessionStatus, type ServiceStatus } from '@agentbox/ctl';
+import {
+  renderStatusTable,
+  renderTaskTable,
+  type ClaudeSessionStatus,
+  type StatusReply,
+} from '@agentbox/ctl';
 import {
   AmbiguousBoxError,
   BoxNotFoundError,
@@ -15,7 +20,7 @@ interface StatusOptions {
 }
 
 export const statusCommand = new Command('status')
-  .description("Show service status from a box's agentbox-ctl daemon")
+  .description("Show service + task status from a box's agentbox-ctl daemon")
   .argument('<box>', 'box id, id prefix, name, or container name')
   .option('-j, --json', 'machine-readable JSON output')
   .action(async (idOrName: string, opts: StatusOptions) => {
@@ -36,16 +41,23 @@ export const statusCommand = new Command('status')
         log.error(`agentbox-ctl status failed: ${proc.stderr || proc.stdout}`);
         process.exit(1);
       }
-      const list = JSON.parse(proc.stdout) as ServiceStatus[];
+      const reply = JSON.parse(proc.stdout) as StatusReply;
       const claude = await fetchClaudeSession(box.container);
 
       if (opts.json) {
-        process.stdout.write(JSON.stringify({ services: list, claudeSession: claude }, null, 2) + '\n');
+        process.stdout.write(
+          JSON.stringify({ ...reply, claudeSession: claude }, null, 2) + '\n',
+        );
       } else {
         if (claude !== null) {
           process.stdout.write(`${renderClaudeLine(claude)}\n`);
         }
-        process.stdout.write(renderStatusTable(list) + '\n');
+        if (reply.tasks.length > 0) {
+          process.stdout.write('TASKS\n');
+          process.stdout.write(renderTaskTable(reply.tasks) + '\n\n');
+        }
+        process.stdout.write('SERVICES\n');
+        process.stdout.write(renderStatusTable(reply.services) + '\n');
       }
     } catch (err) {
       handleLifecycleError(err);
