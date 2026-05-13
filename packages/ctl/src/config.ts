@@ -2,11 +2,49 @@ import { readFile } from 'node:fs/promises';
 import { parse as parseYaml } from 'yaml';
 
 export type RestartPolicy = 'always' | 'on-failure' | 'never';
+export type ProbeOnTimeout = 'kill' | 'mark_unhealthy';
 
 export interface BackoffSpec {
   initialMs: number;
   maxMs: number;
   factor: number;
+}
+
+export interface PortProbe {
+  kind: 'port';
+  port: number;
+  host: string;
+  intervalMs: number;
+  initialDelayMs: number;
+  timeoutMs: number;
+  onTimeout: ProbeOnTimeout;
+}
+
+export interface LogMatchProbe {
+  kind: 'log_match';
+  pattern: RegExp;
+  timeoutMs: number;
+  onTimeout: ProbeOnTimeout;
+}
+
+export interface HttpProbe {
+  kind: 'http';
+  url: string;
+  expectStatus?: number;
+  intervalMs: number;
+  initialDelayMs: number;
+  timeoutMs: number;
+  onTimeout: ProbeOnTimeout;
+}
+
+export type ReadyProbe = PortProbe | LogMatchProbe | HttpProbe;
+
+export interface TaskSpec {
+  name: string;
+  command: string | string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  needs: string[];
 }
 
 export interface ServiceSpec {
@@ -17,10 +55,13 @@ export interface ServiceSpec {
   autostart: boolean;
   restart: RestartPolicy;
   backoff: BackoffSpec;
+  needs: string[];
+  readyWhen?: ReadyProbe;
 }
 
 export interface CtlConfig {
   services: ServiceSpec[];
+  tasks: TaskSpec[];
 }
 
 export const DEFAULT_BACKOFF: BackoffSpec = {
@@ -28,6 +69,12 @@ export const DEFAULT_BACKOFF: BackoffSpec = {
   maxMs: 30_000,
   factor: 2,
 };
+
+export const DEFAULT_PROBE_INTERVAL_MS = 500;
+export const DEFAULT_PROBE_INITIAL_DELAY_MS = 0;
+export const DEFAULT_PROBE_TIMEOUT_MS = 60_000;
+export const DEFAULT_PROBE_HOST = '127.0.0.1';
+export const DEFAULT_PROBE_ON_TIMEOUT: ProbeOnTimeout = 'kill';
 
 export class ConfigError extends Error {
   constructor(message: string) {
@@ -125,6 +172,14 @@ function parseNonNegativeInt(raw: unknown, where: string, fallback: number): num
   return Math.floor(raw);
 }
 
+function parsePositiveInt(raw: unknown, where: string, fallback: number): number {
+  if (raw === undefined) return fallback;
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 1) {
+    throw new ConfigError(`${where} must be a positive integer`);
+  }
+  return Math.floor(raw);
+}
+
 function parseFactor(raw: unknown, where: string, fallback: number): number {
   if (raw === undefined) return fallback;
   if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 1) {
@@ -133,7 +188,153 @@ function parseFactor(raw: unknown, where: string, fallback: number): number {
   return raw;
 }
 
-const SERVICE_KEYS = new Set(['command', 'cwd', 'env', 'autostart', 'restart', 'backoff']);
+function parseOnTimeout(raw: unknown, where: string): ProbeOnTimeout {
+  if (raw === undefined) return DEFAULT_PROBE_ON_TIMEOUT;
+  if (raw === 'kill' || raw === 'mark_unhealthy') return raw;
+  throw new ConfigError(`${where} must be one of: kill, mark_unhealthy`);
+}
+
+function parseNeeds(raw: unknown, where: string): string[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    throw new ConfigError(`${where} must be an array of unit names`);
+  }
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const [i, item] of raw.entries()) {
+    if (typeof item !== 'string') {
+      throw new ConfigError(`${where}[${String(i)}] must be a string`);
+    }
+    if (!/^[A-Za-z0-9_-]+$/.test(item)) {
+      throw new ConfigError(`${where}[${String(i)}] "${item}" must match [A-Za-z0-9_-]+`);
+    }
+    if (seen.has(item)) continue;
+    seen.add(item);
+    out.push(item);
+  }
+  return out;
+}
+
+const PROBE_KEYS = new Set([
+  'port',
+  'host',
+  'log_match',
+  'http',
+  'expect_status',
+  'interval_ms',
+  'initial_delay_ms',
+  'timeout_ms',
+  'on_timeout',
+]);
+
+function parseReadyWhen(raw: unknown, where: string): ReadyProbe | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!isPlainObject(raw)) {
+    throw new ConfigError(`${where}.ready_when must be a mapping`);
+  }
+  rejectUnknownKeys(raw, PROBE_KEYS, `${where}.ready_when`);
+
+  const kinds: Array<'port' | 'log_match' | 'http'> = [];
+  if (raw.port !== undefined) kinds.push('port');
+  if (raw.log_match !== undefined) kinds.push('log_match');
+  if (raw.http !== undefined) kinds.push('http');
+  if (kinds.length === 0) {
+    throw new ConfigError(
+      `${where}.ready_when must declare exactly one of: port, log_match, http`,
+    );
+  }
+  if (kinds.length > 1) {
+    throw new ConfigError(
+      `${where}.ready_when may declare only one of: port, log_match, http (got ${kinds.join(', ')})`,
+    );
+  }
+
+  const timeoutMs = parsePositiveInt(
+    raw.timeout_ms,
+    `${where}.ready_when.timeout_ms`,
+    DEFAULT_PROBE_TIMEOUT_MS,
+  );
+  const onTimeout = parseOnTimeout(raw.on_timeout, `${where}.ready_when.on_timeout`);
+
+  const kind = kinds[0]!;
+  if (kind === 'log_match') {
+    if (raw.host !== undefined || raw.expect_status !== undefined || raw.interval_ms !== undefined || raw.initial_delay_ms !== undefined) {
+      throw new ConfigError(
+        `${where}.ready_when.log_match cannot be combined with host/expect_status/interval_ms/initial_delay_ms`,
+      );
+    }
+    const pat = assertString(raw.log_match, `${where}.ready_when.log_match`);
+    let pattern: RegExp;
+    try {
+      pattern = new RegExp(pat);
+    } catch (err) {
+      throw new ConfigError(
+        `${where}.ready_when.log_match is not a valid regex: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return { kind: 'log_match', pattern, timeoutMs, onTimeout };
+  }
+
+  const intervalMs = parsePositiveInt(
+    raw.interval_ms,
+    `${where}.ready_when.interval_ms`,
+    DEFAULT_PROBE_INTERVAL_MS,
+  );
+  const initialDelayMs = parseNonNegativeInt(
+    raw.initial_delay_ms,
+    `${where}.ready_when.initial_delay_ms`,
+    DEFAULT_PROBE_INITIAL_DELAY_MS,
+  );
+
+  if (kind === 'port') {
+    if (raw.expect_status !== undefined) {
+      throw new ConfigError(`${where}.ready_when.expect_status only applies to http probes`);
+    }
+    const port = parsePositiveInt(raw.port, `${where}.ready_when.port`, 0);
+    if (port < 1 || port > 65535) {
+      throw new ConfigError(`${where}.ready_when.port must be between 1 and 65535`);
+    }
+    const host =
+      raw.host === undefined
+        ? DEFAULT_PROBE_HOST
+        : assertString(raw.host, `${where}.ready_when.host`);
+    return { kind: 'port', port, host, intervalMs, initialDelayMs, timeoutMs, onTimeout };
+  }
+
+  if (raw.host !== undefined) {
+    throw new ConfigError(`${where}.ready_when.host only applies to port probes`);
+  }
+  const url = assertString(raw.http, `${where}.ready_when.http`);
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new ConfigError(`${where}.ready_when.http must be a valid URL`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new ConfigError(`${where}.ready_when.http must use http(s):// (got ${parsed.protocol})`);
+  }
+  let expectStatus: number | undefined;
+  if (raw.expect_status !== undefined) {
+    expectStatus = parsePositiveInt(raw.expect_status, `${where}.ready_when.expect_status`, 0);
+    if (expectStatus < 100 || expectStatus > 599) {
+      throw new ConfigError(`${where}.ready_when.expect_status must be between 100 and 599`);
+    }
+  }
+  return { kind: 'http', url, expectStatus, intervalMs, initialDelayMs, timeoutMs, onTimeout };
+}
+
+const SERVICE_KEYS = new Set([
+  'command',
+  'cwd',
+  'env',
+  'autostart',
+  'restart',
+  'backoff',
+  'needs',
+  'ready_when',
+  'ide',
+]);
 
 function parseService(name: string, raw: unknown): ServiceSpec {
   const where = `services.${name}`;
@@ -148,7 +349,24 @@ function parseService(name: string, raw: unknown): ServiceSpec {
     raw.autostart === undefined ? true : assertBool(raw.autostart, `${where}.autostart`);
   const restart = parseRestart(raw.restart, where);
   const backoff = parseBackoff(raw.backoff, where);
-  return { name, command, cwd, env, autostart, restart, backoff };
+  const needs = parseNeeds(raw.needs, `${where}.needs`);
+  const readyWhen = parseReadyWhen(raw.ready_when, where);
+  return { name, command, cwd, env, autostart, restart, backoff, needs, readyWhen };
+}
+
+const TASK_KEYS = new Set(['command', 'cwd', 'env', 'needs']);
+
+function parseTask(name: string, raw: unknown): TaskSpec {
+  const where = `tasks.${name}`;
+  if (!isPlainObject(raw)) {
+    throw new ConfigError(`${where} must be a mapping`);
+  }
+  rejectUnknownKeys(raw, TASK_KEYS, where);
+  const command = parseCommand(raw.command, where);
+  const cwd = raw.cwd === undefined ? undefined : assertString(raw.cwd, `${where}.cwd`);
+  const env = parseEnv(raw.env, where);
+  const needs = parseNeeds(raw.needs, `${where}.needs`);
+  return { name, command, cwd, env, needs };
 }
 
 function assertString(raw: unknown, where: string): string {
@@ -161,7 +379,64 @@ function assertBool(raw: unknown, where: string): boolean {
   return raw;
 }
 
-const TOP_LEVEL_KEYS = new Set(['services']);
+const TOP_LEVEL_KEYS = new Set(['services', 'tasks', 'ide']);
+
+function validateUnitGraph(tasks: TaskSpec[], services: ServiceSpec[]): void {
+  const names = new Set<string>();
+  for (const t of tasks) {
+    if (names.has(t.name)) {
+      throw new ConfigError(`unit name "${t.name}" declared more than once (task vs service collision)`);
+    }
+    names.add(t.name);
+  }
+  for (const s of services) {
+    if (names.has(s.name)) {
+      throw new ConfigError(`unit name "${s.name}" declared more than once (task vs service collision)`);
+    }
+    names.add(s.name);
+  }
+
+  const deps = new Map<string, string[]>();
+  for (const t of tasks) deps.set(t.name, t.needs);
+  for (const s of services) deps.set(s.name, s.needs);
+
+  for (const [unit, list] of deps) {
+    for (const dep of list) {
+      if (!names.has(dep)) {
+        throw new ConfigError(`unit "${unit}" needs unknown unit "${dep}"`);
+      }
+      if (dep === unit) {
+        throw new ConfigError(`unit "${unit}" cannot depend on itself`);
+      }
+    }
+  }
+
+  // DFS with three-color marking; record the cycle path in the error.
+  const WHITE = 0, GRAY = 1, BLACK = 2;
+  const color = new Map<string, number>();
+  for (const name of deps.keys()) color.set(name, WHITE);
+  const stack: string[] = [];
+
+  function visit(name: string): void {
+    color.set(name, GRAY);
+    stack.push(name);
+    for (const dep of deps.get(name)!) {
+      const c = color.get(dep) ?? WHITE;
+      if (c === GRAY) {
+        const startIdx = stack.indexOf(dep);
+        const cycle = stack.slice(startIdx).concat(dep).join(' → ');
+        throw new ConfigError(`cyclic dependency: ${cycle}`);
+      }
+      if (c === WHITE) visit(dep);
+    }
+    stack.pop();
+    color.set(name, BLACK);
+  }
+
+  for (const name of deps.keys()) {
+    if (color.get(name) === WHITE) visit(name);
+  }
+}
 
 export function parseConfig(text: string): CtlConfig {
   let doc: unknown;
@@ -170,24 +445,49 @@ export function parseConfig(text: string): CtlConfig {
   } catch (err) {
     throw new ConfigError(`yaml parse error: ${err instanceof Error ? err.message : String(err)}`);
   }
-  if (doc === null || doc === undefined) return { services: [] };
+  if (doc === null || doc === undefined) return { services: [], tasks: [] };
   if (!isPlainObject(doc)) {
     throw new ConfigError('top-level config must be a mapping');
   }
   rejectUnknownKeys(doc, TOP_LEVEL_KEYS, '(root)');
-  const servicesRaw = doc.services;
-  if (servicesRaw === undefined || servicesRaw === null) return { services: [] };
-  if (!isPlainObject(servicesRaw)) {
-    throw new ConfigError('services must be a mapping of name → service');
-  }
+
   const services: ServiceSpec[] = [];
-  for (const [name, raw] of Object.entries(servicesRaw)) {
-    if (!/^[A-Za-z0-9_-]+$/.test(name)) {
-      throw new ConfigError(`service name "${name}" must match [A-Za-z0-9_-]+`);
+  const servicesRaw = doc.services;
+  if (servicesRaw !== undefined && servicesRaw !== null) {
+    if (!isPlainObject(servicesRaw)) {
+      throw new ConfigError('services must be a mapping of name → service');
     }
-    services.push(parseService(name, raw));
+    for (const [name, raw] of Object.entries(servicesRaw)) {
+      if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+        throw new ConfigError(`service name "${name}" must match [A-Za-z0-9_-]+`);
+      }
+      services.push(parseService(name, raw));
+    }
   }
-  return { services };
+
+  const tasks: TaskSpec[] = [];
+  const tasksRaw = doc.tasks;
+  if (tasksRaw !== undefined && tasksRaw !== null) {
+    if (!isPlainObject(tasksRaw)) {
+      throw new ConfigError('tasks must be a mapping of name → task');
+    }
+    for (const [name, raw] of Object.entries(tasksRaw)) {
+      if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+        throw new ConfigError(`task name "${name}" must match [A-Za-z0-9_-]+`);
+      }
+      tasks.push(parseTask(name, raw));
+    }
+  }
+
+  // ide: parsed only enough to confirm it's an object; contents are host-side
+  // and the supervisor doesn't touch them. Schema is permissive here too.
+  if (doc.ide !== undefined && doc.ide !== null && !isPlainObject(doc.ide)) {
+    throw new ConfigError('ide must be a mapping');
+  }
+
+  validateUnitGraph(tasks, services);
+
+  return { services, tasks };
 }
 
 export async function loadConfig(path: string): Promise<CtlConfig> {
@@ -196,7 +496,7 @@ export async function loadConfig(path: string): Promise<CtlConfig> {
     text = await readFile(path, 'utf8');
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { services: [] };
+      return { services: [], tasks: [] };
     }
     throw err;
   }

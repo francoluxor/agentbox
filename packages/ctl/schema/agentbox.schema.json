@@ -13,36 +13,57 @@
       "patternProperties": {
         "^[A-Za-z0-9_-]+$": { "$ref": "#/$defs/service" }
       }
+    },
+    "tasks": {
+      "type": "object",
+      "description": "Map of task name → task spec. Tasks are one-shot units that run before dependent services (via `needs:`).",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[A-Za-z0-9_-]+$": { "$ref": "#/$defs/task" }
+      }
+    },
+    "ide": {
+      "type": "object",
+      "description": "VS Code attach customizations. Read host-side by `agentbox code`; the supervisor ignores it. Shape is intentionally permissive in this PR.",
+      "additionalProperties": true
     }
   },
   "$defs": {
+    "command": {
+      "description": "Shell string (run via `bash -c`) or argv array. Non-empty.",
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        }
+      ]
+    },
+    "env": {
+      "type": "object",
+      "description": "Extra environment variables. Values must be scalars (string, number, or boolean) — they are coerced to strings.",
+      "additionalProperties": {
+        "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }]
+      }
+    },
+    "needs": {
+      "type": "array",
+      "description": "Names of tasks or services that must reach their terminal-good state before this unit starts.",
+      "items": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+      "uniqueItems": true
+    },
     "service": {
       "type": "object",
       "additionalProperties": false,
       "required": ["command"],
       "properties": {
-        "command": {
-          "description": "Shell string (run via `bash -c`) or argv array. Non-empty.",
-          "oneOf": [
-            { "type": "string", "minLength": 1 },
-            {
-              "type": "array",
-              "items": { "type": "string" },
-              "minItems": 1
-            }
-          ]
-        },
+        "command": { "$ref": "#/$defs/command" },
         "cwd": {
           "type": "string",
           "description": "Working directory. Relative paths resolve against /workspace."
         },
-        "env": {
-          "type": "object",
-          "description": "Extra environment variables. Values must be scalars (string, number, or boolean) — they are coerced to strings.",
-          "additionalProperties": {
-            "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }]
-          }
-        },
+        "env": { "$ref": "#/$defs/env" },
         "autostart": {
           "type": "boolean",
           "description": "Start automatically when the daemon boots.",
@@ -53,7 +74,26 @@
           "enum": ["always", "on-failure", "never"],
           "default": "on-failure"
         },
-        "backoff": { "$ref": "#/$defs/backoff" }
+        "backoff": { "$ref": "#/$defs/backoff" },
+        "needs": { "$ref": "#/$defs/needs" },
+        "ready_when": { "$ref": "#/$defs/ready_when" },
+        "ide": {
+          "type": "object",
+          "description": "Per-service VS Code hints (read host-side by `agentbox code`). Shape is permissive in this PR.",
+          "additionalProperties": true
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "description": "A one-shot unit that runs to completion. Tasks cannot have restart, autostart, backoff, or ready_when.",
+      "additionalProperties": false,
+      "required": ["command"],
+      "properties": {
+        "command": { "$ref": "#/$defs/command" },
+        "cwd": { "type": "string" },
+        "env": { "$ref": "#/$defs/env" },
+        "needs": { "$ref": "#/$defs/needs" }
       }
     },
     "backoff": {
@@ -80,6 +120,65 @@
           "description": "Multiplier applied to the delay after each failed restart."
         }
       }
+    },
+    "ready_when": {
+      "type": "object",
+      "description": "Readiness probe. Exactly one of port, log_match, http must be present.",
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "TCP port the supervisor will poll on `host` (default 127.0.0.1)."
+        },
+        "host": {
+          "type": "string",
+          "description": "Host for port probes. Defaults to 127.0.0.1. Ignored for log_match/http probes."
+        },
+        "log_match": {
+          "type": "string",
+          "description": "Regex matched against stdout/stderr lines. First match flips the service to `ready`."
+        },
+        "http": {
+          "type": "string",
+          "description": "HTTP(S) URL. Probe sends GET and waits for `expect_status` (default: any 2xx)."
+        },
+        "expect_status": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599,
+          "description": "HTTP status code the probe waits for. Only valid with `http:`."
+        },
+        "interval_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 500,
+          "description": "Poll interval. Ignored for log_match probes."
+        },
+        "initial_delay_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Wait this long after the service spawns before the first probe attempt."
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 60000,
+          "description": "Give up after this long. Behavior on timeout is governed by `on_timeout`."
+        },
+        "on_timeout": {
+          "enum": ["kill", "mark_unhealthy"],
+          "default": "kill",
+          "description": "`kill` re-enters the service's restart policy. `mark_unhealthy` leaves it running but flags it (escape hatch for slow cold starts)."
+        }
+      },
+      "oneOf": [
+        { "required": ["port"] },
+        { "required": ["log_match"] },
+        { "required": ["http"] }
+      ]
     }
   }
 }

@@ -14,6 +14,7 @@ function spec(
     autostart: true,
     restart: 'on-failure',
     backoff: { initialMs: 10, maxMs: 50, factor: 2 },
+    needs: [],
     ...over,
   };
 }

@@ -32,6 +32,12 @@ export {
   ConfigError,
   type BackoffSpec,
   type CtlConfig,
+  type HttpProbe,
+  type LogMatchProbe,
+  type PortProbe,
+  type ProbeOnTimeout,
+  type ReadyProbe,
   type RestartPolicy,
   type ServiceSpec,
+  type TaskSpec,
 } from './config.js';

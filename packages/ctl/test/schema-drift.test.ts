@@ -50,6 +50,103 @@ services:
       factor: 3
 `,
   },
+  {
+    name: 'tasks-only config',
+    yaml: `tasks:\n  install:\n    command: pnpm install\n`,
+  },
+  {
+    name: 'task with needs on another task',
+    yaml: `
+tasks:
+  install:
+    command: pnpm install
+  build:
+    command: pnpm build
+    needs: [install]
+`,
+  },
+  {
+    name: 'service with needs on task',
+    yaml: `
+tasks:
+  build:
+    command: pnpm build
+services:
+  api:
+    command: pnpm dev
+    needs: [build]
+`,
+  },
+  {
+    name: 'service with port probe',
+    yaml: `
+services:
+  api:
+    command: pnpm dev
+    ready_when:
+      port: 3000
+`,
+  },
+  {
+    name: 'service with port probe + host + intervals',
+    yaml: `
+services:
+  api:
+    command: pnpm dev
+    ready_when:
+      port: 3000
+      host: 0.0.0.0
+      interval_ms: 250
+      initial_delay_ms: 1000
+      timeout_ms: 120000
+      on_timeout: mark_unhealthy
+`,
+  },
+  {
+    name: 'service with log_match probe',
+    yaml: `
+services:
+  api:
+    command: pnpm dev
+    ready_when:
+      log_match: "Server listening on \\\\d+"
+      timeout_ms: 30000
+`,
+  },
+  {
+    name: 'service with http probe + expect_status',
+    yaml: `
+services:
+  api:
+    command: pnpm dev
+    ready_when:
+      http: "http://127.0.0.1:3000/health"
+      expect_status: 200
+      timeout_ms: 45000
+`,
+  },
+  {
+    name: 'mixed config with tasks, services, deps, probes, ide block',
+    yaml: `
+tasks:
+  install:
+    command: pnpm install
+  build:
+    command: pnpm build
+    needs: [install]
+services:
+  api:
+    command: pnpm dev
+    needs: [build]
+    ready_when:
+      port: 3000
+      timeout_ms: 90000
+    ide:
+      tail: false
+ide:
+  auto_open_terminals: true
+`,
+  },
 ];
 
 const INVALID: Fixture[] = [
@@ -89,10 +186,202 @@ const INVALID: Fixture[] = [
     name: 'factor < 1',
     yaml: `services:\n  web:\n    command: foo\n    backoff:\n      factor: 0.5\n`,
   },
-  // Cross-field rule the schema cannot express.
+  {
+    name: 'task with restart field',
+    yaml: `tasks:\n  build:\n    command: pnpm build\n    restart: always\n`,
+  },
+  {
+    name: 'task with autostart field',
+    yaml: `tasks:\n  build:\n    command: pnpm build\n    autostart: false\n`,
+  },
+  {
+    name: 'task with ready_when',
+    yaml: `tasks:\n  build:\n    command: pnpm build\n    ready_when:\n      port: 3000\n`,
+  },
+  {
+    name: 'task with backoff',
+    yaml: `tasks:\n  build:\n    command: pnpm build\n    backoff:\n      initial_ms: 100\n`,
+  },
+  {
+    name: 'ready_when with both port and http',
+    yaml: `
+services:
+  api:
+    command: foo
+    ready_when:
+      port: 3000
+      http: "http://localhost:3000"
+`,
+  },
+  {
+    name: 'ready_when with both port and log_match',
+    yaml: `
+services:
+  api:
+    command: foo
+    ready_when:
+      port: 3000
+      log_match: "ready"
+`,
+  },
+  {
+    name: 'ready_when missing port/log_match/http',
+    yaml: `
+services:
+  api:
+    command: foo
+    ready_when:
+      timeout_ms: 30000
+`,
+  },
+  {
+    name: 'ready_when unknown probe key',
+    yaml: `
+services:
+  api:
+    command: foo
+    ready_when:
+      probe_via_tcp: 3000
+`,
+  },
+  {
+    name: 'ready_when port out of range',
+    yaml: `
+services:
+  api:
+    command: foo
+    ready_when:
+      port: 99999
+`,
+  },
+  {
+    name: 'ready_when on_timeout invalid enum',
+    yaml: `
+services:
+  api:
+    command: foo
+    ready_when:
+      port: 3000
+      on_timeout: maybe
+`,
+  },
+  {
+    name: 'needs not an array',
+    yaml: `
+services:
+  api:
+    command: foo
+    needs: build
+`,
+  },
+  {
+    name: 'needs element not a string',
+    yaml: `
+services:
+  api:
+    command: foo
+    needs: [42]
+`,
+  },
+  {
+    name: 'task name with spaces',
+    yaml: `tasks:\n  "bad name":\n    command: foo\n`,
+  },
+  // Cross-field rules the schema cannot express.
   {
     name: 'max_ms < initial_ms (validator-only)',
     yaml: `services:\n  web:\n    command: foo\n    backoff:\n      initial_ms: 5000\n      max_ms: 100\n`,
+    runtimeOnly: true,
+  },
+  {
+    name: 'cyclic needs (validator-only)',
+    yaml: `
+tasks:
+  a:
+    command: echo a
+    needs: [b]
+  b:
+    command: echo b
+    needs: [a]
+`,
+    runtimeOnly: true,
+  },
+  {
+    name: 'needs references unknown unit (validator-only)',
+    yaml: `
+services:
+  api:
+    command: foo
+    needs: [ghost]
+`,
+    runtimeOnly: true,
+  },
+  {
+    name: 'task and service share a name (validator-only)',
+    yaml: `
+tasks:
+  api:
+    command: pnpm build
+services:
+  api:
+    command: pnpm dev
+`,
+    runtimeOnly: true,
+  },
+  {
+    name: 'log_match invalid regex (validator-only)',
+    yaml: `
+services:
+  api:
+    command: foo
+    ready_when:
+      log_match: "(unclosed"
+`,
+    runtimeOnly: true,
+  },
+  {
+    name: 'self-dependency (validator-only)',
+    yaml: `
+services:
+  api:
+    command: foo
+    needs: [api]
+`,
+    runtimeOnly: true,
+  },
+  {
+    name: 'http url with unsupported scheme (validator-only)',
+    yaml: `
+services:
+  api:
+    command: foo
+    ready_when:
+      http: "ftp://example.com/health"
+`,
+    runtimeOnly: true,
+  },
+  {
+    name: 'port probe with expect_status (validator-only)',
+    yaml: `
+services:
+  api:
+    command: foo
+    ready_when:
+      port: 3000
+      expect_status: 200
+`,
+    runtimeOnly: true,
+  },
+  {
+    name: 'log_match probe with interval_ms (validator-only)',
+    yaml: `
+services:
+  api:
+    command: foo
+    ready_when:
+      log_match: "ready"
+      interval_ms: 250
+`,
     runtimeOnly: true,
   },
 ];
