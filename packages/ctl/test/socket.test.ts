@@ -33,12 +33,15 @@ describe('socket protocol', () => {
     dir = await mkdtemp(join(tmpdir(), 'ctl-sock-'));
     sock = join(dir, 'ctl.sock');
     sup = new Supervisor({ workspace: dir, logDir: dir });
-    await sup.init([
-      spec({
-        name: 'svc',
-        command: [NODE, '-e', 'console.log("hi"); setInterval(()=>console.log("tick"),20)'],
-      }),
-    ]);
+    await sup.init({
+      tasks: [],
+      services: [
+        spec({
+          name: 'svc',
+          command: [NODE, '-e', 'console.log("hi"); setInterval(()=>console.log("tick"),20)'],
+        }),
+      ],
+    });
     server = await startServer({
       socketPath: sock,
       supervisor: sup,

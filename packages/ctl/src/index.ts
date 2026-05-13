@@ -6,6 +6,8 @@ export type {
   ReloadResult,
   ServiceState,
   ServiceStatus,
+  TaskState,
+  TaskStatus,
 } from './types.js';
 export {
   DEFAULT_CLAUDE_SESSION_NAME,

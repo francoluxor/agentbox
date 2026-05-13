@@ -20,7 +20,7 @@ export const daemonCommand = new Command('daemon')
   .action(async (opts: DaemonOptions) => {
     const cfg = await loadConfig(opts.config);
     const sup = new Supervisor({ workspace: opts.workspace, logDir: opts.logDir });
-    await sup.init(cfg.services);
+    await sup.init(cfg);
     const server = await startServer({
       socketPath: opts.socket,
       supervisor: sup,
@@ -29,7 +29,9 @@ export const daemonCommand = new Command('daemon')
     });
 
     process.stdout.write(`agentbox-ctl: listening on ${opts.socket}\n`);
-    process.stdout.write(`agentbox-ctl: ${String(cfg.services.length)} service(s) configured\n`);
+    process.stdout.write(
+      `agentbox-ctl: ${String(cfg.services.length)} service(s), ${String(cfg.tasks.length)} task(s) configured\n`,
+    );
 
     const shutdown = async (signal: string): Promise<void> => {
       process.stdout.write(`agentbox-ctl: ${signal} — shutting down\n`);

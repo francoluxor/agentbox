@@ -107,7 +107,7 @@ async function handleConnection(sock: Socket, opts: ServerOptions): Promise<void
     }
     case 'reload': {
       const cfg = await loadConfig(opts.configPath);
-      const diff = await opts.supervisor.reload(cfg.services);
+      const diff = await opts.supervisor.reload(cfg);
       writeLine(sock, { ok: true, data: diff });
       sock.end();
       return;

@@ -1,4 +1,15 @@
-export type ServiceState = 'starting' | 'running' | 'crashed' | 'backoff' | 'stopped';
+export type ServiceState =
+  | 'pending'
+  | 'waiting'
+  | 'starting'
+  | 'running'
+  | 'ready'
+  | 'unhealthy'
+  | 'crashed'
+  | 'backoff'
+  | 'stopped';
+
+export type TaskState = 'pending' | 'waiting' | 'running' | 'done' | 'failed' | 'skipped';
 
 export interface ServiceStatus {
   name: string;
@@ -8,6 +19,16 @@ export interface ServiceStatus {
   lastExitCode: number | null;
   startedAt: string | null;
   nextRetryAt: string | null;
+  command: string;
+}
+
+export interface TaskStatus {
+  name: string;
+  state: TaskState;
+  pid: number | null;
+  lastExitCode: number | null;
+  startedAt: string | null;
+  finishedAt: string | null;
   command: string;
 }
 

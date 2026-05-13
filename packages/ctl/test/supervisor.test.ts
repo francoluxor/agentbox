@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Supervisor } from '../src/supervisor.js';
-import type { ServiceSpec } from '../src/config.js';
+import type { CtlConfig, ServiceSpec, TaskSpec } from '../src/config.js';
 
 const NODE = process.execPath;
 
@@ -17,6 +17,14 @@ function spec(
     needs: [],
     ...over,
   };
+}
+
+function taskSpec(over: Partial<TaskSpec> & { name: string; command: string | string[] }): TaskSpec {
+  return { needs: [], ...over };
+}
+
+function cfg(services: ServiceSpec[], tasks: TaskSpec[] = []): CtlConfig {
+  return { services, tasks };
 }
 
 async function waitFor<T>(fn: () => T | null | undefined, timeoutMs = 2000): Promise<T> {
@@ -42,12 +50,14 @@ describe('Supervisor', () => {
 
   it('runs a service and reports running state with a pid', async () => {
     const sup = new Supervisor({ workspace: dir, logDir: dir });
-    await sup.init([
-      spec({
-        name: 'hello',
-        command: [NODE, '-e', 'setInterval(()=>console.log("tick"),50)'],
-      }),
-    ]);
+    await sup.init(
+      cfg([
+        spec({
+          name: 'hello',
+          command: [NODE, '-e', 'setInterval(()=>console.log("tick"),50)'],
+        }),
+      ]),
+    );
     const status = await waitFor(() => {
       const s = sup.list()[0]!;
       return s.state === 'running' ? s : null;
@@ -58,12 +68,14 @@ describe('Supervisor', () => {
 
   it('restarts on crash under on-failure policy', async () => {
     const sup = new Supervisor({ workspace: dir, logDir: dir });
-    await sup.init([
-      spec({
-        name: 'crashy',
-        command: [NODE, '-e', 'process.exit(1)'],
-      }),
-    ]);
+    await sup.init(
+      cfg([
+        spec({
+          name: 'crashy',
+          command: [NODE, '-e', 'process.exit(1)'],
+        }),
+      ]),
+    );
     const after = await waitFor(() => {
       const s = sup.list()[0]!;
       return s.restarts >= 2 ? s : null;
@@ -74,13 +86,15 @@ describe('Supervisor', () => {
 
   it('honours restart: never', async () => {
     const sup = new Supervisor({ workspace: dir, logDir: dir });
-    await sup.init([
-      spec({
-        name: 'one-shot',
-        command: [NODE, '-e', 'process.exit(1)'],
-        restart: 'never',
-      }),
-    ]);
+    await sup.init(
+      cfg([
+        spec({
+          name: 'one-shot',
+          command: [NODE, '-e', 'process.exit(1)'],
+          restart: 'never',
+        }),
+      ]),
+    );
     const final = await waitFor(() => {
       const s = sup.list()[0]!;
       return s.state === 'crashed' ? s : null;
@@ -91,13 +105,15 @@ describe('Supervisor', () => {
 
   it('captures stdout into the log ring', async () => {
     const sup = new Supervisor({ workspace: dir, logDir: dir });
-    await sup.init([
-      spec({
-        name: 'noisy',
-        command: [NODE, '-e', 'console.log("hello"); setTimeout(()=>{}, 200)'],
-        restart: 'never',
-      }),
-    ]);
+    await sup.init(
+      cfg([
+        spec({
+          name: 'noisy',
+          command: [NODE, '-e', 'console.log("hello"); setTimeout(()=>{}, 200)'],
+          restart: 'never',
+        }),
+      ]),
+    );
     const lines = await waitFor(() => {
       const r = sup.get('noisy')!;
       const tail = r.tail(50);
@@ -109,20 +125,149 @@ describe('Supervisor', () => {
 
   it('reload diffs services and stops removed ones', async () => {
     const sup = new Supervisor({ workspace: dir, logDir: dir });
-    await sup.init([
-      spec({ name: 'a', command: [NODE, '-e', 'setInterval(()=>{},1000)'] }),
-      spec({ name: 'b', command: [NODE, '-e', 'setInterval(()=>{},1000)'] }),
-    ]);
+    await sup.init(
+      cfg([
+        spec({ name: 'a', command: [NODE, '-e', 'setInterval(()=>{},1000)'] }),
+        spec({ name: 'b', command: [NODE, '-e', 'setInterval(()=>{},1000)'] }),
+      ]),
+    );
     await waitFor(() => sup.list().every((s) => s.state === 'running') || null);
 
-    const diff = await sup.reload([
-      spec({ name: 'a', command: [NODE, '-e', 'setInterval(()=>{},1000)'] }),
-      spec({ name: 'c', command: [NODE, '-e', 'setInterval(()=>{},1000)'] }),
-    ]);
+    const diff = await sup.reload(
+      cfg([
+        spec({ name: 'a', command: [NODE, '-e', 'setInterval(()=>{},1000)'] }),
+        spec({ name: 'c', command: [NODE, '-e', 'setInterval(()=>{},1000)'] }),
+      ]),
+    );
     expect(diff.removed).toEqual(['b']);
     expect(diff.added).toEqual(['c']);
     expect(diff.changed).toEqual([]);
     expect(sup.get('b')).toBeUndefined();
     await sup.stopAll();
+  });
+
+  it('runs a task and marks it done', async () => {
+    const sup = new Supervisor({ workspace: dir, logDir: dir });
+    await sup.init(
+      cfg(
+        [],
+        [taskSpec({ name: 'build', command: [NODE, '-e', 'process.exit(0)'] })],
+      ),
+    );
+    const done = await waitFor(() => {
+      const t = sup.listTasks()[0]!;
+      return t.state === 'done' ? t : null;
+    });
+    expect(done.lastExitCode).toBe(0);
+  });
+
+  it('marks a failing task as failed', async () => {
+    const sup = new Supervisor({ workspace: dir, logDir: dir });
+    await sup.init(
+      cfg(
+        [],
+        [taskSpec({ name: 'broken', command: [NODE, '-e', 'process.exit(7)'] })],
+      ),
+    );
+    const failed = await waitFor(() => {
+      const t = sup.listTasks()[0]!;
+      return t.state === 'failed' ? t : null;
+    });
+    expect(failed.lastExitCode).toBe(7);
+  });
+
+  it('service with needs on a task waits, then starts when task completes', async () => {
+    const sup = new Supervisor({ workspace: dir, logDir: dir });
+    await sup.init(
+      cfg(
+        [
+          spec({
+            name: 'api',
+            command: [NODE, '-e', 'setInterval(()=>{},1000)'],
+            needs: ['build'],
+          }),
+        ],
+        [
+          taskSpec({
+            name: 'build',
+            command: [NODE, '-e', 'setTimeout(() => process.exit(0), 80)'],
+          }),
+        ],
+      ),
+    );
+    // Immediately after init, the service should be waiting on the task.
+    const waitingState = sup.list()[0]!.state;
+    expect(['waiting', 'pending']).toContain(waitingState);
+
+    const running = await waitFor(() => {
+      const s = sup.list()[0]!;
+      return s.state === 'running' ? s : null;
+    }, 3000);
+    expect(running.pid).toBeTypeOf('number');
+    expect(sup.listTasks()[0]!.state).toBe('done');
+    await sup.stopAll();
+  });
+
+  it('service with autostart:false stays pending', async () => {
+    const sup = new Supervisor({ workspace: dir, logDir: dir });
+    await sup.init(
+      cfg([
+        spec({
+          name: 'manual',
+          command: [NODE, '-e', 'setInterval(()=>{},1000)'],
+          autostart: false,
+        }),
+      ]),
+    );
+    // Give the scheduler a tick; nothing should have started.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sup.list()[0]!.state).toBe('pending');
+    await sup.stopAll();
+  });
+
+  it('downstream task is skipped when upstream task fails', async () => {
+    const sup = new Supervisor({ workspace: dir, logDir: dir });
+    await sup.init(
+      cfg(
+        [],
+        [
+          taskSpec({ name: 'broken', command: [NODE, '-e', 'process.exit(1)'] }),
+          taskSpec({
+            name: 'after',
+            command: [NODE, '-e', 'process.exit(0)'],
+            needs: ['broken'],
+          }),
+        ],
+      ),
+    );
+    const after = await waitFor(() => {
+      const t = sup.listTasks().find((x) => x.name === 'after');
+      return t && t.state === 'skipped' ? t : null;
+    }, 3000);
+    expect(after.lastExitCode).toBeNull();
+  });
+
+  it('concurrent independent tasks run in parallel', async () => {
+    const sup = new Supervisor({ workspace: dir, logDir: dir });
+    const start = Date.now();
+    await sup.init(
+      cfg(
+        [],
+        [
+          taskSpec({
+            name: 't1',
+            command: [NODE, '-e', 'setTimeout(()=>process.exit(0), 200)'],
+          }),
+          taskSpec({
+            name: 't2',
+            command: [NODE, '-e', 'setTimeout(()=>process.exit(0), 200)'],
+          }),
+        ],
+      ),
+    );
+    await waitFor(() => sup.listTasks().every((t) => t.state === 'done') || null, 3000);
+    const elapsed = Date.now() - start;
+    // Sequential would be ~400ms; parallel should be well under 350ms.
+    expect(elapsed).toBeLessThan(350);
   });
 });
