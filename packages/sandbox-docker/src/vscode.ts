@@ -1,18 +1,76 @@
 import { ensureVolume, execInBox, type DockerExecResult } from './docker.js';
 
-/**
- * Shared across all boxes. Holds downloaded extensions so the second box
- * onward doesn't re-download them. Never auto-removed by destroy/prune
- * (parallel to SHARED_CLAUDE_VOLUME).
- */
-export const SHARED_VSCODE_EXTENSIONS_VOLUME = 'agentbox-vscode-extensions';
+export type IdeFlavor = 'vscode' | 'cursor';
 
-/** Per-box; holds the server binary + TS cache + workspace state. */
-export function vscodeServerVolumeName(boxId: string): string {
-  return `agentbox-vscode-server-${boxId}`;
+interface IdeProfile {
+  /** Container path the IDE's server installs into. */
+  serverDir: string;
+  /** Container path of the extensions subdir under serverDir. */
+  extensionsDir: string;
+  /** Per-box volume name = perBoxVolumePrefix + boxId. */
+  perBoxVolumePrefix: string;
+  /** Shared extensions volume name (never auto-removed). */
+  sharedExtensionsVolume: string;
+  /** Host CLI binary that opens this IDE (`code` / `cursor`). */
+  cli: string;
+  /** Human-readable label used in CLI output. */
+  displayName: string;
+  /** macOS protocol scheme for the `open` fallback (no trailing colon). */
+  protocolScheme: string;
 }
 
-export interface VscodeMounts {
+const PROFILES: Record<IdeFlavor, IdeProfile> = {
+  vscode: {
+    serverDir: '/home/vscode/.vscode-server',
+    extensionsDir: '/home/vscode/.vscode-server/extensions',
+    perBoxVolumePrefix: 'agentbox-vscode-server-',
+    sharedExtensionsVolume: 'agentbox-vscode-extensions',
+    cli: 'code',
+    displayName: 'VS Code',
+    protocolScheme: 'vscode',
+  },
+  cursor: {
+    serverDir: '/home/vscode/.cursor-server',
+    extensionsDir: '/home/vscode/.cursor-server/extensions',
+    perBoxVolumePrefix: 'agentbox-cursor-server-',
+    sharedExtensionsVolume: 'agentbox-cursor-extensions',
+    cli: 'cursor',
+    displayName: 'Cursor',
+    protocolScheme: 'cursor',
+  },
+};
+
+export const IDE_FLAVORS: readonly IdeFlavor[] = ['vscode', 'cursor'];
+
+export function ideProfile(flavor: IdeFlavor): IdeProfile {
+  return PROFILES[flavor];
+}
+
+/**
+ * Shared across all boxes. Holds downloaded VS Code extensions so the second
+ * box onward doesn't re-download them. Never auto-removed by destroy/prune
+ * (parallel to SHARED_CLAUDE_VOLUME).
+ */
+export const SHARED_VSCODE_EXTENSIONS_VOLUME = PROFILES.vscode.sharedExtensionsVolume;
+
+/** Same idea for Cursor's downloaded extensions. */
+export const SHARED_CURSOR_EXTENSIONS_VOLUME = PROFILES.cursor.sharedExtensionsVolume;
+
+/** Per-box VS Code server volume name. Holds server binary + TS cache + workspace state. */
+export function vscodeServerVolumeName(boxId: string): string {
+  return ideServerVolumeName('vscode', boxId);
+}
+
+/** Per-box Cursor server volume name. */
+export function cursorServerVolumeName(boxId: string): string {
+  return ideServerVolumeName('cursor', boxId);
+}
+
+export function ideServerVolumeName(flavor: IdeFlavor, boxId: string): string {
+  return `${PROFILES[flavor].perBoxVolumePrefix}${boxId}`;
+}
+
+export interface IdeMounts {
   /** Volume names to ensure() before runBox. */
   volumes: string[];
   /** `-v` arg values to pass to runBox. */
@@ -20,60 +78,91 @@ export interface VscodeMounts {
 }
 
 /**
- * Build the volume mounts for VS Code Server inside a box. The per-box
- * `.vscode-server` volume mounts first, then the shared extensions volume
- * over its `extensions` subdir (Docker layers the deeper mount on top).
+ * Build the volume mounts for one IDE flavor: per-box `.vscode-server` (or
+ * `.cursor-server`) mounts first, then the shared extensions volume layered
+ * over its `extensions` subdir.
  */
-export function buildVscodeMounts(boxId: string): VscodeMounts {
-  const perBox = vscodeServerVolumeName(boxId);
+export function buildFlavorMounts(flavor: IdeFlavor, boxId: string): IdeMounts {
+  const profile = PROFILES[flavor];
+  const perBox = ideServerVolumeName(flavor, boxId);
   return {
-    volumes: [perBox, SHARED_VSCODE_EXTENSIONS_VOLUME],
+    volumes: [perBox, profile.sharedExtensionsVolume],
     extraVolumes: [
-      `${perBox}:/home/vscode/.vscode-server`,
-      `${SHARED_VSCODE_EXTENSIONS_VOLUME}:/home/vscode/.vscode-server/extensions`,
+      `${perBox}:${profile.serverDir}`,
+      `${profile.sharedExtensionsVolume}:${profile.extensionsDir}`,
     ],
   };
 }
 
-export async function ensureVscodeVolumes(boxId: string): Promise<void> {
-  const { volumes } = buildVscodeMounts(boxId);
-  for (const v of volumes) await ensureVolume(v);
+/** VS Code subset — kept for callers that only want the VS Code mounts. */
+export function buildVscodeMounts(boxId: string): IdeMounts {
+  return buildFlavorMounts('vscode', boxId);
 }
 
 /**
- * Belt-and-suspenders chown of the .vscode-server tree after the named
- * volumes are mounted. The Dockerfile pre-creates these dirs so first-mount
- * inherits vscode:vscode ownership, but the shared `agentbox-vscode-extensions`
- * volume might already exist from a box created against an older image where
- * the dirs weren't seeded — in that case the volume is root-owned and the
- * Dev Containers extension fails with "mkdir: cannot create directory
- * '/home/vscode/.vscode-server/bin': Permission denied". One docker exec
- * fixes it idempotently.
+ * All IDE flavors' mounts unioned together. This is what createBox uses so
+ * any existing box can be opened with either IDE without recreating.
+ */
+export function buildIdeMounts(boxId: string): IdeMounts {
+  const merged: IdeMounts = { volumes: [], extraVolumes: [] };
+  for (const f of IDE_FLAVORS) {
+    const m = buildFlavorMounts(f, boxId);
+    merged.volumes.push(...m.volumes);
+    merged.extraVolumes.push(...m.extraVolumes);
+  }
+  return merged;
+}
+
+/** Ensure VS Code's volumes exist. */
+export async function ensureVscodeVolumes(boxId: string): Promise<void> {
+  for (const v of buildFlavorMounts('vscode', boxId).volumes) await ensureVolume(v);
+}
+
+/** Ensure every IDE flavor's volumes exist. */
+export async function ensureIdeVolumes(boxId: string): Promise<void> {
+  for (const v of buildIdeMounts(boxId).volumes) await ensureVolume(v);
+}
+
+/**
+ * Belt-and-suspenders chown of the server trees after the named volumes are
+ * mounted. The Dockerfile pre-creates these dirs so first-mount inherits
+ * vscode:vscode ownership, but a shared extensions volume might already exist
+ * from a box created against an older image where the dirs weren't seeded —
+ * in that case the volume is root-owned and the Dev Containers extension
+ * fails with "mkdir: cannot create directory '<server>/bin': Permission
+ * denied". One docker exec fixes it idempotently for both flavors.
  */
 export async function repairVscodeServerOwnership(container: string): Promise<void> {
-  await execInBox(
-    container,
-    ['chown', '-R', 'vscode:vscode', '/home/vscode/.vscode-server'],
-    { user: 'root' },
-  );
+  await execInBox(container, ['chown', '-R', 'vscode:vscode', PROFILES.vscode.serverDir], {
+    user: 'root',
+  });
+}
+
+export async function repairIdeOwnership(container: string): Promise<void> {
+  for (const flavor of IDE_FLAVORS) {
+    await execInBox(container, ['chown', '-R', 'vscode:vscode', PROFILES[flavor].serverDir], {
+      user: 'root',
+    });
+  }
 }
 
 /**
- * VS Code's `vscode://vscode-remote/attached-container+<hex>/...` URL takes
- * the *container name* hex-encoded. This is what the Dev Containers extension
- * dispatches on.
+ * VS Code's `vscode-remote://attached-container+<hex>/...` URI takes the
+ * *container name* hex-encoded. Cursor uses the same URI scheme (it's a fork)
+ * — pass it to `cursor --folder-uri` the same way.
  */
 export function containerHex(containerName: string): string {
   return Buffer.from(containerName, 'utf8').toString('hex');
 }
 
 /**
- * Resource URI for an attached container. Consumed by `code --folder-uri`.
+ * Resource URI for an attached container. Consumed by `code --folder-uri` /
+ * `cursor --folder-uri`.
  *
  * Note: the `vscode://vscode-remote/...` protocol-handler form looks similar
  * but goes through macOS `open`, which percent-encodes the `+` authority
  * separator into `%2B` and the Dev Containers extension then fails to
- * resolve it. Use `code --folder-uri <this>` to bypass that.
+ * resolve it. Use `<cli> --folder-uri <this>` to bypass that.
  */
 export function attachedContainerUri(containerName: string, workspacePath = '/workspace'): string {
   return `vscode-remote://attached-container+${containerHex(containerName)}${workspacePath}`;
@@ -83,7 +172,8 @@ export function attachedContainerUri(containerName: string, workspacePath = '/wo
  * agentbox-managed `.vscode/tasks.json` lives in the overlay's upper layer so
  * it doesn't pollute the host's working tree. The sentinel comment lets us
  * detect our own file and regenerate it on every `agentbox code` invocation
- * without overwriting a user-authored one.
+ * without overwriting a user-authored one. The file lives at `.vscode/` —
+ * Cursor reads the same path (VS Code fork), so no per-IDE variant needed.
  */
 const SENTINEL =
   '// agentbox-managed: regenerated on `agentbox code`; remove this header to take ownership';
@@ -96,7 +186,7 @@ export interface EnsureTasksFileResult {
 
 /**
  * Write (or skip) `/workspace/.vscode/tasks.json` inside the container. Each
- * service in `services` gets a background task that tails its log so VS Code
+ * service in `services` gets a background task that tails its log so the IDE
  * shows a dedicated terminal panel on attach.
  *
  *  - File absent → write.
@@ -111,8 +201,6 @@ export async function ensureAgentboxTasksFile(
 ): Promise<EnsureTasksFileResult> {
   if (services.length === 0) return { status: 'skipped-no-services' };
 
-  // Probe the existing file. cat exits 0 if it exists; we only overwrite when
-  // it's absent or our sentinel is present.
   const existing = await execInBox(container, ['cat', '/workspace/.vscode/tasks.json'], {
     user: 'vscode',
   });
@@ -149,10 +237,6 @@ export async function ensureAgentboxTasksFile(
   return { status: 'wrote' };
 }
 
-/**
- * Write a file inside the container via `docker exec sh -c 'cat > path'`,
- * piping the content over stdin. Avoids shell-escaping the file body.
- */
 async function writeFileInBox(
   container: string,
   path: string,
@@ -174,3 +258,6 @@ async function writeFileInBox(
 function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
+
+// Backward-compat alias for the previous mount type name.
+export type VscodeMounts = IdeMounts;

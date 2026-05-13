@@ -35,6 +35,12 @@ export interface BoxRecord {
    * for boxes created before this field existed.
    */
   vscodeServerVolume?: string;
+  /**
+   * Per-box volume holding `.cursor-server` (Cursor server binary + state).
+   * Parallel to `vscodeServerVolume`. Absent for boxes created before this
+   * field existed — lifecycle code falls back to deriving from `id`.
+   */
+  cursorServerVolume?: string;
   createdAt: string; // ISO-8601
 }
 

@@ -12,9 +12,10 @@ import { recordBox, type BoxRecord } from './state.js';
 import { createSnapshot, snapshotPathFor } from './snapshot.js';
 import { launchCtlDaemon } from './ctl.js';
 import {
-  buildVscodeMounts,
-  ensureVscodeVolumes,
-  repairVscodeServerOwnership,
+  buildIdeMounts,
+  cursorServerVolumeName,
+  ensureIdeVolumes,
+  repairIdeOwnership,
   vscodeServerVolumeName,
 } from './vscode.js';
 
@@ -143,9 +144,11 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
   const nodeModulesVolume = `agentbox-nm-${id}`;
   await ensureVolume(upperVolume);
   await ensureVolume(nodeModulesVolume);
-  await ensureVscodeVolumes(id);
-  log(`prepared volumes ${upperVolume}, ${nodeModulesVolume}, ${vscodeServerVolumeName(id)}`);
-  const vscode = buildVscodeMounts(id);
+  await ensureIdeVolumes(id);
+  log(
+    `prepared volumes ${upperVolume}, ${nodeModulesVolume}, ${vscodeServerVolumeName(id)}, ${cursorServerVolumeName(id)}`,
+  );
+  const ide = buildIdeMounts(id);
 
   // Claude Code config volume. Shared by default so users sign in once across
   // every box; --isolate-claude-config opts into a per-box volume. Either way,
@@ -196,7 +199,7 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
 
   const extraVolumes = await buildIdentityMounts();
   extraVolumes.push(...claudeMounts.extraVolumes);
-  extraVolumes.push(...vscode.extraVolumes);
+  extraVolumes.push(...ide.extraVolumes);
   extraVolumes.push(`${socketDir}:/run/agentbox`);
   extraVolumes.push(`${mergedExportDir}:${CONTAINER_EXPORT_MERGED}`);
   extraVolumes.push(`${upperExportDir}:${CONTAINER_EXPORT_UPPER}`);
@@ -233,8 +236,8 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
   }
   log('overlay verified');
 
-  await repairVscodeServerOwnership(containerName);
-  log('.vscode-server ownership verified');
+  await repairIdeOwnership(containerName);
+  log('.vscode-server + .cursor-server ownership verified');
 
   const ctl = await launchCtlDaemon(containerName, socketPath);
   if (ctl.up) log('agentbox-ctl daemon up');
@@ -253,6 +256,7 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     socketPath,
     claudeConfigVolume: claudeSpec.volume,
     vscodeServerVolume: vscodeServerVolumeName(id),
+    cursorServerVolume: cursorServerVolumeName(id),
     createdAt: new Date().toISOString(),
   };
   await recordBox(record);

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { log } from '@clack/prompts';
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 import type { StatusReply, WaitReadyReply } from '@agentbox/ctl';
 import {
   AmbiguousBoxError,
@@ -9,10 +9,12 @@ import {
   ensureAgentboxTasksFile,
   execInBox,
   findBox,
+  ideProfile,
   inspectBox,
   readState,
   startBox,
   unpauseBox,
+  type IdeFlavor,
 } from '@agentbox/sandbox-docker';
 import { handleLifecycleError } from './_errors.js';
 
@@ -22,18 +24,29 @@ interface CodeOptions {
   noAutoTerminals?: boolean;
   regenTasks?: boolean;
   print?: boolean;
+  ide?: IdeFlavor;
+}
+
+function parseIdeFlavor(value: string): IdeFlavor {
+  if (value === 'vscode' || value === 'cursor') return value;
+  throw new InvalidArgumentError(`expected one of: vscode, cursor (got "${value}")`);
 }
 
 export const codeCommand = new Command('code')
-  .description('Open a box in VS Code Desktop via the Dev Containers extension')
+  .description('Open a box in VS Code or Cursor via the Dev Containers extension')
   .argument('<box>', 'box id, id prefix, name, or container name')
   .option('--no-wait', "don't block on agentbox-ctl wait-ready before opening")
   .option('--timeout <ms>', 'wait-ready timeout in milliseconds', '120000')
   .option('--no-auto-terminals', "don't generate /workspace/.vscode/tasks.json")
   .option('--regen-tasks', 'overwrite a user-owned tasks.json (skips sentinel check)', false)
   .option(
+    '--ide <flavor>',
+    'force a specific IDE: vscode | cursor (default: prefer code, fall back to cursor)',
+    parseIdeFlavor,
+  )
+  .option(
     '--print',
-    'print the vscode:// URL instead of launching `open` (still refreshes/waits)',
+    'print the folder URI instead of launching the IDE (still refreshes/waits)',
   )
   .action(async (idOrName: string, opts: CodeOptions) => {
     try {
@@ -68,7 +81,8 @@ export const codeCommand = new Command('code')
         }
       }
 
-      // Inject .vscode/tasks.json so VS Code auto-opens terminal panels.
+      // Inject .vscode/tasks.json so the IDE auto-opens terminal panels.
+      // (Cursor reads the same .vscode/ path; it's a VS Code fork.)
       if (!opts.noAutoTerminals) {
         try {
           const services = await fetchServiceNames(box.container);
@@ -83,7 +97,6 @@ export const codeCommand = new Command('code')
             );
           }
         } catch (err) {
-          // Don't fail the open command if tasks.json injection has issues.
           log.warn(
             `auto-terminals failed: ${err instanceof Error ? err.message : String(err)}`,
           );
@@ -95,13 +108,15 @@ export const codeCommand = new Command('code')
         process.stdout.write(folderUri + '\n');
         return;
       }
-      const exit = await launchVscode(folderUri);
+      const exit = await launchIde(folderUri, opts.ide);
       if (exit.code !== 0) {
-        log.error(`failed to launch VS Code via ${exit.via} (exit ${String(exit.code)})`);
+        log.error(`failed to launch ${exit.flavor ? ideProfile(exit.flavor).displayName : 'IDE'} via ${exit.via} (exit ${String(exit.code)})`);
         process.stdout.write(folderUri + '\n');
         process.exit(1);
       }
-      log.success(`opening ${box.container} in VS Code (${exit.via})`);
+      log.success(
+        `opening ${box.container} in ${ideProfile(exit.flavor).displayName} (${exit.via})`,
+      );
     } catch (err) {
       handleLifecycleError(err);
     }
@@ -113,7 +128,6 @@ async function runWaitReady(container: string, timeoutMs: string): Promise<WaitR
     ['agentbox-ctl', 'wait-ready', '--json', '--timeout', timeoutMs],
     { user: 'vscode' },
   );
-  // wait-ready exits 0 on ready / 1 on not-ready; both write JSON.
   try {
     return JSON.parse(proc.stdout) as WaitReadyReply;
   } catch {
@@ -125,23 +139,63 @@ async function runWaitReady(container: string, timeoutMs: string): Promise<WaitR
 
 interface LaunchResult {
   code: number;
-  via: 'code-cli' | 'open';
+  flavor: IdeFlavor;
+  via: 'cli' | 'open';
 }
 
 /**
- * Prefer the `code` CLI: passing the URI directly avoids the macOS URL
- * handler hop that percent-encodes the `+` authority separator into `%2B`,
- * which the Dev Containers extension then refuses to resolve. Fall back to
- * `open vscode://...` only if `code` isn't in PATH.
+ * Pick an IDE and launch it.
+ *
+ *   - With `--ide <flavor>`: require that flavor's CLI; if it's missing,
+ *     fall back to its own protocol-handler `open` URL (the %2B bug may
+ *     surface) and warn.
+ *   - Without `--ide`: try `code` first, then `cursor`. Whichever is found
+ *     first wins. If neither, fall back to `open vscode://...` last.
+ *
+ * The folder URI passed in is the canonical `vscode-remote://` form; Cursor
+ * accepts it verbatim because it inherits VS Code's URI handling.
  */
-async function launchVscode(folderUri: string): Promise<LaunchResult> {
-  const cliCode = await spawnCommand('code', ['--folder-uri', folderUri]);
-  if (cliCode !== 127) return { code: cliCode, via: 'code-cli' };
-  // `code` not in PATH. Use the vscode:// protocol handler as a last resort.
-  // The %2B bug means this path may fail on attach — surface it.
-  const vscodeUrl = `vscode://${folderUri.replace(/^vscode-remote:\/\//, 'vscode-remote/')}`;
-  const fallback = await spawnCommand('open', [vscodeUrl]);
-  return { code: fallback, via: 'open' };
+async function launchIde(folderUri: string, forced?: IdeFlavor): Promise<LaunchResult> {
+  if (forced) {
+    return launchOne(forced, folderUri);
+  }
+  const code = await tryCli('vscode', folderUri);
+  if (code !== null) return code;
+  const cursor = await tryCli('cursor', folderUri);
+  if (cursor !== null) return cursor;
+  // Neither CLI present. Last resort: protocol handler via `open`. We pick
+  // vscode:// since that's the documented historical fallback.
+  log.warn('neither `code` nor `cursor` found in PATH; falling back to `open vscode://...`');
+  return launchOne('vscode', folderUri);
+}
+
+/**
+ * Try the IDE's CLI. Returns null if the binary isn't in PATH so the caller
+ * can try the next flavor; otherwise returns the launch result (success or
+ * non-127 failure both count as "we ran this one").
+ */
+async function tryCli(flavor: IdeFlavor, folderUri: string): Promise<LaunchResult | null> {
+  const profile = ideProfile(flavor);
+  const code = await spawnCommand(profile.cli, ['--folder-uri', folderUri]);
+  if (code === 127) return null;
+  return { code, flavor, via: 'cli' };
+}
+
+/**
+ * Run a specific flavor: CLI first; if missing (127), fall back to the
+ * flavor-specific protocol handler. Surfaces the %2B-bug warning so the user
+ * knows why attach may fail if it does.
+ */
+async function launchOne(flavor: IdeFlavor, folderUri: string): Promise<LaunchResult> {
+  const profile = ideProfile(flavor);
+  const cliCode = await spawnCommand(profile.cli, ['--folder-uri', folderUri]);
+  if (cliCode !== 127) return { code: cliCode, flavor, via: 'cli' };
+  log.warn(
+    `\`${profile.cli}\` not found in PATH; falling back to \`open ${profile.protocolScheme}://...\` (the %2B URL-encoding bug may break attach)`,
+  );
+  const url = `${profile.protocolScheme}://${folderUri.replace(/^vscode-remote:\/\//, 'vscode-remote/')}`;
+  const fallback = await spawnCommand('open', [url]);
+  return { code: fallback, flavor, via: 'open' };
 }
 
 function spawnCommand(cmd: string, args: string[]): Promise<number> {
