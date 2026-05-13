@@ -151,6 +151,7 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
   const claudeEnsured = await ensureClaudeVolume(claudeSpec, {
     syncFromHost: true,
     image: imageRef,
+    hostWorkspace: workspace,
   });
   if (claudeEnsured.synced) {
     log(`synced ${claudeSpec.volume} from ~/.claude`);
@@ -161,6 +162,9 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     }
     if (claudeEnsured.clearedInstallMethod) {
       log("cleared host's installMethod from synced .claude.json (box uses the native installer)");
+    }
+    if (claudeEnsured.aliasedProjectKey) {
+      log(`aliased project state for ${workspace} -> /workspace in synced .claude.json`);
     }
   } else if (claudeEnsured.created) {
     log(`created empty volume ${claudeSpec.volume} (no host ~/.claude to sync)`);

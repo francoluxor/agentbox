@@ -7,6 +7,7 @@ export {
   claudeSessionInfo,
   DEFAULT_CLAUDE_SESSION,
   ensureClaudeVolume,
+  rebuildPluginNativeDeps,
   resolveClaudeVolume,
   SHARED_CLAUDE_VOLUME,
   startClaudeSession,
@@ -15,6 +16,7 @@ export {
   type ClaudeSessionInfo,
   type EnsureClaudeVolumeOptions,
   type EnsureClaudeVolumeResult,
+  type RebuildPluginNativeDepsResult,
   type StartClaudeSessionOptions,
 } from './claude.js';
 export { createBox, type CreateBoxOptions, type CreatedBox } from './create.js';

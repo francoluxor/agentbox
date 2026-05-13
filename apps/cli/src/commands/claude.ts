@@ -9,6 +9,7 @@ import {
   DEFAULT_CLAUDE_SESSION,
   findBox,
   readState,
+  rebuildPluginNativeDeps,
   startClaudeSession,
   type FindBoxResult,
 } from '@agentbox/sandbox-docker';
@@ -138,6 +139,24 @@ export const claudeCommand = new Command('claude')
       log.info(`id:        ${result.record.id}`);
       log.info(`container: ${result.record.container}`);
       log.info(`claude volume: ${result.record.claudeConfigVolume ?? '(none)'}`);
+
+      // Plugin native deps: the sync excludes `node_modules` (host darwin
+      // binaries don't run on linux/amd64). First claude session in a fresh
+      // box pays the npm-install cost for each plugin that ships a
+      // package.json; subsequent attaches see node_modules already present
+      // and exit immediately.
+      s.start('rebuilding plugin native deps (first run for this box)');
+      const rebuild = await rebuildPluginNativeDeps(result.record.container, {
+        onProgress: (line) => s.message(clampSpinnerLine(line)),
+      });
+      if (rebuild.rebuilt.length === 0 && rebuild.failed.length === 0) {
+        s.stop('plugins ready (nothing to rebuild)');
+      } else {
+        s.stop(`plugins ready (rebuilt ${String(rebuild.rebuilt.length)})`);
+      }
+      for (const f of rebuild.failed) {
+        log.warn(`plugin install failed for ${f.dir}; claude may still load it. stderr:\n${f.stderr.trim()}`);
+      }
 
       s.start('starting claude session');
       await startClaudeSession({

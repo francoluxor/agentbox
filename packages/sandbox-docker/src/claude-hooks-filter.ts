@@ -90,6 +90,62 @@ export interface ClearInstallMethodResult<T = unknown> {
   cleared: boolean;
 }
 
+export interface AddProjectAliasResult<T = unknown> {
+  data: T;
+  aliased: boolean;
+}
+
+/**
+ * Claude Code keys project-scoped state (history, mcpServers, enabledPlugins,
+ * trust prompts) under `projects[<absolute-workspace-path>]` in
+ * `~/.claude.json`. On the host the key is something like
+ * `/Users/marco/Projects/foo`; inside the box the workspace is always
+ * `/workspace`. Without rewriting, the box never sees the host's project-
+ * scoped settings.
+ *
+ * Copy (don't move) the host-keyed entry to `toPath` if present. Existing
+ * `projects[toPath]` is preserved by merging the host entry on top — host
+ * is authoritative for keys it sets; box-only keys (e.g. session ids
+ * accumulated inside earlier boxes) stay intact.
+ *
+ * No-op (returns `aliased: false`) when:
+ *   - data isn't an object, or `projects` isn't an object
+ *   - fromPath equals toPath
+ *   - projects[fromPath] doesn't exist or isn't an object
+ *
+ * Returns a deep-cloned, modified copy; input is not mutated.
+ */
+export function addProjectAlias<T = unknown>(
+  data: T,
+  fromPath: string,
+  toPath: string,
+): AddProjectAliasResult<T> {
+  const clone = structuredClone(data) as unknown;
+  if (clone === null || typeof clone !== 'object' || Array.isArray(clone)) {
+    return { data: clone as T, aliased: false };
+  }
+  if (fromPath === toPath || fromPath.length === 0 || toPath.length === 0) {
+    return { data: clone as T, aliased: false };
+  }
+  const obj = clone as { projects?: unknown };
+  const projects = obj.projects;
+  if (projects === null || typeof projects !== 'object' || Array.isArray(projects)) {
+    return { data: clone as T, aliased: false };
+  }
+  const projectsMap = projects as Record<string, unknown>;
+  const src = projectsMap[fromPath];
+  if (src === null || typeof src !== 'object' || Array.isArray(src)) {
+    return { data: clone as T, aliased: false };
+  }
+  const existing = projectsMap[toPath];
+  if (existing !== null && typeof existing === 'object' && !Array.isArray(existing)) {
+    projectsMap[toPath] = { ...(existing as Record<string, unknown>), ...(src as Record<string, unknown>) };
+  } else {
+    projectsMap[toPath] = structuredClone(src);
+  }
+  return { data: clone as T, aliased: true };
+}
+
 /**
  * Drop the top-level `installMethod` field from a parsed `~/.claude.json`.
  *

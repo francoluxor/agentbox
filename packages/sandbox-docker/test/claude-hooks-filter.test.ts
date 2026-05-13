@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  addProjectAlias,
   clearInstallMethod,
   filterHostHooks,
   isHostPathHookCommand,
@@ -143,6 +144,85 @@ describe('clearInstallMethod', () => {
     expect(clearInstallMethod(null)).toEqual({ data: null, cleared: false });
     expect(clearInstallMethod(42)).toEqual({ data: 42, cleared: false });
     expect(clearInstallMethod([1, 2, 3])).toEqual({ data: [1, 2, 3], cleared: false });
+  });
+});
+
+describe('addProjectAlias', () => {
+  const hostCwd = '/Users/marco/Projects/foo';
+  const inboxCwd = '/workspace';
+
+  type ProjectsMap = Record<string, Record<string, unknown>>;
+
+  it('copies the host-keyed project entry to the in-box workspace path', () => {
+    const input: { projects: ProjectsMap; anonymousId: string } = {
+      projects: {
+        [hostCwd]: { mcpServers: { sentry: { url: 'https://sentry.example/mcp' } }, history: [1] },
+        '/Users/marco/Projects/other': { history: [9] },
+      },
+      anonymousId: 'abc',
+    };
+    const { data, aliased } = addProjectAlias(input, hostCwd, inboxCwd);
+    expect(aliased).toBe(true);
+    const projects = (data as typeof input).projects;
+    expect(projects[inboxCwd]).toEqual({
+      mcpServers: { sentry: { url: 'https://sentry.example/mcp' } },
+      history: [1],
+    });
+    // Original host entry is preserved (copy, not move).
+    expect(projects[hostCwd]).toEqual({
+      mcpServers: { sentry: { url: 'https://sentry.example/mcp' } },
+      history: [1],
+    });
+    // Untouched siblings still there.
+    expect(projects['/Users/marco/Projects/other']).toEqual({ history: [9] });
+    expect((data as typeof input).anonymousId).toBe('abc');
+  });
+
+  it('merges into an existing /workspace entry, host-authoritative for overlapping keys', () => {
+    const input: { projects: ProjectsMap } = {
+      projects: {
+        [hostCwd]: { mcpServers: { sentry: { url: 'host' } }, trusted: true },
+        [inboxCwd]: { mcpServers: { sentry: { url: 'box' } }, boxOnly: 1 },
+      },
+    };
+    const { data, aliased } = addProjectAlias(input, hostCwd, inboxCwd);
+    expect(aliased).toBe(true);
+    const merged = (data as typeof input).projects[inboxCwd];
+    // Host wins on `mcpServers`; box-only key survives.
+    expect(merged).toEqual({
+      mcpServers: { sentry: { url: 'host' } },
+      trusted: true,
+      boxOnly: 1,
+    });
+  });
+
+  it('is a no-op when the host path is not in projects', () => {
+    const input: { projects: ProjectsMap } = {
+      projects: { '/somewhere/else': { history: [] } },
+    };
+    const { aliased, data } = addProjectAlias(input, hostCwd, inboxCwd);
+    expect(aliased).toBe(false);
+    expect((data as typeof input).projects).toEqual({ '/somewhere/else': { history: [] } });
+  });
+
+  it('is a no-op when projects is missing or non-object', () => {
+    expect(addProjectAlias({}, hostCwd, inboxCwd).aliased).toBe(false);
+    expect(addProjectAlias({ projects: null }, hostCwd, inboxCwd).aliased).toBe(false);
+    expect(addProjectAlias({ projects: 'oops' }, hostCwd, inboxCwd).aliased).toBe(false);
+    expect(addProjectAlias({ projects: [] }, hostCwd, inboxCwd).aliased).toBe(false);
+  });
+
+  it('is a no-op when fromPath equals toPath', () => {
+    const input = { projects: { [inboxCwd]: { history: [1] } } };
+    const { aliased } = addProjectAlias(input, inboxCwd, inboxCwd);
+    expect(aliased).toBe(false);
+  });
+
+  it('does not mutate the input', () => {
+    const input = { projects: { [hostCwd]: { mcpServers: { x: { url: 'a' } } } } };
+    const snapshot = JSON.parse(JSON.stringify(input)) as typeof input;
+    addProjectAlias(input, hostCwd, inboxCwd);
+    expect(input).toEqual(snapshot);
   });
 });
 

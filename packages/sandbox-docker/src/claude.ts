@@ -1,15 +1,17 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { execa } from 'execa';
-import { clearInstallMethod, filterHostHooks } from './claude-hooks-filter.js';
+import { addProjectAlias, clearInstallMethod, filterHostHooks } from './claude-hooks-filter.js';
 import { ensureVolume, volumeExists } from './docker.js';
 
 export const SHARED_CLAUDE_VOLUME = 'agentbox-claude-config';
 export const DEFAULT_CLAUDE_SESSION = 'claude';
 const CONTAINER_CLAUDE_DIR = '/home/vscode/.claude';
 const CONTAINER_USER = 'vscode';
+/** Workspace is always mounted here inside the box, regardless of host path. */
+const CONTAINER_WORKSPACE = '/workspace';
 
 export interface ClaudeConfigSpec {
   /** Resolved Docker volume name mounted at /home/vscode/.claude. */
@@ -33,6 +35,13 @@ export interface EnsureClaudeVolumeOptions {
   syncFromHost: boolean;
   /** Image used by the throwaway sync helper container; we use the box image to avoid extra pulls. */
   image: string;
+  /**
+   * Host-absolute path of the workspace being bound to /workspace inside the
+   * box. When provided, the synced `_claude.json` gets `projects[<hostWorkspace>]`
+   * duplicated to `projects['/workspace']` so project-scoped MCP servers,
+   * trust state, and history match what the host has for this project.
+   */
+  hostWorkspace?: string;
 }
 
 export interface EnsureClaudeVolumeResult {
@@ -51,6 +60,12 @@ export interface EnsureClaudeVolumeResult {
    * field scrubbed (host had it set; we let in-box claude redetect).
    */
   clearedInstallMethod?: boolean;
+  /**
+   * True when `projects[<hostWorkspace>]` was duplicated to
+   * `projects['/workspace']` in the synced `_claude.json` so the in-box claude
+   * sees the host's project-scoped state (mcpServers, history, …).
+   */
+  aliasedProjectKey?: boolean;
 }
 
 async function pathExists(p: string): Promise<boolean> {
@@ -60,6 +75,41 @@ async function pathExists(p: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Walk `root` and return rsync-style relative paths of every symlink whose
+ * target doesn't resolve. We pass these to rsync as `--exclude` patterns so
+ * the broken-symlink set (e.g. claude's `debug/latest` once an older debug
+ * file is reaped) doesn't abort the whole sync under `--copy-unsafe-links`.
+ *
+ * Crosses into subdirs; doesn't follow symlinks (the whole point is to test
+ * them rather than traverse them).
+ */
+async function findBrokenSymlinks(root: string): Promise<string[]> {
+  const broken: string[] = [];
+  async function walk(dir: string): Promise<void> {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of entries) {
+      const full = join(dir, ent.name);
+      if (ent.isSymbolicLink()) {
+        try {
+          await stat(full);
+        } catch {
+          broken.push(relative(root, full));
+        }
+      } else if (ent.isDirectory()) {
+        await walk(full);
+      }
+    }
+  }
+  await walk(root);
+  return broken;
 }
 
 /**
@@ -109,17 +159,31 @@ export async function ensureClaudeVolume(
   // makes it reachable from the path claude expects.
   const hostClaudeJson = join(homedir(), '.claude.json');
   const hasJson = await pathExists(hostClaudeJson);
+  const hostHome = homedir();
+  // Claude Code's user-skills convention: ~/.claude/skills/<name> is a
+  // RELATIVE symlink to ../../.agents/skills/<name>. From /src-claude/skills/
+  // inside the helper that resolves to /.agents/skills/<name>. Bind-mount the
+  // host's ~/.agents at /.agents so --copy-unsafe-links can dereference each
+  // symlink into a real directory in /dst. Without this, rsync errors with
+  // "symlink has no referent" and the whole sync aborts.
+  const hostAgents = join(homedir(), '.agents');
+  const hasAgents = await pathExists(hostAgents);
   const args: string[] = [
     'run',
     '--rm',
     '--user',
     '0',
+    // HOST_HOME used inside the shell script to rewrite host-absolute
+    // installPath values in plugins/installed_plugins.json.
+    '-e',
+    `HOST_HOME=${hostHome}`,
     '-v',
     `${spec.volume}:/dst`,
     '-v',
     `${hostClaude}:/src-claude:ro`,
   ];
   if (hasJson) args.push('-v', `${hostClaudeJson}:/src-claude-json:ro`);
+  if (hasAgents) args.push('-v', `${hostAgents}:/.agents:ro`);
 
   // Pre-filter host-path hooks. Hook commands whose path is under the user's
   // host home (e.g. `/Users/marco/.config/iterm2/cc-status`) won't exist
@@ -129,10 +193,10 @@ export async function ensureClaudeVolume(
   // `.claude.json`, mount it as `/src-filter`, and let the helper container
   // overlay it on top of what rsync brought in. The host files are never
   // touched.
-  const hostHome = homedir();
   const filterDir = await mkdtemp(join(tmpdir(), 'agentbox-claude-filter-'));
   let filteredHookCount = 0;
   let clearedInstallMethod = false;
+  let aliasedProjectKey = false;
   try {
     const settingsResult = await maybeFilterTo(
       join(hostClaude, 'settings.json'),
@@ -145,14 +209,29 @@ export async function ensureClaudeVolume(
         hostClaudeJson,
         join(filterDir, '_claude.json'),
         hostHome,
-        { clearInstallMethod: true },
+        {
+          clearInstallMethod: true,
+          aliasProject: opts.hostWorkspace
+            ? { from: opts.hostWorkspace, to: CONTAINER_WORKSPACE }
+            : undefined,
+        },
       );
       filteredHookCount += jsonResult.removedHooks;
       clearedInstallMethod = jsonResult.clearedInstallMethod;
+      aliasedProjectKey = jsonResult.aliasedProjectKey;
     }
-    if (filteredHookCount > 0 || clearedInstallMethod) {
+    if (filteredHookCount > 0 || clearedInstallMethod || aliasedProjectKey) {
       args.push('-v', `${filterDir}:/src-filter:ro`);
     }
+    // Pre-scan for broken symlinks. With --copy-unsafe-links rsync errors out
+    // and exits 23 when any unsafe symlink's referent is missing — e.g.
+    // `~/.claude/debug/latest` regularly points to a debug file that's been
+    // reaped. We can't predict every such case, so we walk once and tell
+    // rsync to skip exactly those entries.
+    const brokenSymlinks = await findBrokenSymlinks(hostClaude);
+    const rsyncExcludes = ['--exclude=node_modules'];
+    for (const rel of brokenSymlinks) rsyncExcludes.push(`--exclude=/${rel}`);
+    const rsyncFlags = `-a --copy-unsafe-links ${rsyncExcludes.join(' ')}`;
     args.push(
       opts.image,
       'sh',
@@ -160,10 +239,43 @@ export async function ensureClaudeVolume(
       // Each step in its own brace group so a missing optional file (no
       // .claude.json on host, no filtered overlays) doesn't short-circuit the
       // final chown.
-      'rsync -a /src-claude/ /dst/' +
+      //
+      // --copy-unsafe-links: dereference symlinks pointing OUTSIDE
+      //   /src-claude (e.g. ~/.claude/skills/* -> ../../.agents/skills/*),
+      //   so user skills materialize as real directories inside the volume
+      //   without needing to also bind-mount ~/.agents.
+      // --exclude=node_modules: skip every node_modules directory anywhere
+      //   in the tree. Plugin caches (plugins/cache/<m>/<p>/<v>/node_modules)
+      //   ship host-platform-specific binaries (darwin-arm64 fsevents,
+      //   esbuild, rollup, sharp) that are useless on linux/amd64. The
+      //   plugin source still lands; node_modules is rebuilt lazily inside
+      //   the box on first claude session (see rebuildPluginNativeDeps).
+      //
+      // The top-level plugin registry JSONs (installed_plugins.json,
+      // known_marketplaces.json) carry host-absolute `installPath` /
+      // `installLocation` values; without rewriting, claude resolves them
+      // to `/Users/<you>/...` (or, when claude detects the missing path,
+      // falls back to a slug derived from `source.repo` like
+      // `microsoft-playwright-cli` — neither exists in the box, and the
+      // marketplace fails to load, which masquerades as "plugin not
+      // found in marketplace"). One sweep over every JSON directly under
+      // /dst/plugins/ catches both files (and any future registry).
+      // One-shot migration for volumes that were populated before
+      // --exclude=node_modules existed. Without it, the volume keeps
+      // host-darwin node_modules forever (rsync without --delete won't
+      // remove them). The `.agentbox-cleaned-nm-v1` sentinel makes the wipe
+      // a no-op after the first run; rebuildPluginNativeDeps repopulates
+      // linux/amd64 node_modules on the next `agentbox claude`.
+      '{ [ ! -f /dst/.agentbox-cleaned-nm-v1 ] && ' +
+        'find /dst -name node_modules -type d -prune -exec rm -rf {} + && ' +
+        'touch /dst/.agentbox-cleaned-nm-v1; true; }' +
+        ` && rsync ${rsyncFlags} /src-claude/ /dst/` +
         ' && { [ -f /src-claude-json ] && cp -a /src-claude-json /dst/_claude.json; true; }' +
         ' && { [ -f /src-filter/settings.json ] && cp -a /src-filter/settings.json /dst/settings.json; true; }' +
         ' && { [ -f /src-filter/_claude.json ] && cp -a /src-filter/_claude.json /dst/_claude.json; true; }' +
+        ' && { [ -d /dst/plugins ] && [ -n "$HOST_HOME" ] && ' +
+        'find /dst/plugins -maxdepth 1 -type f -name "*.json" ' +
+        '-exec sed -i "s|$HOST_HOME/.claude/plugins/|/home/vscode/.claude/plugins/|g" {} +; true; }' +
         ' && chown -R 1000:1000 /dst',
     );
     await execa('docker', args);
@@ -171,27 +283,34 @@ export async function ensureClaudeVolume(
     await rm(filterDir, { recursive: true, force: true });
   }
 
-  return { created, synced: true, filteredHookCount, clearedInstallMethod };
+  return { created, synced: true, filteredHookCount, clearedInstallMethod, aliasedProjectKey };
 }
 
 /**
- * Read a JSON file, run it through {@link filterHostHooks} and (when opted in)
- * {@link clearInstallMethod}, and write the result to `dest` ONLY when at
- * least one change was made. Tolerant of missing or garbage JSON — silently
- * returns zero changes in those cases (sync proceeds with the raw rsync'd
- * file).
+ * Read a JSON file, run it through {@link filterHostHooks}, (when opted in)
+ * {@link clearInstallMethod}, and (when opted in) {@link addProjectAlias},
+ * and write the result to `dest` ONLY when at least one change was made.
+ * Tolerant of missing or garbage JSON — silently returns zero changes in
+ * those cases (sync proceeds with the raw rsync'd file).
  */
 async function maybeFilterTo(
   src: string,
   dest: string,
   hostHome: string,
-  opts: { clearInstallMethod?: boolean } = {},
-): Promise<{ removedHooks: number; clearedInstallMethod: boolean }> {
+  opts: {
+    clearInstallMethod?: boolean;
+    aliasProject?: { from: string; to: string };
+  } = {},
+): Promise<{
+  removedHooks: number;
+  clearedInstallMethod: boolean;
+  aliasedProjectKey: boolean;
+}> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(await readFile(src, 'utf8'));
   } catch {
-    return { removedHooks: 0, clearedInstallMethod: false };
+    return { removedHooks: 0, clearedInstallMethod: false, aliasedProjectKey: false };
   }
   const filtered = filterHostHooks(parsed, hostHome);
   let working: unknown = filtered.data;
@@ -201,11 +320,21 @@ async function maybeFilterTo(
     working = r.data;
     cleared = r.cleared;
   }
-  if (filtered.removedCommands.length === 0 && !cleared) {
-    return { removedHooks: 0, clearedInstallMethod: false };
+  let aliased = false;
+  if (opts.aliasProject) {
+    const r = addProjectAlias(working, opts.aliasProject.from, opts.aliasProject.to);
+    working = r.data;
+    aliased = r.aliased;
+  }
+  if (filtered.removedCommands.length === 0 && !cleared && !aliased) {
+    return { removedHooks: 0, clearedInstallMethod: false, aliasedProjectKey: false };
   }
   await writeFile(dest, JSON.stringify(working, null, 2));
-  return { removedHooks: filtered.removedCommands.length, clearedInstallMethod: cleared };
+  return {
+    removedHooks: filtered.removedCommands.length,
+    clearedInstallMethod: cleared,
+    aliasedProjectKey: aliased,
+  };
 }
 
 export interface ClaudeMountResult {
@@ -232,6 +361,90 @@ export function buildClaudeMounts(
     env,
     volumeName: spec.volume,
   };
+}
+
+export interface RebuildPluginNativeDepsResult {
+  /** Plugin cache directories whose node_modules was (re)installed during this call. */
+  rebuilt: string[];
+  /** Plugin cache directories where install failed; non-fatal, claude often still loads. */
+  failed: Array<{ dir: string; stderr: string }>;
+}
+
+/**
+ * Walk `/home/vscode/.claude/plugins/cache/<m>/<p>/<v>/` inside the box and run
+ * `npm install` (or `npm ci` when a lockfile is present) for any plugin
+ * whose `package.json` exists but `node_modules` is missing. Idempotent —
+ * subsequent calls are no-ops once node_modules exists.
+ *
+ * This exists because the host→volume rsync excludes `node_modules` (host
+ * darwin-arm64 native binaries like fsevents.node / @esbuild/darwin-arm64
+ * are useless on the linux/amd64 box). The first claude session in a fresh
+ * box pays the install cost; subsequent attaches don't.
+ *
+ * Failures on individual plugins are reported but don't throw — most
+ * plugins still load with a partial dependency graph, and we prefer
+ * launching claude over blocking on a third-party plugin's install hiccup.
+ */
+export async function rebuildPluginNativeDeps(
+  container: string,
+  opts: { onProgress?: (line: string) => void } = {},
+): Promise<RebuildPluginNativeDepsResult> {
+  // Marker (not node_modules) gates re-runs: some plugins have empty
+  // dependency lists, so npm install completes successfully without
+  // creating node_modules — checking only the directory would loop.
+  const script = `set -u
+PLUGINS_DIR=/home/vscode/.claude/plugins/cache
+MARKER=.agentbox-installed
+if [ ! -d "$PLUGINS_DIR" ]; then exit 0; fi
+for dir in "$PLUGINS_DIR"/*/*/*/; do
+  [ -d "$dir" ] || continue
+  [ -f "$dir/package.json" ] || continue
+  [ -f "$dir/$MARKER" ] && continue
+  rel="\${dir#$PLUGINS_DIR/}"
+  echo "REBUILD_START $rel"
+  if (cd "$dir" && \\
+      if [ -f package-lock.json ]; then \\
+        npm ci --no-audit --no-fund --silent; \\
+      else \\
+        npm install --no-audit --no-fund --silent --no-package-lock; \\
+      fi) 2>/tmp/agentbox-npm.err; then
+    touch "$dir/$MARKER"
+    echo "REBUILD_OK $rel"
+  else
+    echo "REBUILD_FAIL $rel"
+    sed 's/^/  /' /tmp/agentbox-npm.err
+    echo "REBUILD_FAIL_END"
+  fi
+done
+`;
+  const result = await execa(
+    'docker',
+    ['exec', '--user', CONTAINER_USER, container, 'sh', '-c', script],
+    { reject: false },
+  );
+  const rebuilt: string[] = [];
+  const failed: Array<{ dir: string; stderr: string }> = [];
+  const lines = (result.stdout ?? '').split('\n');
+  let collectingFail: { dir: string; stderr: string[] } | null = null;
+  for (const line of lines) {
+    if (collectingFail) {
+      if (line === 'REBUILD_FAIL_END') {
+        failed.push({ dir: collectingFail.dir, stderr: collectingFail.stderr.join('\n') });
+        collectingFail = null;
+      } else {
+        collectingFail.stderr.push(line);
+      }
+      continue;
+    }
+    if (line.startsWith('REBUILD_START ')) {
+      opts.onProgress?.(`rebuilding ${line.slice('REBUILD_START '.length)}`);
+    } else if (line.startsWith('REBUILD_OK ')) {
+      rebuilt.push(line.slice('REBUILD_OK '.length));
+    } else if (line.startsWith('REBUILD_FAIL ')) {
+      collectingFail = { dir: line.slice('REBUILD_FAIL '.length), stderr: [] };
+    }
+  }
+  return { rebuilt, failed };
 }
 
 export class ClaudeSessionError extends Error {
