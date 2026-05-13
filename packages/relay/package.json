@@ -1,7 +1,7 @@
 {
-  "name": "@agentbox/sandbox-docker",
+  "name": "@agentbox/relay",
   "version": "0.0.0",
-  "description": "Local Docker sandbox provider for AgentBox",
+  "description": "Host-side HTTP relay receiving events and RPCs from agentbox boxes",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -10,12 +10,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./bin": "./dist/bin.cjs"
+  },
+  "bin": {
+    "agentbox-relay": "./dist/bin.cjs"
   },
   "files": [
-    "dist",
-    "Dockerfile.box",
-    "Dockerfile.relay"
+    "dist"
   ],
   "scripts": {
     "build": "tsup",
@@ -26,10 +28,7 @@
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
-    "@agentbox/core": "workspace:*",
-    "@agentbox/ctl": "workspace:*",
-    "@agentbox/relay": "workspace:*",
-    "execa": "^9.5.2"
+    "commander": "^12.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.1",

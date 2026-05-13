@@ -22,6 +22,20 @@ export {
 export { createBox, type CreateBoxOptions, type CreatedBox } from './create.js';
 export { execInBox, type DockerExecResult } from './docker.js';
 export { DEFAULT_BOX_IMAGE } from './image.js';
+export {
+  DEFAULT_RELAY_PORT,
+  ensureRelay,
+  forgetBoxFromRelay,
+  generateRelayToken,
+  registerBoxWithRelay,
+  rehydrateRelayRegistry,
+  RELAY_CONTAINER_NAME,
+  RELAY_IMAGE_REF,
+  RELAY_NETWORK_NAME,
+  type EnsureRelayOptions,
+  type RegisterBoxArgs,
+  type RelayEndpoint,
+} from './relay.js';
 export { EXCLUDE_DIRS, SNAPSHOTS_ROOT, snapshotPathFor } from './snapshot.js';
 export {
   STATE_DIR,

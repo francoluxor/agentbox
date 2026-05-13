@@ -41,6 +41,13 @@ export interface BoxRecord {
    * field existed — lifecycle code falls back to deriving from `id`.
    */
   cursorServerVolume?: string;
+  /**
+   * Bearer token the in-box supervisor uses to authenticate with the host
+   * relay. Generated at create time and forwarded as AGENTBOX_RELAY_TOKEN.
+   * Absent for boxes created before the relay existed — those boxes simply
+   * skip outbound push.
+   */
+  relayToken?: string;
   createdAt: string; // ISO-8601
 }
 

@@ -10,6 +10,7 @@ import {
   type TaskSpec,
 } from './config.js';
 import { startProbe, type ProbeHandle } from './probe.js';
+import { RelayClient } from './relay-client.js';
 import type {
   LogEvent,
   ServiceState,
@@ -496,6 +497,24 @@ interface SupervisorEvents {
   change: [];
 }
 
+// State transitions the supervisor forwards to the host relay. We keep this
+// narrow on purpose — every transition is a host-facing event, so spammy
+// intermediate states like 'starting' would just be noise.
+const PUSHED_SERVICE_STATES: ReadonlySet<ServiceState> = new Set<ServiceState>([
+  'ready',
+  'running',
+  'crashed',
+  'backoff',
+  'unhealthy',
+  'stopped',
+]);
+
+const PUSHED_TASK_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
+  'done',
+  'failed',
+  'skipped',
+]);
+
 export class Supervisor extends EventEmitter<SupervisorEvents> {
   private units = new Map<string, Unit>();
   private deps = new Map<string, string[]>();
@@ -503,9 +522,11 @@ export class Supervisor extends EventEmitter<SupervisorEvents> {
   private failed = new Set<string>();
   private scheduling = false;
   private rescheduleDirty = false;
+  private readonly relay: RelayClient;
 
   constructor(private readonly opts: SupervisorOptions) {
     super();
+    this.relay = new RelayClient();
   }
 
   async init(cfg: CtlConfig): Promise<void> {
@@ -739,6 +760,9 @@ export class Supervisor extends EventEmitter<SupervisorEvents> {
       this.failed.delete(name);
       this.schedule();
     }
+    if (this.relay.enabled && PUSHED_TASK_STATES.has(state)) {
+      this.relay.post('task-state', { task: name, state });
+    }
     this.emitChange();
   }
 
@@ -756,6 +780,9 @@ export class Supervisor extends EventEmitter<SupervisorEvents> {
     } else if (state === 'crashed' && !this.satisfied.has(name)) {
       this.failed.add(name);
       this.schedule();
+    }
+    if (this.relay.enabled && PUSHED_SERVICE_STATES.has(state)) {
+      this.relay.post('service-state', { service: name, state });
     }
     this.emitChange();
   }

@@ -50,13 +50,29 @@ export async function buildImage(opts: BuildImageOptions = {}): Promise<string> 
   return ref;
 }
 
+export interface EnsureImageOptions {
+  onProgress?: (line: string) => void;
+  /** Dockerfile path. Defaults to `Dockerfile.box` next to this package. */
+  dockerfile?: string;
+  /** Build context directory. Defaults to the monorepo root. */
+  contextDir?: string;
+}
+
 export async function ensureImage(
   ref: string = DEFAULT_BOX_IMAGE,
-  opts: { onProgress?: (line: string) => void } = {},
+  opts: EnsureImageOptions = {},
 ): Promise<{ ref: string; built: boolean }> {
   if (await imageExists(ref)) {
     return { ref, built: false };
   }
-  await buildImage({ ref, onProgress: opts.onProgress });
+  await buildImage({
+    ref,
+    dockerfile: opts.dockerfile,
+    contextDir: opts.contextDir,
+    onProgress: opts.onProgress,
+  });
   return { ref, built: true };
 }
+
+/** Path to the relay Dockerfile (sits next to Dockerfile.box at the package root). */
+export const RELAY_DOCKERFILE_PATH = resolve(PACKAGE_ROOT, 'Dockerfile.relay');

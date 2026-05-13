@@ -33,6 +33,12 @@ import {
 } from './docker.js';
 import { mountOverlay, verifyOverlay, type OverlayCheck } from './overlay.js';
 import { launchCtlDaemon } from './ctl.js';
+import {
+  ensureRelay,
+  forgetBoxFromRelay,
+  registerBoxWithRelay,
+  RELAY_CONTAINER_NAME,
+} from './relay.js';
 import { SNAPSHOTS_ROOT } from './snapshot.js';
 import {
   findBox,
@@ -120,6 +126,17 @@ export async function startBox(idOrName: string): Promise<StartedBox> {
     // create.ts — a missing config or other startup issue shouldn't block
     // resumption of the box itself.
     await launchCtlDaemon(box.container, box.socketPath);
+  }
+  // Relay's in-memory registry may have been lost if the relay restarted
+  // between create and now (or this is the first start after a host reboot).
+  // Re-ensure + re-register so outbound push from the box keeps working.
+  if (box.relayToken) {
+    try {
+      await ensureRelay();
+      await registerBoxWithRelay({ boxId: box.id, token: box.relayToken, name: box.name });
+    } catch {
+      // best-effort
+    }
   }
   return { record: box, overlayChecks };
 }
@@ -226,6 +243,13 @@ export async function destroyBox(
 
   // Each step is best-effort. We collect what actually went away so the CLI
   // can show a truthful summary even if e.g. the container was gone already.
+  if (box.relayToken) {
+    try {
+      await forgetBoxFromRelay(box.id);
+    } catch {
+      // best-effort — relay may be down or already wiped the entry
+    }
+  }
   const beforeContainer = await inspectContainerStatus(box.container);
   await removeContainer(box.container);
   const afterContainer = await inspectContainerStatus(box.container);
@@ -337,7 +361,13 @@ export async function pruneBoxes(opts: PruneOptions = {}): Promise<PruneResult> 
     const liveBoxDirs = await listBoxDirs();
     // The state we'd have AFTER step 1 runs: missing-state records gone.
     const survivingBoxes = boxes.filter((b) => !missingRecords.some((m) => m.id === b.id));
-    const expectedContainers = new Set(survivingBoxes.map((b) => b.container));
+    const expectedContainers = new Set<string>([
+      ...survivingBoxes.map((b) => b.container),
+      // Shared host relay container. Singleton like the SHARED_* volumes
+      // below: even if every box is gone, the user gets the same relay back
+      // the next time they `agentbox create`, so don't auto-reap.
+      RELAY_CONTAINER_NAME,
+    ]);
     const expectedVolumes = new Set<string>([
       ...survivingBoxes.flatMap((b) => [b.upperVolume, b.nodeModulesVolume]),
       ...survivingBoxes

@@ -8,9 +8,16 @@ import { containerExists, dockerInfo, ensureVolume, runBox } from './docker.js';
 import { CONTAINER_EXPORT_MERGED, CONTAINER_EXPORT_UPPER, boxRunDirFor } from './host-export.js';
 import { DEFAULT_BOX_IMAGE, ensureImage } from './image.js';
 import { mountOverlay, verifyOverlay, type OverlayCheck } from './overlay.js';
-import { recordBox, type BoxRecord } from './state.js';
+import { readState, recordBox, type BoxRecord } from './state.js';
 import { createSnapshot, snapshotPathFor } from './snapshot.js';
 import { launchCtlDaemon } from './ctl.js';
+import {
+  ensureRelay,
+  generateRelayToken,
+  registerBoxWithRelay,
+  rehydrateRelayRegistry,
+  RELAY_NETWORK_NAME,
+} from './relay.js';
 import {
   buildIdeMounts,
   cursorServerVolumeName,
@@ -123,6 +130,21 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
   });
   log(built ? `built image ${imageRef}` : `using cached image ${imageRef}`);
 
+  // Bring up the host relay before the box so the box can post events
+  // immediately on boot. Best-effort — a relay outage shouldn't block create.
+  // Always re-push known box tokens after ensure: the relay's registry is
+  // in-memory, so a daemon restart or `docker restart agentbox-relay` between
+  // CLI invocations leaves it empty. Repushing is idempotent and cheap.
+  let relayUp = false;
+  try {
+    await ensureRelay({ onLog: log });
+    const existing = await readState();
+    await rehydrateRelayRegistry(existing.boxes);
+    relayUp = true;
+  } catch (err) {
+    log(`relay unavailable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   const id = generateBoxId();
   const name = opts.name ?? defaultBoxName(workspace, id);
   const containerName = `agentbox-${name}`;
@@ -205,6 +227,26 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
   extraVolumes.push(`${upperExportDir}:${CONTAINER_EXPORT_UPPER}`);
   for (const v of extraVolumes) log(`mounting agent dir: ${v}`);
 
+  // Per-box bearer token for the host relay. Register *before* runBox so the
+  // box's supervisor can post on boot. Skip if the relay isn't reachable —
+  // the box still works, it just won't deliver events to the host.
+  const relayToken = generateRelayToken();
+  if (relayUp) {
+    try {
+      await registerBoxWithRelay({ boxId: id, token: relayToken, name });
+      log(`registered box token with relay`);
+    } catch (err) {
+      log(`relay register failed: ${err instanceof Error ? err.message : String(err)}`);
+      relayUp = false;
+    }
+  }
+  const relayEnv: Record<string, string> = relayUp
+    ? {
+        AGENTBOX_RELAY_URL: `http://agentbox-relay:8787`,
+        AGENTBOX_RELAY_TOKEN: relayToken,
+      }
+    : {};
+
   await runBox({
     name: containerName,
     image: imageRef,
@@ -212,9 +254,11 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     upperVolume,
     nodeModulesVolume,
     extraVolumes,
+    network: relayUp ? RELAY_NETWORK_NAME : undefined,
     env: {
       AGENTBOX_BOX_ID: id,
       ...claudeMounts.env,
+      ...relayEnv,
       ...(opts.claudeEnv ?? {}),
     },
   });
@@ -257,6 +301,7 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     claudeConfigVolume: claudeSpec.volume,
     vscodeServerVolume: vscodeServerVolumeName(id),
     cursorServerVolume: cursorServerVolumeName(id),
+    relayToken: relayUp ? relayToken : undefined,
     createdAt: new Date().toISOString(),
   };
   await recordBox(record);
