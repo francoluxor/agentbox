@@ -9,6 +9,20 @@ export interface BoxRegistration {
   token: string;
   name: string;
   registeredAt: string;
+  /**
+   * Container-path → host-worktree-dir mapping the host uses to resolve
+   * git.pull/git.push RPCs. Empty when the box has no git repos.
+   */
+  worktrees?: BoxWorktree[];
+}
+
+export interface BoxWorktree {
+  /** Path inside the container (e.g. /workspace, /workspace/app). */
+  containerPath: string;
+  /** Host path to the worktree directory. */
+  hostWorktreeDir: string;
+  /** Branch the worktree was created on. */
+  branch: string;
 }
 
 export interface RelayEvent {
@@ -41,4 +55,20 @@ export interface RegisterBoxBody {
   boxId: string;
   token: string;
   name: string;
+  worktrees?: BoxWorktree[];
+}
+
+export interface GitRpcParams {
+  /** Container path identifying which worktree to run against. Defaults to /workspace. */
+  path?: string;
+  /** Remote name; defaults to 'origin'. */
+  remote?: string;
+  /** Extra argv tail appended after the standard args (e.g. ['--set-upstream', 'origin', 'branch']). */
+  args?: string[];
+}
+
+export interface GitRpcResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
 }

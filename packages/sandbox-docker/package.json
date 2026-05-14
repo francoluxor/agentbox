@@ -14,8 +14,7 @@
   },
   "files": [
     "dist",
-    "Dockerfile.box",
-    "Dockerfile.relay"
+    "Dockerfile.box"
   ],
   "scripts": {
     "build": "tsup",

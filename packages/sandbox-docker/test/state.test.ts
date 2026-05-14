@@ -70,6 +70,42 @@ describe('state.ts', () => {
     await expect(readState(file)).rejects.toThrow(/unrecognized state file shape/);
   });
 
+  it('round-trips gitWorktrees', async () => {
+    const box: BoxRecord = {
+      id: 'wt000001',
+      name: 'wt-demo',
+      container: 'agentbox-wt-demo',
+      image: 'agentbox/box:dev',
+      workspacePath: '/tmp/repo',
+      lowerPath: '/tmp/repo/.worktree',
+      upperVolume: 'agentbox-upper-wt000001',
+      nodeModulesVolume: 'agentbox-nm-wt000001',
+      snapshotDir: null,
+      gitWorktrees: [
+        {
+          kind: 'root',
+          hostMainRepo: '/tmp/repo',
+          hostWorktreeDir: '/tmp/box/worktrees/root',
+          containerPath: '/workspace',
+          branch: 'agentbox/wt-demo',
+          relPathFromWorkspace: '',
+        },
+        {
+          kind: 'nested',
+          hostMainRepo: '/tmp/repo/app',
+          hostWorktreeDir: '/tmp/box/worktrees/app',
+          containerPath: '/workspace/app',
+          branch: 'agentbox/wt-demo--app',
+          relPathFromWorkspace: 'app',
+        },
+      ],
+      createdAt: '2026-05-14T12:00:00.000Z',
+    };
+    await recordBox(box, file);
+    const reloaded = await readState(file);
+    expect(reloaded.boxes).toEqual([box]);
+  });
+
   it('removeBoxRecord removes by id and reports whether anything matched', async () => {
     const a: BoxRecord = {
       id: 'aaaaaaaa',

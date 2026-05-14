@@ -48,7 +48,29 @@ export interface BoxRecord {
    * skip outbound push.
    */
   relayToken?: string;
+  /**
+   * Git worktrees mounted into the box. Empty/absent when the host workspace
+   * is not a git checkout. The root entry (kind: 'root') replaces the box's
+   * overlay lower; nested entries (kind: 'nested', from monorepo 1st-level
+   * `.git` dirs) are bind-mounted at /workspace/<relPathFromWorkspace> after
+   * the FUSE overlay is mounted.
+   */
+  gitWorktrees?: GitWorktreeRecord[];
   createdAt: string; // ISO-8601
+}
+
+export interface GitWorktreeRecord {
+  kind: 'root' | 'nested';
+  /** Host path to the main repo whose `.git/` is bind-mounted RW at the identical path inside the container. */
+  hostMainRepo: string;
+  /** Host path to the per-box worktree directory (under ~/.agentbox/boxes/<id>/worktrees/). */
+  hostWorktreeDir: string;
+  /** Container path that resolves to the worktree's working tree. /workspace for root, /workspace/<subpath> for nested. */
+  containerPath: string;
+  /** Branch the worktree was created on, e.g. `agentbox/<box-name>`. */
+  branch: string;
+  /** Workspace-relative path the repo was found at (empty string for root). */
+  relPathFromWorkspace: string;
 }
 
 export interface StateFile {

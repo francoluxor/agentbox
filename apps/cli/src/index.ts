@@ -10,6 +10,7 @@ import { openCommand } from './commands/open.js';
 import { pathCommand } from './commands/path.js';
 import { pauseCommand } from './commands/pause.js';
 import { pruneCommand } from './commands/prune.js';
+import { shellCommand } from './commands/shell.js';
 import { startCommand } from './commands/start.js';
 import { statusCommand } from './commands/status.js';
 import { stopCommand } from './commands/stop.js';
@@ -23,6 +24,7 @@ program.name('agentbox').description('Launch coding agents in isolated sandboxes
 program.addCommand(createCommand);
 program.addCommand(claudeCommand);
 program.addCommand(codeCommand);
+program.addCommand(shellCommand);
 program.addCommand(listCommand);
 program.addCommand(inspectCommand);
 program.addCommand(openCommand);

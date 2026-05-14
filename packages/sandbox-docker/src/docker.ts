@@ -25,8 +25,6 @@ export interface RunBoxSpec {
   nodeModulesVolume: string;
   extraVolumes?: string[];
   env?: Record<string, string>;
-  /** Optional user-defined docker network to attach the box to (--network <name>). */
-  network?: string;
 }
 
 export async function runBox(spec: RunBoxSpec): Promise<string> {
@@ -40,6 +38,11 @@ export async function runBox(spec: RunBoxSpec): Promise<string> {
     '--cap-add=SYS_ADMIN',
     '--device=/dev/fuse',
     '--security-opt=apparmor:unconfined',
+    // Make the host reachable from inside the container at the well-known DNS
+    // name host.docker.internal. Docker Desktop / OrbStack ship this alias by
+    // default; on Linux native Docker it requires this explicit flag (no-op
+    // on the macOS engines). Boxes use it to reach the host relay process.
+    '--add-host=host.docker.internal:host-gateway',
     '-v',
     `${spec.lowerPath}:/host-src:ro`,
     '-v',
@@ -47,9 +50,6 @@ export async function runBox(spec: RunBoxSpec): Promise<string> {
     '-v',
     `${spec.nodeModulesVolume}:/workspace/node_modules`,
   ];
-  if (spec.network) {
-    args.push('--network', spec.network);
-  }
   for (const v of spec.extraVolumes ?? []) {
     args.push('-v', v);
   }
@@ -58,44 +58,6 @@ export async function runBox(spec: RunBoxSpec): Promise<string> {
   }
   args.push(spec.image, 'sleep', 'infinity');
 
-  const { stdout } = await execa('docker', args);
-  return stdout.trim();
-}
-
-export interface RunRelaySpec {
-  name: string;
-  image: string;
-  network: string;
-  /** Optional host port to publish the relay on (127.0.0.1:<port>). Omit for network-internal only. */
-  publishPort?: number;
-  internalPort: number;
-  env?: Record<string, string>;
-}
-
-/**
- * Run the relay container. Restart-unless-stopped so it survives docker
- * daemon restarts but stays gone after explicit `docker stop`.
- */
-export async function runRelay(spec: RunRelaySpec): Promise<string> {
-  const args: string[] = [
-    'run',
-    '-d',
-    '--name',
-    spec.name,
-    '--hostname',
-    spec.name,
-    '--network',
-    spec.network,
-    '--restart',
-    'unless-stopped',
-  ];
-  if (spec.publishPort !== undefined) {
-    args.push('-p', `127.0.0.1:${String(spec.publishPort)}:${String(spec.internalPort)}`);
-  }
-  for (const [k, val] of Object.entries(spec.env ?? {})) {
-    args.push('-e', `${k}=${val}`);
-  }
-  args.push(spec.image);
   const { stdout } = await execa('docker', args);
   return stdout.trim();
 }

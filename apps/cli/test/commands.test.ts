@@ -6,6 +6,7 @@ import { inspectCommand } from '../src/commands/inspect.js';
 import { listCommand } from '../src/commands/list.js';
 import { pauseCommand } from '../src/commands/pause.js';
 import { pruneCommand } from '../src/commands/prune.js';
+import { shellCommand } from '../src/commands/shell.js';
 import { startCommand } from '../src/commands/start.js';
 import { stopCommand } from '../src/commands/stop.js';
 import { unpauseCommand } from '../src/commands/unpause.js';
@@ -67,5 +68,15 @@ describe('lifecycle CLI surface', () => {
     const attach = claudeCommand.commands.find((c) => c.name() === 'attach');
     expect(attach).toBeDefined();
     expect(attach!.options.map((o) => o.long)).toContain('--session-name');
+  });
+
+  it('shell takes <box> + variadic [cmd...] and exposes --user / --no-login', () => {
+    expect(shellCommand.name()).toBe('shell');
+    const longs = shellCommand.options.map((o) => o.long);
+    expect(longs).toEqual(expect.arrayContaining(['--user', '--no-login']));
+    // Two positionals: required <box>, variadic [cmd...].
+    expect(shellCommand.registeredArguments).toHaveLength(2);
+    expect(shellCommand.registeredArguments[0]!.required).toBe(true);
+    expect(shellCommand.registeredArguments[1]!.variadic).toBe(true);
   });
 });

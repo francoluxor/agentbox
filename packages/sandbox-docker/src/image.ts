@@ -74,5 +74,3 @@ export async function ensureImage(
   return { ref, built: true };
 }
 
-/** Path to the relay Dockerfile (sits next to Dockerfile.box at the package root). */
-export const RELAY_DOCKERFILE_PATH = resolve(PACKAGE_ROOT, 'Dockerfile.relay');

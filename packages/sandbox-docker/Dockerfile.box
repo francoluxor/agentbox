@@ -64,6 +64,14 @@ RUN apt-get update \
     && chmod 755 /workspace /host-src /upper /snapshot \
     && chown vscode:vscode /run/agentbox /var/log/agentbox
 
+# Host repos are bind-mounted in at their identical absolute path (worktree
+# pointer files contain absolute paths to <main>/.git/worktrees/<name>, so both
+# sides have to resolve the same path), and the host owns those `.git/` dirs.
+# git's recent "dubious ownership" guard would refuse to operate without an
+# explicit allowlist. /etc/gitconfig is system-wide and unaffected by the RO
+# bind-mount of ~/.gitconfig from the host.
+RUN git config --system --add safe.directory '*'
+
 # agentbox-ctl: the in-container supervisor + CLI. Build context is the
 # monorepo root, so packages/ctl/dist is the prebuilt bundle from
 # `pnpm --filter @agentbox/ctl build`. The CLI is bundled with all deps

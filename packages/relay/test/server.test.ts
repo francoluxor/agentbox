@@ -119,17 +119,27 @@ describe('relay server', () => {
     expect(post.status).toBe(401);
   });
 
-  it('/rpc returns 501 with the method echoed back', async () => {
+  it('/rpc returns 501 for unknown methods', async () => {
     await register(handle, 'b', 't', 'name');
     const r = await fetchJson(handle, 'POST', '/rpc', {
       token: 't',
-      body: { method: 'git.push', params: { remote: 'origin' } },
+      body: { method: 'something.unhandled' },
     });
     expect(r.status).toBe(501);
-    expect(r.body).toMatchObject({ method: 'git.push' });
-    // Attempt is logged to the ring buffer so we can confirm the channel.
-    const all = handle.events.all();
-    expect(all.some((e) => e.type === 'rpc-attempt')).toBe(true);
+    expect(r.body).toMatchObject({ method: 'something.unhandled' });
+  });
+
+  it('/rpc git.push returns a structured error when no worktree is registered', async () => {
+    await register(handle, 'b', 't', 'name');
+    const r = await fetchJson(handle, 'POST', '/rpc', {
+      token: 't',
+      body: { method: 'git.push', params: { path: '/workspace' } },
+    });
+    // exitCode != 0 → 500 plus a {exitCode, stdout, stderr} envelope.
+    expect(r.status).toBe(500);
+    const body = r.body as { exitCode: number; stdout: string; stderr: string };
+    expect(body.exitCode).toBe(64);
+    expect(body.stderr).toMatch(/no worktree registered/);
   });
 
   it('/admin/registry returns boxes with tokens redacted', async () => {

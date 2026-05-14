@@ -5,10 +5,16 @@ import { basename, join, resolve } from 'node:path';
 import { ConfigError, loadConfig } from '@agentbox/ctl';
 import { buildClaudeMounts, ensureClaudeVolume, resolveClaudeVolume } from './claude.js';
 import { containerExists, dockerInfo, ensureVolume, runBox } from './docker.js';
+import { createBoxWorktree, detectGitRepos } from './git-worktree.js';
 import { CONTAINER_EXPORT_MERGED, CONTAINER_EXPORT_UPPER, boxRunDirFor } from './host-export.js';
 import { DEFAULT_BOX_IMAGE, ensureImage } from './image.js';
-import { mountOverlay, verifyOverlay, type OverlayCheck } from './overlay.js';
-import { readState, recordBox, type BoxRecord } from './state.js';
+import {
+  mountOverlay,
+  verifyOverlay,
+  type NestedWorktreeBind,
+  type OverlayCheck,
+} from './overlay.js';
+import { readState, recordBox, type BoxRecord, type GitWorktreeRecord } from './state.js';
 import { createSnapshot, snapshotPathFor } from './snapshot.js';
 import { launchCtlDaemon } from './ctl.js';
 import {
@@ -16,7 +22,6 @@ import {
   generateRelayToken,
   registerBoxWithRelay,
   rehydrateRelayRegistry,
-  RELAY_NETWORK_NAME,
 } from './relay.js';
 import {
   buildIdeMounts,
@@ -152,12 +157,66 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     throw new Error(`container ${containerName} already exists; remove it first`);
   }
 
+  // Detect host git repos at workspace root + 1st-level subdirs and create a
+  // dedicated worktree per repo on a fresh `agentbox/<box-name>` branch. The
+  // host's working tree stays untouched; uncommitted (tracked + untracked)
+  // state is carried into the worktree so the agent picks up where the user
+  // left off. The root worktree (if any) replaces the box's overlay lower so
+  // /workspace is the agent's editable working tree; nested worktrees are
+  // staged on a side path and bind-mounted on top of /workspace/<subpath>
+  // after the FUSE overlay is up (see mountOverlay).
+  const worktreesRoot = join(boxRunDirFor(id), 'worktrees');
+  await mkdir(worktreesRoot, { recursive: true });
+  const gitWorktreeRecords: GitWorktreeRecord[] = [];
+  const nestedWorktreeBinds: NestedWorktreeBind[] = [];
+  const repos = await detectGitRepos(workspace);
+  if (repos.length > 0) {
+    log(
+      `detected ${String(repos.length)} git repo(s): ` +
+        repos.map((r) => `${r.kind}${r.relPathFromWorkspace ? '@' + r.relPathFromWorkspace : ''}`).join(', '),
+    );
+  }
+  for (const r of repos) {
+    const worktreeDir = join(worktreesRoot, r.relPathFromWorkspace || 'root');
+    const branchBase =
+      r.kind === 'root'
+        ? `agentbox/${name}`
+        : `agentbox/${name}--${r.relPathFromWorkspace.replace(/[^A-Za-z0-9._-]+/g, '_')}`;
+    const result = await createBoxWorktree({
+      hostMainRepo: r.hostMainRepo,
+      branchName: branchBase,
+      worktreeDir,
+      onLog: log,
+    });
+    const containerPath = r.kind === 'root' ? '/workspace' : `/workspace/${r.relPathFromWorkspace}`;
+    gitWorktreeRecords.push({
+      kind: r.kind,
+      hostMainRepo: r.hostMainRepo,
+      hostWorktreeDir: worktreeDir,
+      containerPath,
+      branch: result.branchName,
+      relPathFromWorkspace: r.relPathFromWorkspace,
+    });
+    if (r.kind === 'nested') {
+      nestedWorktreeBinds.push({
+        containerPath,
+        mountFromPath: `/agentbox-worktrees/${r.relPathFromWorkspace}`,
+      });
+    }
+  }
+
   let lowerPath = workspace;
+  const rootWorktree = gitWorktreeRecords.find((w) => w.kind === 'root');
+  if (rootWorktree) {
+    lowerPath = rootWorktree.hostWorktreeDir;
+    log(`using worktree as overlay lower: ${lowerPath}`);
+  }
+
   let snapshotDir: string | null = null;
   if (opts.useSnapshot) {
     snapshotDir = snapshotPathFor(id);
     log(`cloning workspace to ${snapshotDir} (APFS clone where available)`);
-    const snap = await createSnapshot({ source: workspace, destination: snapshotDir });
+    const snap = await createSnapshot({ source: lowerPath, destination: snapshotDir });
     log(`pruned ${snap.prunedPaths.length} platform-dependent dirs from snapshot`);
     lowerPath = snapshotDir;
   }
@@ -225,6 +284,21 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
   extraVolumes.push(`${socketDir}:/run/agentbox`);
   extraVolumes.push(`${mergedExportDir}:${CONTAINER_EXPORT_MERGED}`);
   extraVolumes.push(`${upperExportDir}:${CONTAINER_EXPORT_UPPER}`);
+  // Bind-mount each main repo's `.git/` at its identical absolute host path,
+  // RW. Worktree pointer files (`<worktree>/.git`) and the back-reference at
+  // `<main>/.git/worktrees/<name>/gitdir` contain absolute paths; both must
+  // resolve to the same path on host and inside the container or git breaks
+  // on one side.
+  for (const w of gitWorktreeRecords) {
+    extraVolumes.push(`${w.hostMainRepo}/.git:${w.hostMainRepo}/.git`);
+  }
+  // Stage nested worktrees on a side path so mountOverlay() can bind-mount
+  // them on top of /workspace/<subpath> after the FUSE overlay is up.
+  for (const w of gitWorktreeRecords) {
+    if (w.kind === 'nested') {
+      extraVolumes.push(`${w.hostWorktreeDir}:/agentbox-worktrees/${w.relPathFromWorkspace}`);
+    }
+  }
   for (const v of extraVolumes) log(`mounting agent dir: ${v}`);
 
   // Per-box bearer token for the host relay. Register *before* runBox so the
@@ -233,7 +307,12 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
   const relayToken = generateRelayToken();
   if (relayUp) {
     try {
-      await registerBoxWithRelay({ boxId: id, token: relayToken, name });
+      await registerBoxWithRelay({
+        boxId: id,
+        token: relayToken,
+        name,
+        worktrees: gitWorktreeRecords,
+      });
       log(`registered box token with relay`);
     } catch (err) {
       log(`relay register failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -242,7 +321,9 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
   }
   const relayEnv: Record<string, string> = relayUp
     ? {
-        AGENTBOX_RELAY_URL: `http://agentbox-relay:8787`,
+        // host.docker.internal resolves to the host (where the relay node
+        // process is running). The matching `--add-host` is set in runBox.
+        AGENTBOX_RELAY_URL: `http://host.docker.internal:8787`,
         AGENTBOX_RELAY_TOKEN: relayToken,
       }
     : {};
@@ -254,7 +335,6 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     upperVolume,
     nodeModulesVolume,
     extraVolumes,
-    network: relayUp ? RELAY_NETWORK_NAME : undefined,
     env: {
       AGENTBOX_BOX_ID: id,
       ...claudeMounts.env,
@@ -265,8 +345,11 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
   log(`container ${containerName} started`);
 
   try {
-    await mountOverlay(containerName);
+    await mountOverlay(containerName, { nestedWorktrees: nestedWorktreeBinds });
     log('fuse-overlayfs mounted at /workspace');
+    if (nestedWorktreeBinds.length > 0) {
+      log(`bind-mounted ${String(nestedWorktreeBinds.length)} nested worktree(s) over /workspace`);
+    }
   } catch (err) {
     log(`overlay mount failed; leaving container ${containerName} running so you can inspect it`);
     throw err;
@@ -302,6 +385,7 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     vscodeServerVolume: vscodeServerVolumeName(id),
     cursorServerVolume: cursorServerVolumeName(id),
     relayToken: relayUp ? relayToken : undefined,
+    gitWorktrees: gitWorktreeRecords.length > 0 ? gitWorktreeRecords : undefined,
     createdAt: new Date().toISOString(),
   };
   await recordBox(record);

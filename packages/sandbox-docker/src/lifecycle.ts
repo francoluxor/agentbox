@@ -3,6 +3,7 @@ import { readdir, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { BoxState } from '@agentbox/core';
 import { claudeSessionInfo, SHARED_CLAUDE_VOLUME, type ClaudeSessionInfo } from './claude.js';
+import { removeBoxWorktree } from './git-worktree.js';
 import {
   cursorServerVolumeName,
   SHARED_CURSOR_EXTENSIONS_VOLUME,
@@ -26,18 +27,26 @@ import {
   listAgentboxVolumes,
   pauseContainer,
   removeContainer,
+  removeNetwork,
   removeVolume,
   startContainer,
   stopContainer,
   unpauseContainer,
 } from './docker.js';
-import { mountOverlay, verifyOverlay, type OverlayCheck } from './overlay.js';
+import {
+  mountOverlay,
+  verifyOverlay,
+  type NestedWorktreeBind,
+  type OverlayCheck,
+} from './overlay.js';
 import { launchCtlDaemon } from './ctl.js';
 import {
   ensureRelay,
   forgetBoxFromRelay,
   registerBoxWithRelay,
   RELAY_CONTAINER_NAME,
+  RELAY_IMAGE_REF,
+  RELAY_NETWORK_NAME,
 } from './relay.js';
 import { SNAPSHOTS_ROOT } from './snapshot.js';
 import {
@@ -80,6 +89,15 @@ export class AmbiguousBoxError extends Error {
   }
 }
 
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function resolveBox(idOrName: string): Promise<BoxRecord> {
   const state = await readState();
   const result: FindBoxResult = findBox(idOrName, state);
@@ -118,8 +136,29 @@ export interface StartedBox {
 
 export async function startBox(idOrName: string): Promise<StartedBox> {
   const box = await resolveBox(idOrName);
+  // Bind mounts are baked into the container at create time; if a worktree
+  // dir has been deleted out from under us we can't recover by restarting
+  // (Docker just fails the start with an opaque mount error). Surface a clear
+  // message up front so the user knows to recreate the box or restore the
+  // worktree.
+  for (const w of box.gitWorktrees ?? []) {
+    if (!(await pathExists(w.hostWorktreeDir))) {
+      throw new Error(`box worktree missing on host: ${w.hostWorktreeDir} (recreate the box)`);
+    }
+    if (!(await pathExists(join(w.hostMainRepo, '.git')))) {
+      throw new Error(
+        `main repo for box worktree missing: ${join(w.hostMainRepo, '.git')} (recreate the box)`,
+      );
+    }
+  }
   await startContainer(box.container);
-  await mountOverlay(box.container);
+  const nestedWorktrees: NestedWorktreeBind[] = (box.gitWorktrees ?? [])
+    .filter((w) => w.kind === 'nested')
+    .map((w) => ({
+      containerPath: w.containerPath,
+      mountFromPath: `/agentbox-worktrees/${w.relPathFromWorkspace}`,
+    }));
+  await mountOverlay(box.container, { nestedWorktrees });
   const overlayChecks = await verifyOverlay(box.container);
   if (box.socketPath) {
     // The daemon died with the container; relaunch it. Best-effort, same as
@@ -133,7 +172,12 @@ export async function startBox(idOrName: string): Promise<StartedBox> {
   if (box.relayToken) {
     try {
       await ensureRelay();
-      await registerBoxWithRelay({ boxId: box.id, token: box.relayToken, name: box.name });
+      await registerBoxWithRelay({
+        boxId: box.id,
+        token: box.relayToken,
+        name: box.name,
+        worktrees: box.gitWorktrees,
+      });
     } catch {
       // best-effort
     }
@@ -250,6 +294,18 @@ export async function destroyBox(
       // best-effort — relay may be down or already wiped the entry
     }
   }
+  // Remove the git worktrees on the host before nuking the container. The
+  // worktree dirs live under the per-box run dir (which is wiped further
+  // down), but we also need to deregister them from the main repo's
+  // .git/worktrees/ so subsequent `git worktree list` on the host doesn't
+  // see stale entries.
+  for (const w of box.gitWorktrees ?? []) {
+    try {
+      await removeBoxWorktree({ hostMainRepo: w.hostMainRepo, worktreeDir: w.hostWorktreeDir });
+    } catch {
+      // best-effort
+    }
+  }
   const beforeContainer = await inspectContainerStatus(box.container);
   await removeContainer(box.container);
   const afterContainer = await inspectContainerStatus(box.container);
@@ -363,10 +419,9 @@ export async function pruneBoxes(opts: PruneOptions = {}): Promise<PruneResult> 
     const survivingBoxes = boxes.filter((b) => !missingRecords.some((m) => m.id === b.id));
     const expectedContainers = new Set<string>([
       ...survivingBoxes.map((b) => b.container),
-      // Shared host relay container. Singleton like the SHARED_* volumes
-      // below: even if every box is gone, the user gets the same relay back
-      // the next time they `agentbox create`, so don't auto-reap.
-      RELAY_CONTAINER_NAME,
+      // The relay no longer runs as a container (it's a host node process
+      // now). Any agentbox-relay container is a leftover from a previous
+      // version of agentbox; it will be collected as an orphan below.
     ]);
     const expectedVolumes = new Set<string>([
       ...survivingBoxes.flatMap((b) => [b.upperVolume, b.nodeModulesVolume]),
@@ -422,6 +477,29 @@ export async function pruneBoxes(opts: PruneOptions = {}): Promise<PruneResult> 
   for (const d of orphanBoxDirs) {
     try {
       await rm(d, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  }
+
+  // Migration sweep: the relay used to be a docker container on a dedicated
+  // network with its own image. None of those exist after this version of
+  // agentbox; drop any leftovers from previous installs. Idempotent and
+  // best-effort — these calls succeed silently if the objects are already
+  // gone.
+  if (all) {
+    try {
+      await removeContainer(RELAY_CONTAINER_NAME);
+    } catch {
+      // best-effort
+    }
+    try {
+      await execa('docker', ['image', 'rm', RELAY_IMAGE_REF], { reject: false });
+    } catch {
+      // best-effort
+    }
+    try {
+      await removeNetwork(RELAY_NETWORK_NAME);
     } catch {
       // best-effort
     }

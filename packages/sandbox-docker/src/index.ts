@@ -21,6 +21,17 @@ export {
 } from './claude.js';
 export { createBox, type CreateBoxOptions, type CreatedBox } from './create.js';
 export { execInBox, type DockerExecResult } from './docker.js';
+export {
+  createBoxWorktree,
+  detectGitRepos,
+  GitWorktreeError,
+  pickFreshBranch,
+  removeBoxWorktree,
+  type CreateBoxWorktreeArgs,
+  type CreateBoxWorktreeResult,
+  type DetectedGitRepo,
+  type RemoveBoxWorktreeArgs,
+} from './git-worktree.js';
 export { DEFAULT_BOX_IMAGE } from './image.js';
 export {
   DEFAULT_RELAY_PORT,
@@ -46,9 +57,16 @@ export {
   removeBoxRecord,
   type BoxRecord,
   type FindBoxResult,
+  type GitWorktreeRecord,
   type StateFile,
 } from './state.js';
-export { OverlayError, type OverlayCheck } from './overlay.js';
+export {
+  OverlayError,
+  type MountOverlayOptions,
+  type MountOverlayResult,
+  type NestedWorktreeBind,
+  type OverlayCheck,
+} from './overlay.js';
 export {
   attachedContainerUri,
   buildFlavorMounts,

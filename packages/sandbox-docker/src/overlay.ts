@@ -4,6 +4,23 @@ export interface MountOverlayResult {
   upperWritePath: string;
 }
 
+export interface NestedWorktreeBind {
+  /** Path inside the container the nested worktree should appear at (e.g. /workspace/app). */
+  containerPath: string;
+  /** Source path inside the container where the worktree was bind-mounted at run time (e.g. /agentbox-worktrees/app). */
+  mountFromPath: string;
+}
+
+export interface MountOverlayOptions {
+  /**
+   * Sub-paths under /workspace that should reflect a separate host worktree
+   * directly (writes go through to the host, bypassing the FUSE upper layer).
+   * Applied as `mount --bind` after fuse-overlayfs is up so the overlay
+   * doesn't hide them.
+   */
+  nestedWorktrees?: NestedWorktreeBind[];
+}
+
 // The `vscode` user provided by mcr.microsoft.com/devcontainers/base:ubuntu.
 // The overlay is mounted as root (FUSE requires it), so without squashing the
 // kernel sees overlay files with their original host UIDs (e.g. 501 on macOS)
@@ -17,9 +34,16 @@ const BOX_USER_GID = 1000;
  *
  *     /workspace = overlay(lower=/host-src, upper=/upper/upper, work=/upper/work)
  *
- * Runs as root inside the container so it can attach to /dev/fuse.
+ * Runs as root inside the container so it can attach to /dev/fuse. If
+ * `nestedWorktrees` is provided, each entry is layered on top of /workspace
+ * via `mount --bind` after the FUSE overlay is up — bind-after-overlay is the
+ * only ordering that survives, since fuse-overlayfs hides any pre-existing
+ * mounts under /workspace.
  */
-export async function mountOverlay(container: string): Promise<MountOverlayResult> {
+export async function mountOverlay(
+  container: string,
+  opts: MountOverlayOptions = {},
+): Promise<MountOverlayResult> {
   const mountOpts = [
     'lowerdir=/host-src',
     'upperdir=/upper/upper',
@@ -28,16 +52,28 @@ export async function mountOverlay(container: string): Promise<MountOverlayResul
     `squash_to_gid=${String(BOX_USER_GID)}`,
   ].join(',');
 
-  const script = [
+  const lines = [
     'set -euo pipefail',
     'mkdir -p /upper/upper /upper/work /workspace',
     // Idempotent — if a previous attempt left a stale overlay, unmount first.
     'mountpoint -q /workspace && fusermount3 -u /workspace || true',
     `fuse-overlayfs -o ${mountOpts} /workspace`,
     'mountpoint -q /workspace',
-  ].join('\n');
+  ];
 
-  const result = await execInBox(container, ['bash', '-lc', script], { user: 'root' });
+  for (const w of opts.nestedWorktrees ?? []) {
+    // The bind target lives inside the just-mounted FUSE overlay; make sure
+    // the directory exists (mkdir-on-overlay materializes it in /upper). Then
+    // unmount any previous bind (idempotent re-runs from startBox) and rebind.
+    lines.push(
+      `mkdir -p ${shellQuote(w.containerPath)}`,
+      `mountpoint -q ${shellQuote(w.containerPath)} && umount ${shellQuote(w.containerPath)} || true`,
+      `mount --bind ${shellQuote(w.mountFromPath)} ${shellQuote(w.containerPath)}`,
+      `mountpoint -q ${shellQuote(w.containerPath)}`,
+    );
+  }
+
+  const result = await execInBox(container, ['bash', '-lc', lines.join('\n')], { user: 'root' });
   if (result.exitCode !== 0) {
     throw new OverlayError(
       `failed to mount FUSE overlay in ${container}`,
@@ -46,6 +82,10 @@ export async function mountOverlay(container: string): Promise<MountOverlayResul
     );
   }
   return { upperWritePath: '/upper/upper' };
+}
+
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
 export interface OverlayCheck {

@@ -1,86 +1,178 @@
+import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { existsSync, openSync } from 'node:fs';
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
+import { homedir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 import {
   DEFAULT_RELAY_PORT,
   RELAY_CONTAINER_NAME,
   RELAY_IMAGE_REF,
   RELAY_NETWORK_NAME,
+  type BoxWorktree,
 } from '@agentbox/relay';
-import {
-  containerExists,
-  containerIsRunning,
-  ensureNetwork,
-  execInBox,
-  inspectContainerStatus,
-  removeContainer,
-  runRelay,
-  startContainer,
-} from './docker.js';
-import { ensureImage, RELAY_DOCKERFILE_PATH } from './image.js';
+import { containerExists, removeContainer } from './docker.js';
+import type { GitWorktreeRecord } from './state.js';
+
+const STATE_DIR = join(homedir(), '.agentbox');
+const PID_FILE = join(STATE_DIR, 'relay.pid');
+const LOG_FILE = join(STATE_DIR, 'relay.log');
 
 export interface RelayEndpoint {
-  /** In-network URL boxes use to reach the relay (resolved by docker DNS). */
+  /** URL boxes use to reach the relay from inside the container. */
   url: string;
-  containerName: string;
-  network: string;
+  /** URL host-side processes (the CLI itself) use. */
+  hostUrl: string;
+  port: number;
 }
+
+const PORT = DEFAULT_RELAY_PORT;
+const ENDPOINT: RelayEndpoint = {
+  // host.docker.internal is the Docker Desktop / OrbStack-supplied alias for
+  // the host's loopback as seen from inside a container. The corresponding
+  // `--add-host=host.docker.internal:host-gateway` flag in runBox makes the
+  // resolution work on Linux native Docker too.
+  url: `http://host.docker.internal:${String(PORT)}`,
+  hostUrl: `http://127.0.0.1:${String(PORT)}`,
+  port: PORT,
+};
 
 export interface EnsureRelayOptions {
   onLog?: (line: string) => void;
 }
 
-const ENDPOINT: RelayEndpoint = {
-  url: `http://${RELAY_CONTAINER_NAME}:${String(DEFAULT_RELAY_PORT)}`,
-  containerName: RELAY_CONTAINER_NAME,
-  network: RELAY_NETWORK_NAME,
-};
-
 /**
- * Idempotently bring up the host relay container on the agentbox-net network.
- * Builds the relay image if missing, creates the network if missing, starts
- * the container (or `docker start`s a stopped one). Best-effort: returns the
- * endpoint regardless of success — call sites treat failure as "relay not
- * reachable" rather than a fatal error.
+ * Idempotently bring up the host relay. Spawns the bundled `agentbox-relay`
+ * bin as a detached node process bound to 0.0.0.0:8787 (so boxes can reach
+ * it via host.docker.internal, and the CLI via 127.0.0.1). Best-effort:
+ * failures throw and the caller treats it as "relay not reachable".
+ *
+ * If a legacy relay container from a previous version of agentbox is still
+ * around, it's removed first so its bound DNS name doesn't shadow the new
+ * host process for any old boxes that happen to still be running.
  */
 export async function ensureRelay(opts: EnsureRelayOptions = {}): Promise<RelayEndpoint> {
   const log = opts.onLog ?? (() => {});
+  await mkdir(STATE_DIR, { recursive: true });
 
-  await ensureNetwork(RELAY_NETWORK_NAME);
-  const { built } = await ensureImage(RELAY_IMAGE_REF, {
-    dockerfile: RELAY_DOCKERFILE_PATH,
-    onProgress: (line) => log(`[relay-image] ${line}`),
-  });
-  if (built) log(`built image ${RELAY_IMAGE_REF}`);
+  // Migration: kill the old in-docker relay if it's around. The host process
+  // wants the same port; the container did NOT publish to host:8787, so there
+  // is no actual port collision. We still remove it to avoid confusion (it'd
+  // show up in `docker ps -a` forever otherwise).
+  if (await containerExists(RELAY_CONTAINER_NAME)) {
+    await removeContainer(RELAY_CONTAINER_NAME);
+    log(`removed legacy relay container ${RELAY_CONTAINER_NAME}`);
+  }
 
-  const status = await inspectContainerStatus(RELAY_CONTAINER_NAME);
-  if (status === 'running') {
+  if (await pingHealthz(500)) {
     return ENDPOINT;
   }
-  if (status === 'paused' || status === 'stopped') {
-    // 'stopped' covers Docker's exited/dead/created/restarting too — try start
-    // first, fall through to recreate if that fails.
-    try {
-      await startContainer(RELAY_CONTAINER_NAME);
-      log(`started existing relay container ${RELAY_CONTAINER_NAME}`);
-      return ENDPOINT;
-    } catch {
-      // If start fails (e.g. image changed underneath, or the container is in
-      // 'dead'), remove and recreate.
-      await removeContainer(RELAY_CONTAINER_NAME);
+
+  const existingPid = await readPidFile();
+  if (existingPid !== null && (await processAlive(existingPid))) {
+    // Pid exists but healthz isn't responding yet — give it a beat to finish
+    // startup. If it stays unresponsive, leave it alone (someone might be
+    // debugging it) and let downstream POSTs fail as best-effort.
+    for (let i = 0; i < 10; i++) {
+      if (await pingHealthz(300)) return ENDPOINT;
+      await delay(200);
     }
+    log(`relay pid ${String(existingPid)} alive but /healthz unresponsive — proceeding anyway`);
+    return ENDPOINT;
   }
-  if (await containerExists(RELAY_CONTAINER_NAME)) {
-    // Defensive: status said missing but a stale container still lingers.
-    await removeContainer(RELAY_CONTAINER_NAME);
+  if (existingPid !== null) {
+    await unlink(PID_FILE).catch(() => {});
   }
 
-  await runRelay({
-    name: RELAY_CONTAINER_NAME,
-    image: RELAY_IMAGE_REF,
-    network: RELAY_NETWORK_NAME,
-    internalPort: DEFAULT_RELAY_PORT,
+  const relayBin = resolveRelayBin();
+  const logFd = openSync(LOG_FILE, 'a');
+  const child = spawn(
+    process.execPath,
+    [relayBin, 'serve', '--port', String(PORT), '--host', '0.0.0.0'],
+    {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      env: { ...process.env },
+    },
+  );
+  child.unref();
+  if (typeof child.pid === 'number') {
+    await writeFile(PID_FILE, String(child.pid), 'utf8');
+    log(`spawned relay host process (pid ${String(child.pid)}, port ${String(PORT)})`);
+  }
+
+  for (let i = 0; i < 25; i++) {
+    if (await pingHealthz(300)) {
+      log(`relay reachable on ${ENDPOINT.hostUrl}`);
+      return ENDPOINT;
+    }
+    await delay(200);
+  }
+  throw new Error(
+    `relay did not become reachable on ${ENDPOINT.hostUrl} within 5s; see ${LOG_FILE}`,
+  );
+}
+
+/**
+ * Locate the bundled `agentbox-relay` bin. Works in two layouts:
+ *   1. workspace dev: `<repo>/packages/sandbox-docker/dist` ↔ `<repo>/packages/relay/dist/bin.cjs`
+ *   2. installed: `<...>/node_modules/@agentbox/sandbox-docker/dist` ↔ `<...>/node_modules/@agentbox/relay/dist/bin.cjs`
+ */
+function resolveRelayBin(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    resolve(here, '..', '..', 'relay', 'dist', 'bin.cjs'),
+    resolve(here, '..', '..', '..', '@agentbox', 'relay', 'dist', 'bin.cjs'),
+    resolve(here, '..', '..', 'node_modules', '@agentbox', 'relay', 'dist', 'bin.cjs'),
+  ];
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+  throw new Error(
+    `could not locate @agentbox/relay bin; tried:\n  ${candidates.join('\n  ')}`,
+  );
+}
+
+function pingHealthz(timeoutMs: number): Promise<boolean> {
+  return new Promise<boolean>((resolveP) => {
+    const req = httpRequest(
+      { host: '127.0.0.1', port: PORT, method: 'GET', path: '/healthz', timeout: timeoutMs },
+      (res) => {
+        res.resume();
+        const status = res.statusCode ?? 0;
+        resolveP(status >= 200 && status < 300);
+      },
+    );
+    req.on('error', () => resolveP(false));
+    req.on('timeout', () => {
+      req.destroy();
+      resolveP(false);
+    });
+    req.end();
   });
-  log(`launched relay container ${RELAY_CONTAINER_NAME} on ${RELAY_NETWORK_NAME}`);
-  return ENDPOINT;
+}
+
+async function readPidFile(): Promise<number | null> {
+  try {
+    const text = await readFile(PID_FILE, 'utf8');
+    const pid = Number.parseInt(text.trim(), 10);
+    return Number.isFinite(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+async function processAlive(pid: number): Promise<boolean> {
+  try {
+    // Signal 0 is the existence probe: throws if no such process.
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function generateRelayToken(): string {
@@ -91,42 +183,79 @@ export interface RegisterBoxArgs {
   boxId: string;
   token: string;
   name: string;
+  /**
+   * Subset of BoxRecord.gitWorktrees the relay needs to dispatch git RPCs.
+   * Empty/omitted for boxes without git repos.
+   */
+  worktrees?: GitWorktreeRecord[];
 }
 
-/**
- * Register a box's bearer token with the running relay. The relay's
- * /admin/register-box endpoint is network-internal, so we shell into the
- * relay container itself to POST to localhost — saves us publishing a host
- * port and adds zero network surface.
- */
 export async function registerBoxWithRelay(args: RegisterBoxArgs): Promise<void> {
-  if (!(await containerIsRunning(RELAY_CONTAINER_NAME))) return;
-  const result = await execInBox(RELAY_CONTAINER_NAME, [
-    'agentbox-relay',
-    'register',
-    '--id',
-    args.boxId,
-    '--token',
-    args.token,
-    '--name',
-    args.name,
-  ]);
-  if (result.exitCode !== 0) {
-    throw new Error(
-      `relay register failed (exit ${String(result.exitCode)}): ${result.stderr || result.stdout}`,
-    );
-  }
+  const worktrees: BoxWorktree[] = (args.worktrees ?? []).map((w) => ({
+    containerPath: w.containerPath,
+    hostWorktreeDir: w.hostWorktreeDir,
+    branch: w.branch,
+  }));
+  await adminPost('/admin/register-box', {
+    boxId: args.boxId,
+    token: args.token,
+    name: args.name,
+    worktrees,
+  });
 }
 
 export async function forgetBoxFromRelay(boxId: string): Promise<void> {
-  if (!(await containerIsRunning(RELAY_CONTAINER_NAME))) return;
-  await execInBox(RELAY_CONTAINER_NAME, ['agentbox-relay', 'forget', '--id', boxId]);
+  try {
+    await adminPost('/admin/forget-box', { boxId });
+  } catch {
+    // best-effort
+  }
+}
+
+async function adminPost(path: string, body: unknown): Promise<void> {
+  const json = JSON.stringify(body);
+  await new Promise<void>((resolveP, rejectP) => {
+    const req = httpRequest(
+      {
+        host: '127.0.0.1',
+        port: PORT,
+        method: 'POST',
+        path,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(json).toString(),
+        },
+        timeout: 3000,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => {
+          const status = res.statusCode ?? 0;
+          if (status >= 200 && status < 300) {
+            resolveP();
+          } else {
+            const text = Buffer.concat(chunks).toString('utf8');
+            rejectP(new Error(`relay ${path} → ${String(status)}: ${text}`));
+          }
+        });
+      },
+    );
+    req.on('error', rejectP);
+    req.on('timeout', () => {
+      req.destroy();
+      rejectP(new Error(`relay ${path} timeout`));
+    });
+    req.write(json);
+    req.end();
+  });
 }
 
 export interface BoxWithToken {
   id: string;
   name: string;
   relayToken?: string;
+  gitWorktrees?: GitWorktreeRecord[];
 }
 
 /**
@@ -138,7 +267,12 @@ export async function rehydrateRelayRegistry(boxes: BoxWithToken[]): Promise<voi
   for (const b of boxes) {
     if (!b.relayToken) continue;
     try {
-      await registerBoxWithRelay({ boxId: b.id, token: b.relayToken, name: b.name });
+      await registerBoxWithRelay({
+        boxId: b.id,
+        token: b.relayToken,
+        name: b.name,
+        worktrees: b.gitWorktrees,
+      });
     } catch {
       // best-effort
     }

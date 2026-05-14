@@ -7,6 +7,9 @@ export {
 } from './types.js';
 export type {
   BoxRegistration,
+  BoxWorktree,
+  GitRpcParams,
+  GitRpcResult,
   PostEventBody,
   PostRpcBody,
   RegisterBoxBody,
