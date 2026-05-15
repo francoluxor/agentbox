@@ -149,6 +149,203 @@ describe('getHostPaths', () => {
   });
 });
 
+describe('pullToHost', () => {
+  let dir: string;
+  const originalHome = process.env['HOME'];
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'agentbox-pull-test-'));
+    process.env['HOME'] = dir;
+    vi.resetModules();
+  });
+
+  afterEach(async () => {
+    vi.resetModules();
+    vi.doUnmock('execa');
+    process.env['HOME'] = originalHome;
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  interface Call {
+    cmd: string;
+    args: string[];
+  }
+
+  /**
+   * Mock execa dispatching on (cmd, args). `inGit` controls whether the box
+   * looks like a git work tree. Records every call for assertions.
+   */
+  function installExecaMock(opts: { inGit: boolean }): Call[] {
+    const calls: Call[] = [];
+    vi.doMock('execa', () => ({
+      execa: vi.fn(async (cmd: string, args: readonly string[]) => {
+        const a = [...args];
+        calls.push({ cmd, args: a });
+        if (cmd === 'docker' && a[0] === 'info') {
+          return { stdout: 'Docker Desktop', stderr: '', exitCode: 0 };
+        }
+        if (cmd === 'docker' && a[0] === 'exec') {
+          if (a.includes('rev-parse')) {
+            return opts.inGit
+              ? { stdout: 'true', stderr: '', exitCode: 0 }
+              : { stdout: '', stderr: 'not a git repository', exitCode: 128 };
+          }
+          if (a.includes('ls-files')) {
+            return { stdout: 'src/a.ts\0src/b.ts\0', stderr: '', exitCode: 0 };
+          }
+        }
+        if (cmd === 'rsync') {
+          const isDry = a.includes('--dry-run');
+          return {
+            stdout: isDry ? '>f+++++++++ src/a.ts\n.d..t...... src/\n' : '',
+            stderr: '',
+            exitCode: 0,
+          };
+        }
+        return { stdout: '', stderr: '', exitCode: 0 };
+      }),
+    }));
+    return calls;
+  }
+
+  it('gitignore mode: feeds git ls-files into rsync --files-from -/--from0', async () => {
+    const calls = installExecaMock({ inGit: true });
+    const { pullToHost, __setEngineForTesting } = await import('../src/host-export.js');
+    __setEngineForTesting(null);
+
+    const res = await pullToHost(
+      {
+        id: 'box1',
+        container: 'agentbox-box1',
+        upperVolume: 'agentbox-upper-box1',
+        workspacePath: join(dir, 'ws'),
+      },
+      { noRefresh: true },
+    );
+
+    expect(res.usedGitignore).toBe(true);
+    expect(res.applied).toBe(true);
+    expect(res.changes).toEqual(['>f+++++++++ src/a.ts']);
+
+    const lsFiles = calls.find((c) => c.cmd === 'docker' && c.args.includes('ls-files'));
+    expect(lsFiles?.args).toContain('-z');
+    const rsyncCalls = calls.filter((c) => c.cmd === 'rsync');
+    expect(rsyncCalls).toHaveLength(2); // dry-run + real write
+    for (const r of rsyncCalls) {
+      expect(r.args).toContain('--files-from=-');
+      expect(r.args).toContain('--from0');
+      expect(r.args).not.toContain('--exclude=node_modules');
+      expect(r.args).not.toContain('--delete');
+    }
+  });
+
+  it('fallback mode (non-git): uses static exclude-list, no git ls-files', async () => {
+    const calls = installExecaMock({ inGit: false });
+    const { pullToHost, __setEngineForTesting } = await import('../src/host-export.js');
+    __setEngineForTesting(null);
+
+    const res = await pullToHost(
+      {
+        id: 'box2',
+        container: 'agentbox-box2',
+        upperVolume: 'agentbox-upper-box2',
+        workspacePath: join(dir, 'ws'),
+      },
+      { noRefresh: true },
+    );
+
+    expect(res.usedGitignore).toBe(false);
+    expect(calls.some((c) => c.args.includes('ls-files'))).toBe(false);
+    const rsync = calls.find((c) => c.cmd === 'rsync');
+    expect(rsync?.args).toContain('--exclude=.git');
+    expect(rsync?.args).toContain('--exclude=node_modules');
+    expect(rsync?.args).not.toContain('--files-from=-');
+  });
+
+  it('respectGitignore:false forces fallback even in a git box', async () => {
+    const calls = installExecaMock({ inGit: true });
+    const { pullToHost, __setEngineForTesting } = await import('../src/host-export.js');
+    __setEngineForTesting(null);
+
+    const res = await pullToHost(
+      {
+        id: 'box3',
+        container: 'agentbox-box3',
+        upperVolume: 'agentbox-upper-box3',
+        workspacePath: join(dir, 'ws'),
+      },
+      { noRefresh: true, respectGitignore: false },
+    );
+
+    expect(res.usedGitignore).toBe(false);
+    expect(calls.some((c) => c.args.includes('rev-parse'))).toBe(false);
+  });
+
+  it('includeNodeModules keeps node_modules in fallback mode', async () => {
+    const calls = installExecaMock({ inGit: false });
+    const { pullToHost, __setEngineForTesting } = await import('../src/host-export.js');
+    __setEngineForTesting(null);
+
+    await pullToHost(
+      {
+        id: 'box4',
+        container: 'agentbox-box4',
+        upperVolume: 'agentbox-upper-box4',
+        workspacePath: join(dir, 'ws'),
+      },
+      { noRefresh: true, includeNodeModules: true },
+    );
+
+    const rsync = calls.find((c) => c.cmd === 'rsync');
+    expect(rsync?.args).toContain('--exclude=.git');
+    expect(rsync?.args).not.toContain('--exclude=node_modules');
+  });
+
+  it('dryRun does not invoke the real-write rsync', async () => {
+    const calls = installExecaMock({ inGit: true });
+    const { pullToHost, __setEngineForTesting } = await import('../src/host-export.js');
+    __setEngineForTesting(null);
+
+    const res = await pullToHost(
+      {
+        id: 'box5',
+        container: 'agentbox-box5',
+        upperVolume: 'agentbox-upper-box5',
+        workspacePath: join(dir, 'ws'),
+      },
+      { noRefresh: true, dryRun: true },
+    );
+
+    expect(res.applied).toBe(false);
+    const rsyncCalls = calls.filter((c) => c.cmd === 'rsync');
+    expect(rsyncCalls).toHaveLength(1);
+    expect(rsyncCalls[0]?.args).toContain('--dry-run');
+  });
+
+  it('noRefresh:true skips the box->scratch rsync (no docker exec rsync)', async () => {
+    const calls = installExecaMock({ inGit: true });
+    const { pullToHost, __setEngineForTesting } = await import('../src/host-export.js');
+    __setEngineForTesting(null);
+
+    await pullToHost(
+      {
+        id: 'box6',
+        container: 'agentbox-box6',
+        upperVolume: 'agentbox-upper-box6',
+        workspacePath: join(dir, 'ws'),
+      },
+      { noRefresh: true },
+    );
+
+    // refreshExport would `docker exec ... rsync ... /host-export`; assert no
+    // docker-exec call carries an rsync into the container bind.
+    const dockerExecRsync = calls.find(
+      (c) => c.cmd === 'docker' && c.args[0] === 'exec' && c.args.includes('rsync'),
+    );
+    expect(dockerExecRsync).toBeUndefined();
+  });
+});
+
 describe('BOXES_ROOT / boxRunDirFor', () => {
   const originalHome = process.env['HOME'];
 

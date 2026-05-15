@@ -104,6 +104,7 @@ export {
   ExportError,
   getHostPaths,
   openInFinder,
+  pullToHost,
   refreshExport,
   resolveUpperLiveOnHost,
   setEngineOverride,
@@ -112,6 +113,8 @@ export {
   type HostPaths,
   type OpenOptions,
   type OpenResult,
+  type PullOptions,
+  type PullResult,
   type RefreshOptions,
   type RefreshResult,
 } from './host-export.js';

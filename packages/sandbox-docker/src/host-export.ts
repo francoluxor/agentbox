@@ -234,6 +234,142 @@ export async function refreshExport(
   return { hostPath: ctx.hostTarget, copied: true, usedFallback: true };
 }
 
+export interface PullOptions {
+  /** Default true. When false, skip git ls-files and use the static exclude-list. */
+  respectGitignore?: boolean;
+  /** Default false. When true, don't filter node_modules even in fallback mode. */
+  includeNodeModules?: boolean;
+  /** Default false. Skip the initial refreshExport — pull whatever's already in the scratch dir. */
+  noRefresh?: boolean;
+  /** Default false. Run rsync with --dry-run; return the change list without writing. */
+  dryRun?: boolean;
+}
+
+export interface PullResult {
+  /** Absolute host workspace path the pull targeted (record.workspacePath). */
+  hostPath: string;
+  /** Per-file rsync change list (itemized `-i` lines, transfers/deletes only). */
+  changes: string[];
+  /** True when an actual write happened. False on dry-run. */
+  applied: boolean;
+  /** True when gitignore-mode was used (vs. the fallback exclude-list). */
+  usedGitignore: boolean;
+}
+
+/**
+ * Keep only itemized lines that represent an actual transfer or delete.
+ * rsync `-i` emits a leading 11-char code; `.`-prefixed lines are
+ * attribute-only (no content change) and `*deleting` marks removals (we never
+ * pass --delete, so those won't appear, but the filter is direction-safe).
+ */
+function parseItemizedChanges(stdout: string): string[] {
+  return stdout
+    .split('\n')
+    .map((l) => l.trimEnd())
+    .filter((l) => l.length > 0)
+    .filter((l) => {
+      const code = l[0];
+      return code === '>' || code === '<' || code === 'c' || code === '*';
+    });
+}
+
+/**
+ * Reverse of `refreshExport`: bring the box's merged `/workspace` view back
+ * into the user's actual host working directory (`record.workspacePath`).
+ *
+ * Two-stage: (1) `refreshExport` materializes `/workspace` in the per-box
+ * scratch dir (`~/.agentbox/boxes/<id>/workspace`) — that path is the only
+ * way to read the in-container FUSE overlay from the Mac; (2) a host-side
+ * rsync copies scratch → `workspacePath`.
+ *
+ * Filtering: by default we ask git *inside the box* which files it would
+ * track (`git ls-files --cached --others --exclude-standard`) so node_modules
+ * / build dirs / gitignored secrets never leak back. Non-git workspaces (or
+ * `respectGitignore: false`) fall back to a static `--exclude` list.
+ *
+ * Never passes `--delete`: files that exist on the host but not in the box
+ * are preserved. Removals are the user's call.
+ */
+export async function pullToHost(
+  record: Pick<BoxRecord, 'id' | 'container' | 'upperVolume' | 'workspacePath'>,
+  opts: PullOptions = {},
+): Promise<PullResult> {
+  const engine = await detectEngine();
+  const paths = await getHostPaths(record, engine);
+
+  let scratchDir: string;
+  if (opts.noRefresh) {
+    scratchDir = paths.mergedExport;
+    await mkdir(scratchDir, { recursive: true });
+  } else {
+    const refreshed = await refreshExport(record, {
+      layer: 'merged',
+      includeNodeModules: opts.includeNodeModules,
+    });
+    scratchDir = refreshed.hostPath;
+  }
+
+  let usedGitignore = false;
+  let fileList: string | null = null;
+  if (opts.respectGitignore !== false) {
+    const isGit = await execInBox(
+      record.container,
+      ['git', '-C', '/workspace', 'rev-parse', '--is-inside-work-tree'],
+      { user: 'root' },
+    );
+    if (isGit.exitCode === 0 && isGit.stdout.trim() === 'true') {
+      const ls = await execInBox(
+        record.container,
+        ['git', '-C', '/workspace', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+        { user: 'root' },
+      );
+      if (ls.exitCode !== 0) {
+        throw new ExportError('git ls-files in box failed', ls.stdout, ls.stderr);
+      }
+      // git -z is NUL-delimited; rsync --from0 wants the same.
+      fileList = ls.stdout.replace(/\0$/, '');
+      usedGitignore = true;
+    }
+  }
+
+  // --checksum, not the default size+mtime quick-check: the box runs on a
+  // fresh git worktree so every file's mtime differs from the user's working
+  // tree even when the content is byte-identical. Without -c, rsync would
+  // "update" the entire tree. -c compares content hashes so only genuinely
+  // changed files are written.
+  const baseArgs = ['-a', '--checksum'];
+  if (!usedGitignore) {
+    baseArgs.push('--exclude=.git');
+    if (!opts.includeNodeModules) baseArgs.push('--exclude=node_modules');
+  } else {
+    baseArgs.push('--files-from=-', '--from0');
+  }
+  const src = `${scratchDir}/`;
+  const dst = `${record.workspacePath}/`;
+
+  const dry = await execa('rsync', [...baseArgs, '--dry-run', '-i', src, dst], {
+    reject: false,
+    input: usedGitignore ? (fileList ?? '') : undefined,
+  });
+  if (dry.exitCode !== 0) {
+    throw new ExportError('rsync dry-run failed', dry.stdout, dry.stderr);
+  }
+  const changes = parseItemizedChanges(dry.stdout);
+
+  if (opts.dryRun) {
+    return { hostPath: record.workspacePath, changes, applied: false, usedGitignore };
+  }
+
+  const real = await execa('rsync', [...baseArgs, src, dst], {
+    reject: false,
+    input: usedGitignore ? (fileList ?? '') : undefined,
+  });
+  if (real.exitCode !== 0) {
+    throw new ExportError(`rsync into ${record.workspacePath} failed`, real.stdout, real.stderr);
+  }
+  return { hostPath: record.workspacePath, changes, applied: true, usedGitignore };
+}
+
 export interface OpenOptions extends RefreshOptions {
   /** When true, skip rsync and just open whatever's already on disk. */
   noRefresh?: boolean;
