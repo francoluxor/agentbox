@@ -31,7 +31,9 @@ function tagChange(line: string): string {
 }
 
 export const pullEnvCommand = new Command('env')
-  .description('Pull gitignored env/config files (.env*, .envrc, secrets.toml, ...) box -> host')
+  .description(
+    'Pull gitignored env/config files (.env*, .envrc, secrets.toml, agentbox.yaml, ...) box -> host',
+  )
   .argument(
     '[box]',
     'box ref: project index, id, id prefix, name, or container (default: the only box in this project)',

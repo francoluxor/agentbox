@@ -2,7 +2,7 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { chmod, mkdir, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { readLogFile, type Supervisor } from './supervisor.js';
-import type { StatusReporter } from './status-reporter.js';
+import { collectPorts, type StatusReporter } from './status-reporter.js';
 import { probeClaudeSession } from './tmux.js';
 import {
   CLAUDE_ACTIVITY_STATES,
@@ -70,6 +70,7 @@ async function handleConnection(sock: Socket, opts: ServerOptions): Promise<void
       const data = {
         services: opts.supervisor.list(),
         tasks: opts.supervisor.listTasks(),
+        ports: await collectPorts(opts.supervisor),
       };
       writeLine(sock, { ok: true, data });
       sock.end();

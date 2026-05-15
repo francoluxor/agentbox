@@ -62,8 +62,10 @@ export function buildSetupInitialPrompt(workspace: string): string {
     `The user just opened a new agentbox sandbox for "${name}" but the workspace has no agentbox.yaml yet. ` +
     `Please run the /agentbox-setup skill (or read ${IN_BOX_SETUP_GUIDE_PATH} if the skill is not loaded), ` +
     `then explore /workspace and propose an agentbox.yaml. Save the file to /workspace/agentbox.yaml. ` +
+    `Then run \`agentbox-ctl reload\` from inside the box so the already-running supervisor applies the new config ` +
+    `and immediately runs the declared tasks and autostarts the services (no box restart needed). ` +
     `When done, summarise what services and tasks you declared, and remind the user how to land the file on the host ` +
-    `(commit through the bind-mounted .git, or "agentbox open <box> --refresh" on the host).`
+    `(commit through the bind-mounted .git, or "agentbox pull env" on the host).`
   );
 }
 

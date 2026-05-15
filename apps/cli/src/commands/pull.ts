@@ -45,7 +45,7 @@ export const pullCommand = new Command('pull')
   .option('--no-refresh', "skip the box->scratch-dir rsync step (use whatever's already there)")
   .option(
     '--with-env',
-    'also pull env/config files (.env*, .envrc, secrets.toml, ...) ignoring gitignore',
+    'also pull env/config files (.env*, .envrc, secrets.toml, agentbox.yaml, ...) ignoring gitignore',
   )
   .option(
     '--pattern <glob>',

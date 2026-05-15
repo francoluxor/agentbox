@@ -114,14 +114,7 @@ export class StatusReporter {
     }));
     const tasks = this.supervisor.listTasks().map((t) => ({ name: t.name, state: t.state }));
 
-    const portToService = new Map<number, string>();
-    for (const [name, port] of probePorts) {
-      if (!portToService.has(port)) portToService.set(port, name);
-    }
-    const ports: BoxStatusPort[] = (await discoverListeningPorts()).map((port) => ({
-      port,
-      service: portToService.get(port) ?? null,
-    }));
+    const ports = await collectPorts(this.supervisor);
 
     const session = await probeClaudeSession(this.sessionName);
 
@@ -139,6 +132,23 @@ export class StatusReporter {
       },
     };
   }
+}
+
+/**
+ * Live-discover listening ports and attribute each to the service whose
+ * `ready_when.port` probe matches it (else null — an ad-hoc port). Shared by
+ * the periodic snapshot pushed to the relay and the on-demand `status` wire op.
+ */
+export async function collectPorts(supervisor: Supervisor): Promise<BoxStatusPort[]> {
+  const probePorts = supervisor.serviceProbePorts(); // serviceName -> port
+  const portToService = new Map<number, string>();
+  for (const [name, port] of probePorts) {
+    if (!portToService.has(port)) portToService.set(port, name);
+  }
+  return (await discoverListeningPorts()).map((port) => ({
+    port,
+    service: portToService.get(port) ?? null,
+  }));
 }
 
 function run(cmd: string, args: string[]): Promise<{ exitCode: number; stdout: string }> {

@@ -1,6 +1,7 @@
 import { log } from '@clack/prompts';
 import { Command } from 'commander';
 import {
+  renderPortsTable,
   renderStatusTable,
   renderTaskTable,
   type BoxStatus,
@@ -96,6 +97,7 @@ async function buildStatusText(id: string, container: string): Promise<string> {
       out.push('', 'TASKS', renderTaskTable(live.tasks));
     }
     out.push('', 'SERVICES', renderStatusTable(live.services));
+    out.push('', 'PORTS', renderPortsTable(live.ports));
     return out.join('\n');
   }
 

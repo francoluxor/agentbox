@@ -57,6 +57,11 @@ describe('buildSetupInitialPrompt', () => {
     const prompt = buildSetupInitialPrompt('/x/y');
     expect(prompt).toContain('/agentbox-setup');
   });
+
+  it('instructs claude to reload the supervisor so tasks run immediately', () => {
+    const prompt = buildSetupInitialPrompt('/x/y');
+    expect(prompt).toContain('agentbox-ctl reload');
+  });
 });
 
 describe('installAgentboxSetupSkill', () => {

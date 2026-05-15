@@ -67,6 +67,7 @@ describe('socket protocol', () => {
     expect(reply.tasks).toHaveLength(0);
     // blockedOn defaults to [] for unblocked services.
     expect(reply.services[0]!.blockedOn).toEqual([]);
+    expect(Array.isArray(reply.ports)).toBe(true);
   });
 
   it('task-status returns the task list', async () => {

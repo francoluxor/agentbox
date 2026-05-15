@@ -43,7 +43,7 @@ export {
   type ConnectOptions,
   type LogsResult,
 } from './client.js';
-export { renderStatusTable, renderTaskTable } from './render.js';
+export { renderPortsTable, renderStatusTable, renderTaskTable } from './render.js';
 export {
   parseConfig,
   loadConfig,

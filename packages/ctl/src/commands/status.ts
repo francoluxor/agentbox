@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { status } from '../client.js';
 import { DEFAULT_SOCKET_PATH } from '../types.js';
-import { renderStatusTable, renderTaskTable } from '../render.js';
+import { renderPortsTable, renderStatusTable, renderTaskTable } from '../render.js';
 
 interface StatusOptions {
   socket: string;
@@ -23,5 +23,7 @@ export const statusCommand = new Command('status')
       process.stdout.write(renderTaskTable(reply.tasks) + '\n\n');
     }
     process.stdout.write('SERVICES\n');
-    process.stdout.write(renderStatusTable(reply.services) + '\n');
+    process.stdout.write(renderStatusTable(reply.services) + '\n\n');
+    process.stdout.write('PORTS\n');
+    process.stdout.write(renderPortsTable(reply.ports) + '\n');
   });

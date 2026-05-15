@@ -27,6 +27,7 @@ export interface ServiceStatus {
 export interface StatusReply {
   services: ServiceStatus[];
   tasks: TaskStatus[];
+  ports: BoxStatusPort[];
 }
 
 export interface WaitReadyArgs {

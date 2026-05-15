@@ -1,4 +1,4 @@
-import type { ServiceStatus, TaskStatus } from './types.js';
+import type { BoxStatusPort, ServiceStatus, TaskStatus } from './types.js';
 
 export function renderStatusTable(rows: ServiceStatus[]): string {
   if (rows.length === 0) return '(no services configured)';
@@ -26,6 +26,13 @@ export function renderTaskTable(rows: TaskStatus[]): string {
     r.finishedAt ?? '-',
     truncate(r.command, 40),
   ]);
+  return renderTable(headers, data);
+}
+
+export function renderPortsTable(rows: BoxStatusPort[]): string {
+  if (rows.length === 0) return '(no ports listening)';
+  const headers = ['PORT', 'SERVICE'];
+  const data: string[][] = rows.map((r) => [`:${String(r.port)}`, r.service ?? '-']);
   return renderTable(headers, data);
 }
 

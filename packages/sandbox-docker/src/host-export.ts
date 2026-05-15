@@ -264,7 +264,9 @@ export async function refreshExport(
 /**
  * Default env/config file basename globs for `pull env` / `pull --with-env`.
  * These are almost always gitignored, so a normal gitignore-aware `pull`
- * skips them; this list opts them back in explicitly.
+ * skips them; this list opts them back in explicitly. `agentbox.yaml` is
+ * included so a file generated in-box by `/agentbox-setup` lands on the host
+ * even before it's committed.
  */
 export const DEFAULT_ENV_PATTERNS = [
   '.env',
@@ -274,6 +276,7 @@ export const DEFAULT_ENV_PATTERNS = [
   'secrets.toml',
   'local.settings.json',
   'appsettings.*.json',
+  'agentbox.yaml',
 ];
 
 /** Directories the env-file `find` prunes — heavy or never-relevant. */

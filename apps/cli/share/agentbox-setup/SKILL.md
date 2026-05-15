@@ -7,7 +7,7 @@ description: Generate an agentbox.yaml for the current AgentBox workspace. Invok
 
 Goal: produce a `/workspace/agentbox.yaml` that captures this project's services, tasks, and box defaults so the in-box supervisor (`agentbox-ctl`) can boot the workspace deterministically.
 
-`agentbox.yaml` is **declarative**. The supervisor reads it on box start; you don't have to restart the box for changes — the next `agentbox start` (or the next `agentbox create`) picks up the new config.
+`agentbox.yaml` is **declarative**. The supervisor reads it on box start, but you don't have to restart the box: after you write the file, `agentbox-ctl reload` (run from inside the box) makes the already-running supervisor re-read it and immediately run the declared tasks and autostart the services. See step 8.
 
 ## 1. Discover the project
 
@@ -105,10 +105,10 @@ services:
 ## 8. Hand-off
 
 1. Write the file to `/workspace/agentbox.yaml`.
-2. Tell the user, verbatim:
+2. **Apply it live**: from inside the box run `agentbox-ctl reload`. The already-running supervisor re-reads the config and immediately runs the declared tasks and autostarts the services — no box restart needed. It prints the `added` / `removed` / `changed` diff. If it errors because the daemon isn't running, the config is still valid: the next `agentbox start` (or `agentbox create` in this workspace) picks it up automatically.
+3. Confirm with `agentbox-ctl status`: tasks should be `running` or `done`, autostart services `starting` or `ready`. If something failed, tail it with `agentbox-ctl logs <service>` and fix the config, then `agentbox-ctl reload` again.
+4. Tell the user, verbatim:
 
-   > I wrote `/workspace/agentbox.yaml`. To land it on the host:
+   > I wrote `/workspace/agentbox.yaml` and ran `agentbox-ctl reload` so the supervisor is already running the declared tasks/services. To land the file on the host:
    > - commit it inside the box (`git add agentbox.yaml && git commit -m 'add agentbox config'`) — the box's `.git/` is bind-mounted, so the commit shows up on the host immediately; or
-   > - on the host, run `agentbox open <box-name> --refresh` to rsync `/workspace` into `~/.agentbox/boxes/<id>/workspace/` and copy from there.
-
-3. Don't restart the box; the next `agentbox start` (or the next `agentbox create` in this workspace) picks up the new config automatically. To validate the config without rebooting, run `agentbox-ctl status` from inside the box.
+   > - on the host, tell the user to run `agentbox pull env` to update their original host workspace.
