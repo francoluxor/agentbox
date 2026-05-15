@@ -25,6 +25,11 @@ const program = new Command();
 
 program.name('agentbox').description('Launch coding agents in isolated sandboxes').version('0.0.0');
 
+// Required so `agentbox pull env --dry-run` binds --dry-run to the `env`
+// subcommand rather than the parent `pull` (both define it). Positional
+// options must be enabled on every ancestor in the chain.
+program.enablePositionalOptions();
+
 program.addCommand(createCommand);
 program.addCommand(claudeCommand);
 program.addCommand(codeCommand);

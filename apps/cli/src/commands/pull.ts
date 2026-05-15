@@ -1,8 +1,15 @@
 import { confirm, isCancel, log } from '@clack/prompts';
 import { Command } from 'commander';
-import { inspectBox, pullToHost, startBox, unpauseBox } from '@agentbox/sandbox-docker';
+import {
+  DEFAULT_ENV_PATTERNS,
+  inspectBox,
+  pullToHost,
+  startBox,
+  unpauseBox,
+} from '@agentbox/sandbox-docker';
 import { resolveBoxOrExit } from '../box-ref.js';
 import { handleLifecycleError } from './_errors.js';
+import { pullEnvCommand } from './pull-env.js';
 
 interface PullOpts {
   yes?: boolean;
@@ -10,9 +17,15 @@ interface PullOpts {
   respectGitignore: boolean; // commander gives `--no-respect-gitignore` => false
   includeNodeModules?: boolean;
   refresh: boolean; // commander gives `--no-refresh` => false
+  withEnv?: boolean;
+  pattern: string[];
 }
 
 export const pullCommand = new Command('pull')
+  // Parent and the `env` subcommand share option names (--dry-run, -y,
+  // --pattern). Positional options make post-subcommand options bind to the
+  // subcommand instead of being swallowed by this parent command.
+  .enablePositionalOptions()
   .description("Pull a box's /workspace back into your host workspace dir (gitignore-aware)")
   .argument(
     '[box]',
@@ -29,6 +42,16 @@ export const pullCommand = new Command('pull')
     'do not exclude node_modules in fallback mode (no effect in gitignore mode)',
   )
   .option('--no-refresh', "skip the box->scratch-dir rsync step (use whatever's already there)")
+  .option(
+    '--with-env',
+    'also pull env/config files (.env*, .envrc, secrets.toml, ...) ignoring gitignore',
+  )
+  .option(
+    '--pattern <glob>',
+    'extra env basename glob; only effective with --with-env (repeatable)',
+    (v: string, acc: string[]) => [...acc, v],
+    [] as string[],
+  )
   .action(async (idOrName: string | undefined, opts: PullOpts) => {
     try {
       const box = await resolveBoxOrExit(idOrName);
@@ -54,10 +77,15 @@ export const pullCommand = new Command('pull')
         );
       }
 
+      const envPatterns = opts.withEnv
+        ? [...DEFAULT_ENV_PATTERNS, ...opts.pattern]
+        : undefined;
+
       const preview = await pullToHost(box, {
         dryRun: true,
         respectGitignore: opts.respectGitignore,
         includeNodeModules: opts.includeNodeModules,
+        envPatterns,
         noRefresh: !opts.refresh,
       });
 
@@ -76,7 +104,7 @@ export const pullCommand = new Command('pull')
 
       if (!opts.yes) {
         const ok = await confirm({
-          message: `Pull ${preview.changes.length} changed file(s) into ${box.workspacePath}?`,
+          message: `Pull ${preview.changes.length} changed file(s)${opts.withEnv ? ' (incl. env/config)' : ''} into ${box.workspacePath}?`,
           initialValue: false,
         });
         if (isCancel(ok) || !ok) {
@@ -89,6 +117,7 @@ export const pullCommand = new Command('pull')
         dryRun: false,
         respectGitignore: opts.respectGitignore,
         includeNodeModules: opts.includeNodeModules,
+        envPatterns,
         // The dry-run pass above already refreshed (or intentionally skipped)
         // the scratch dir — don't rsync box->scratch a second time.
         noRefresh: true,
@@ -101,3 +130,7 @@ export const pullCommand = new Command('pull')
       handleLifecycleError(err);
     }
   });
+
+// `agentbox pull env [box]` — commander dispatches the `env` subcommand;
+// `agentbox pull [box]` / `agentbox pull` still hit the default action above.
+pullCommand.addCommand(pullEnvCommand);

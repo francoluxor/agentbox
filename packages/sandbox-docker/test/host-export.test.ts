@@ -193,6 +193,9 @@ describe('pullToHost', () => {
           if (a.includes('ls-files')) {
             return { stdout: 'src/a.ts\0src/b.ts\0', stderr: '', exitCode: 0 };
           }
+          if (a.includes('find')) {
+            return { stdout: 'apps/web/.env\0.env.local\0', stderr: '', exitCode: 0 };
+          }
         }
         if (cmd === 'rsync') {
           const isDry = a.includes('--dry-run');
@@ -343,6 +346,124 @@ describe('pullToHost', () => {
       (c) => c.cmd === 'docker' && c.args[0] === 'exec' && c.args.includes('rsync'),
     );
     expect(dockerExecRsync).toBeUndefined();
+  });
+
+  it('env-only mode: find-based selection, gitignore bypassed', async () => {
+    const calls = installExecaMock({ inGit: true });
+    const { pullToHost, DEFAULT_ENV_PATTERNS, __setEngineForTesting } = await import(
+      '../src/host-export.js'
+    );
+    __setEngineForTesting(null);
+
+    const res = await pullToHost(
+      {
+        id: 'boxe',
+        container: 'agentbox-boxe',
+        upperVolume: 'agentbox-upper-boxe',
+        workspacePath: join(dir, 'ws'),
+      },
+      { noRefresh: true, respectGitignore: false, envPatterns: DEFAULT_ENV_PATTERNS },
+    );
+
+    expect(res.usedGitignore).toBe(false);
+    // respectGitignore:false -> never probes git
+    expect(calls.some((c) => c.args.includes('rev-parse'))).toBe(false);
+    expect(calls.some((c) => c.args.includes('ls-files'))).toBe(false);
+
+    const find = calls.find((c) => c.cmd === 'docker' && c.args.includes('find'));
+    expect(find).toBeDefined();
+    expect(find?.args).toContain('/workspace');
+    expect(find?.args).toContain('node_modules'); // a pruned dir
+    expect(find?.args).toContain('.env'); // a default pattern
+    expect(find?.args).toContain('-printf');
+
+    const rsyncCalls = calls.filter((c) => c.cmd === 'rsync');
+    for (const r of rsyncCalls) {
+      expect(r.args).toContain('--files-from=-');
+      expect(r.args).toContain('--from0');
+      expect(r.args).toContain('--checksum');
+      expect(r.args).not.toContain('--exclude=.git');
+      expect(r.args).not.toContain('--delete');
+    }
+  });
+
+  it('with-env mode: union of git ls-files and find segments', async () => {
+    const calls = installExecaMock({ inGit: true });
+    const { pullToHost, __setEngineForTesting } = await import('../src/host-export.js');
+    __setEngineForTesting(null);
+
+    const res = await pullToHost(
+      {
+        id: 'boxw',
+        container: 'agentbox-boxw',
+        upperVolume: 'agentbox-upper-boxw',
+        workspacePath: join(dir, 'ws'),
+      },
+      { noRefresh: true, envPatterns: ['.env'] },
+    );
+
+    expect(res.usedGitignore).toBe(true);
+    // both segments enumerated
+    expect(calls.some((c) => c.args.includes('ls-files'))).toBe(true);
+    expect(calls.some((c) => c.args.includes('find'))).toBe(true);
+
+    // rsync --files-from stdin must contain both a git-listed path and an env path
+    const { execa } = (await import('execa')) as unknown as {
+      execa: { mock: { calls: unknown[][] } };
+    };
+    const rsyncInvocation = execa.mock.calls.find(
+      (c) => c[0] === 'rsync' && Array.isArray(c[1]) && (c[1] as string[]).includes('--files-from=-'),
+    );
+    const input = (rsyncInvocation?.[2] as { input?: string } | undefined)?.input ?? '';
+    const entries = input.split('\0');
+    expect(entries).toContain('src/a.ts'); // from git ls-files
+    expect(entries).toContain('.env.local'); // from find
+    expect(entries).toContain('apps/web/.env'); // from find
+  });
+
+  it('with-env mode dedupes overlapping git/env entries', async () => {
+    // git ls-files returns src/a.ts,src/b.ts; make find also return src/a.ts.
+    const calls: Call[] = [];
+    vi.doMock('execa', () => ({
+      execa: vi.fn(async (cmd: string, args: readonly string[]) => {
+        const a = [...args];
+        calls.push({ cmd, args: a });
+        if (cmd === 'docker' && a[0] === 'info') {
+          return { stdout: 'Docker Desktop', stderr: '', exitCode: 0 };
+        }
+        if (cmd === 'docker' && a[0] === 'exec') {
+          if (a.includes('rev-parse')) return { stdout: 'true', stderr: '', exitCode: 0 };
+          if (a.includes('ls-files'))
+            return { stdout: 'src/a.ts\0src/b.ts\0', stderr: '', exitCode: 0 };
+          if (a.includes('find')) return { stdout: 'src/a.ts\0.env\0', stderr: '', exitCode: 0 };
+        }
+        if (cmd === 'rsync') return { stdout: '', stderr: '', exitCode: 0 };
+        return { stdout: '', stderr: '', exitCode: 0 };
+      }),
+    }));
+    const { pullToHost, __setEngineForTesting } = await import('../src/host-export.js');
+    __setEngineForTesting(null);
+
+    await pullToHost(
+      {
+        id: 'boxd',
+        container: 'agentbox-boxd',
+        upperVolume: 'agentbox-upper-boxd',
+        workspacePath: join(dir, 'ws'),
+      },
+      { noRefresh: true, envPatterns: ['.env'] },
+    );
+
+    const { execa } = (await import('execa')) as unknown as {
+      execa: { mock: { calls: unknown[][] } };
+    };
+    const rsyncInvocation = execa.mock.calls.find(
+      (c) => c[0] === 'rsync' && Array.isArray(c[1]) && (c[1] as string[]).includes('--files-from=-'),
+    );
+    const input = (rsyncInvocation?.[2] as { input?: string } | undefined)?.input ?? '';
+    const entries = input.split('\0');
+    expect(entries.filter((e) => e === 'src/a.ts')).toHaveLength(1);
+    expect(entries).toContain('.env');
   });
 });
 

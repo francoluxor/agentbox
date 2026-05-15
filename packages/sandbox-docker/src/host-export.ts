@@ -234,6 +234,72 @@ export async function refreshExport(
   return { hostPath: ctx.hostTarget, copied: true, usedFallback: true };
 }
 
+/**
+ * Default env/config file basename globs for `pull env` / `pull --with-env`.
+ * These are almost always gitignored, so a normal gitignore-aware `pull`
+ * skips them; this list opts them back in explicitly.
+ */
+export const DEFAULT_ENV_PATTERNS = [
+  '.env',
+  '.env.*',
+  '.envrc',
+  '.dev.vars',
+  'secrets.toml',
+  'local.settings.json',
+  'appsettings.*.json',
+];
+
+/** Directories the env-file `find` prunes — heavy or never-relevant. */
+const ENV_PRUNE_DIRS = [
+  'node_modules',
+  '.git',
+  '.venv',
+  'venv',
+  '__pycache__',
+  'dist',
+  '.next',
+  'build',
+];
+
+/**
+ * Build the in-box `find` argv that enumerates env/config files by basename
+ * glob, pruning `ENV_PRUNE_DIRS`. `-printf '%P\0'` emits NUL-delimited paths
+ * already relative to /workspace (so they feed rsync --files-from --from0
+ * directly, exactly like `git ls-files -z`).
+ */
+function buildEnvFindArgs(patterns: string[]): string[] {
+  const nameGroup = (names: string[]): string[] => {
+    const out: string[] = [];
+    names.forEach((n, i) => {
+      if (i > 0) out.push('-o');
+      out.push('-name', n);
+    });
+    return out;
+  };
+  return [
+    'find',
+    '/workspace',
+    '(',
+    '-type',
+    'd',
+    '(',
+    ...nameGroup(ENV_PRUNE_DIRS),
+    ')',
+    '-prune',
+    ')',
+    '-o',
+    '(',
+    '-type',
+    'f',
+    '(',
+    ...nameGroup(patterns),
+    ')',
+    '-printf',
+    '%P\\0',
+    ')',
+  ];
+}
+
 export interface PullOptions {
   /** Default true. When false, skip git ls-files and use the static exclude-list. */
   respectGitignore?: boolean;
@@ -243,6 +309,14 @@ export interface PullOptions {
   noRefresh?: boolean;
   /** Default false. Run rsync with --dry-run; return the change list without writing. */
   dryRun?: boolean;
+  /**
+   * Extra env/config files to pull, selected by these basename globs via an
+   * in-box `find` (heavy dirs pruned). Composes WITH gitignore selection: the
+   * rsync file list is the union of the git-tracked set (unless
+   * respectGitignore is false) and these matches. Empty/undefined = no env
+   * segment.
+   */
+  envPatterns?: string[];
 }
 
 export interface PullResult {
@@ -257,10 +331,12 @@ export interface PullResult {
 }
 
 /**
- * Keep only itemized lines that represent an actual transfer or delete.
- * rsync `-i` emits a leading 11-char code; `.`-prefixed lines are
- * attribute-only (no content change) and `*deleting` marks removals (we never
- * pass --delete, so those won't appear, but the filter is direction-safe).
+ * Keep only itemized lines that represent an actual file transfer or delete.
+ * rsync `-i` emits a leading 11-char code: char 0 is the update type
+ * (`>`/`<`/`c`/`*` = transfer/change/delete; `.` = attr-only, skipped) and
+ * char 1 is the entry type (`f` file, `d` dir, ...). Directory lines (`d`)
+ * are pruned: rsync creates parent dirs as a side effect of transferring
+ * files, so counting them would overstate "files changed".
  */
 function parseItemizedChanges(stdout: string): string[] {
   return stdout
@@ -269,7 +345,8 @@ function parseItemizedChanges(stdout: string): string[] {
     .filter((l) => l.length > 0)
     .filter((l) => {
       const code = l[0];
-      return code === '>' || code === '<' || code === 'c' || code === '*';
+      const kind = l[1];
+      return (code === '>' || code === '<' || code === 'c' || code === '*') && kind !== 'd';
     });
 }
 
@@ -309,8 +386,12 @@ export async function pullToHost(
     scratchDir = refreshed.hostPath;
   }
 
+  // The rsync file list is the union of up to two independent NUL-delimited
+  // segments: git-tracked (gitignore-aware) and env-pattern (gitignore
+  // bypassed). If neither is produced we fall through to the static
+  // exclude-list (non-git workspace, no env patterns).
+  const segments: string[] = [];
   let usedGitignore = false;
-  let fileList: string | null = null;
   if (opts.respectGitignore !== false) {
     const isGit = await execInBox(
       record.container,
@@ -327,10 +408,27 @@ export async function pullToHost(
         throw new ExportError('git ls-files in box failed', ls.stdout, ls.stderr);
       }
       // git -z is NUL-delimited; rsync --from0 wants the same.
-      fileList = ls.stdout.replace(/\0$/, '');
+      const tracked = ls.stdout.replace(/\0$/, '');
+      if (tracked.length > 0) segments.push(tracked);
       usedGitignore = true;
     }
   }
+  if (opts.envPatterns && opts.envPatterns.length > 0) {
+    const found = await execInBox(
+      record.container,
+      buildEnvFindArgs(opts.envPatterns),
+      { user: 'root' },
+    );
+    if (found.exitCode !== 0) {
+      throw new ExportError('find env files in box failed', found.stdout, found.stderr);
+    }
+    const envFiles = found.stdout.replace(/\0$/, '');
+    if (envFiles.length > 0) segments.push(envFiles);
+  }
+  const fileList =
+    segments.length > 0
+      ? Array.from(new Set(segments.join('\0').split('\0'))).join('\0')
+      : null;
 
   // --checksum, not the default size+mtime quick-check: the box runs on a
   // fresh git worktree so every file's mtime differs from the user's working
@@ -338,7 +436,7 @@ export async function pullToHost(
   // "update" the entire tree. -c compares content hashes so only genuinely
   // changed files are written.
   const baseArgs = ['-a', '--checksum'];
-  if (!usedGitignore) {
+  if (fileList === null) {
     baseArgs.push('--exclude=.git');
     if (!opts.includeNodeModules) baseArgs.push('--exclude=node_modules');
   } else {
@@ -349,7 +447,7 @@ export async function pullToHost(
 
   const dry = await execa('rsync', [...baseArgs, '--dry-run', '-i', src, dst], {
     reject: false,
-    input: usedGitignore ? (fileList ?? '') : undefined,
+    input: fileList !== null ? fileList : undefined,
   });
   if (dry.exitCode !== 0) {
     throw new ExportError('rsync dry-run failed', dry.stdout, dry.stderr);
@@ -362,7 +460,7 @@ export async function pullToHost(
 
   const real = await execa('rsync', [...baseArgs, src, dst], {
     reject: false,
-    input: usedGitignore ? (fileList ?? '') : undefined,
+    input: fileList !== null ? fileList : undefined,
   });
   if (real.exitCode !== 0) {
     throw new ExportError(`rsync into ${record.workspacePath} failed`, real.stdout, real.stderr);

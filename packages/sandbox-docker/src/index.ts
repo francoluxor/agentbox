@@ -100,6 +100,7 @@ export {
   boxRunDirFor,
   CONTAINER_EXPORT_MERGED,
   CONTAINER_EXPORT_UPPER,
+  DEFAULT_ENV_PATTERNS,
   detectEngine,
   ExportError,
   getHostPaths,
