@@ -1,0 +1,14 @@
+{
+  "name": "agentbox-example-express-server",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Minimal Express server used to exercise the agentbox first-run setup wizard.",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server.js",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.1"
+  }
+}

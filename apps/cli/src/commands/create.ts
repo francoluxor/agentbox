@@ -1,9 +1,15 @@
-import { confirm, intro, isCancel, log, outro, spinner } from '@clack/prompts';
+import { intro, log, outro, spinner } from '@clack/prompts';
 import { findProjectRoot, loadEffectiveConfig, type UserConfig } from '@agentbox/config';
 import { createBox } from '@agentbox/sandbox-docker';
 import { Command } from 'commander';
 import { execSync, spawnSync } from 'node:child_process';
 import { clampSpinnerLine } from '../spinner-line.js';
+import {
+  maybeRunSetupWizard,
+  passthroughFlags,
+  WIZARD_AUTOLAUNCH_ENV,
+} from '../wizard.js';
+import { claudeCommand } from './claude.js';
 
 interface CreateOptions {
   workspace: string;
@@ -27,24 +33,16 @@ function buildCliOverrides(opts: CreateOptions): Partial<UserConfig> {
   return Object.keys(box).length > 0 ? { box } : {};
 }
 
-async function resolveUseSnapshot(
+function resolveUseSnapshot(
   opts: CreateOptions,
   configDefault: boolean | undefined,
-): Promise<boolean> {
-  if (opts.snapshot === true) return true;
+): boolean {
+  // Mirrors `agentbox claude`: snapshot=on by default; explicit CLI flag wins,
+  // then config layers. No interactive prompt — power users override via
+  // `--no-snapshot` or `box.snapshot: false` in their config.
   if (opts.snapshot === false) return false;
-  if (configDefault !== undefined) return configDefault;
-  if (opts.yes) return true;
-
-  const ans = await confirm({
-    message: 'Use a frozen workspace snapshot? (recommended — host stays editable)',
-    initialValue: true,
-  });
-  if (isCancel(ans)) {
-    log.error('cancelled');
-    process.exit(130);
-  }
-  return ans;
+  if (opts.snapshot === true) return true;
+  return configDefault ?? true;
 }
 
 function attachShell(container: string): never {
@@ -78,7 +76,24 @@ export const createCommand = new Command('create')
     });
     const projectRoot = (await findProjectRoot(opts.workspace)).root;
 
-    const useSnapshot = await resolveUseSnapshot(opts, cfg.effective.box.snapshot);
+    // First-run wizard: when no agentbox.yaml exists, optionally hand off to
+    // `agentbox claude` so the agent can interactively generate one.
+    const wiz = await maybeRunSetupWizard({
+      workspace: opts.workspace,
+      yes: !!opts.yes,
+      command: 'create',
+    });
+    if (wiz.action === 'switch-to-claude') {
+      process.env[WIZARD_AUTOLAUNCH_ENV] = '1';
+      try {
+        await claudeCommand.parseAsync(passthroughFlags(opts), { from: 'user' });
+      } finally {
+        delete process.env[WIZARD_AUTOLAUNCH_ENV];
+      }
+      return;
+    }
+
+    const useSnapshot = resolveUseSnapshot(opts, cfg.effective.box.snapshot);
 
     const s = spinner();
     s.start('creating box');

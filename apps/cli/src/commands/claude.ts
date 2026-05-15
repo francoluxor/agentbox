@@ -19,8 +19,10 @@ import {
   writeAuthFile,
   type ResolvedClaudeAuth,
 } from '../auth.js';
+import { resolveAgentLauncher } from '@agentbox/core';
 import { resolveBoxOrExit } from '../box-ref.js';
 import { clampSpinnerLine } from '../spinner-line.js';
+import { maybeRunSetupWizard } from '../wizard.js';
 import { handleLifecycleError } from './_errors.js';
 
 interface ClaudeCreateOptions {
@@ -132,6 +134,21 @@ export const claudeCommand = new Command('claude')
     });
     const projectRoot = (await findProjectRoot(opts.workspace)).root;
 
+    // First-run wizard: when no agentbox.yaml exists, offer to inject an
+    // initial user-message so claude reads /agentbox-setup and writes one.
+    const wiz = await maybeRunSetupWizard({
+      workspace: opts.workspace,
+      yes: !!opts.yes,
+      command: 'claude',
+    });
+    let effectiveClaudeArgs = claudeArgs;
+    if (wiz.action === 'launch-with-prompt' && wiz.initialPrompt) {
+      effectiveClaudeArgs = resolveAgentLauncher('claude-code').buildArgs(
+        wiz.initialPrompt,
+        claudeArgs,
+      );
+    }
+
     // For the create-and-launch verb the default is snapshot=on; explicit
     // --no-snapshot still wins. Config can also flip the default.
     const useSnapshot =
@@ -204,7 +221,7 @@ export const claudeCommand = new Command('claude')
       s.start('starting claude session');
       await startClaudeSession({
         container: result.record.container,
-        claudeArgs,
+        claudeArgs: effectiveClaudeArgs,
         sessionName,
       });
       s.stop(`tmux session "${sessionName}" started`);

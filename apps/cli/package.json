@@ -8,7 +8,8 @@
     "agentbox": "./dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "share"
   ],
   "scripts": {
     "build": "tsup",

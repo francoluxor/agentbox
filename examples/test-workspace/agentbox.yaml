@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=../packages/ctl/schema/agentbox.schema.json
+services:
+  ticker:
+    command: 'i=0; while true; do echo "tick $i"; i=$((i+1)); sleep 1; done'
+    restart: always
+
+  flaky:
+    command: 'echo starting; sleep 2; echo crashing; exit 1'
+    restart: on-failure
+    backoff:
+      initial_ms: 200
+      max_ms: 2000
+      factor: 2
+
+  one-shot:
+    command: 'echo "hello from one-shot"; sleep 1'
+    restart: never
