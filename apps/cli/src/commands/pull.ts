@@ -9,6 +9,7 @@ import {
 } from '@agentbox/sandbox-docker';
 import { resolveBoxOrExit } from '../box-ref.js';
 import { handleLifecycleError } from './_errors.js';
+import { pullClaudeCommand } from './pull-claude.js';
 import { pullEnvCommand } from './pull-env.js';
 
 interface PullOpts {
@@ -134,3 +135,8 @@ export const pullCommand = new Command('pull')
 // `agentbox pull env [box]` — commander dispatches the `env` subcommand;
 // `agentbox pull [box]` / `agentbox pull` still hit the default action above.
 pullCommand.addCommand(pullEnvCommand);
+
+// `agentbox pull claude [box]` — box -> host pull of newly-added Claude
+// skills/plugins/agents/commands (additive; reads the claude-config volume so
+// the box need not be running).
+pullCommand.addCommand(pullClaudeCommand);

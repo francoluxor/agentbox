@@ -250,26 +250,11 @@ RUN printf '%s\n' \
 # is, and that's settings-only) — kept here so it's discoverable via
 # `cat /etc/claude-code/CLAUDE.md` and forward-compatible if Claude Code
 # adds it to its memory chain. Until then, in-box agents learn the same
-# facts via /etc/agentbox/box.env + AGENTBOX_* env vars.
-RUN mkdir -p /etc/claude-code \
-    && printf '%s\n' \
-        '# AgentBox sandbox' \
-        '' \
-        'You are running inside an AgentBox sandbox: a Linux Docker container with' \
-        'docker-in-docker (run `docker` directly, no sudo). The host filesystem is' \
-        'mounted read-only at /host-src; /workspace is a FUSE overlay where your' \
-        'writes go to a per-box volume.' \
-        '' \
-        'This container has no SSH credentials and no host gitconfig identity.' \
-        'For git operations that need the user (push, pull from private remotes),' \
-        'use `agentbox-ctl git pull|push -- <args>` — it RPCs to the host, which' \
-        'runs git with the real SSH agent and gitconfig. Local commits work as' \
-        'normal because the main `.git/` is bind-mounted at the same absolute' \
-        'path as on the host.' \
-        '' \
-        'Box identity is in /etc/agentbox/box.env and the AGENTBOX_* env vars.' \
-        > /etc/claude-code/CLAUDE.md \
-    && chmod 0644 /etc/claude-code/CLAUDE.md
+# facts via /etc/agentbox/box.env + AGENTBOX_* env vars. Content lives in
+# scripts/custom-system-CLAUDE.md (edit there, not inline) for maintainability.
+RUN mkdir -p /etc/claude-code
+COPY packages/sandbox-docker/scripts/custom-system-CLAUDE.md /etc/claude-code/CLAUDE.md
+RUN chmod 0644 /etc/claude-code/CLAUDE.md
 
 # Enterprise-managed Claude Code settings: activity-reporting hooks. Highest
 # precedence and NOT synced from the host ~/.claude, so the host-hook filter

@@ -7,6 +7,7 @@ export {
   claudeSessionInfo,
   DEFAULT_CLAUDE_SESSION,
   ensureClaudeVolume,
+  pullClaudeExtras,
   rebuildPluginNativeDeps,
   resolveClaudeVolume,
   SHARED_CLAUDE_VOLUME,
@@ -16,6 +17,8 @@ export {
   type ClaudeSessionInfo,
   type EnsureClaudeVolumeOptions,
   type EnsureClaudeVolumeResult,
+  type PullClaudeOptions,
+  type PullClaudeResult,
   type RebuildPluginNativeDepsResult,
   type StartClaudeSessionOptions,
 } from './claude.js';
