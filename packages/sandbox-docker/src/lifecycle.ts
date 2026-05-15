@@ -43,7 +43,8 @@ import {
 } from './overlay.js';
 import { launchCtlDaemon } from './ctl.js';
 import { launchDockerdDaemon, SHARED_DOCKER_CACHE_VOLUME } from './dockerd.js';
-import { buildVncUrls, launchVncDaemon, VNC_CONTAINER_PORT, type VncUrls } from './vnc.js';
+import { launchVncDaemon, VNC_CONTAINER_PORT } from './vnc.js';
+import { getBoxEndpoints, type BoxEndpoints } from './endpoints.js';
 import {
   ensureRelay,
   forgetBoxFromRelay,
@@ -64,14 +65,17 @@ import {
 
 export interface ListedBox extends BoxRecord {
   state: BoxState;
+  endpoints: BoxEndpoints;
 }
 
 export async function listBoxes(): Promise<ListedBox[]> {
   const { boxes } = await readState();
+  const engine = await detectEngine();
   return Promise.all(
     boxes.map(async (b): Promise<ListedBox> => {
       const state = await inspectContainerStatus(b.container);
-      return { ...b, state };
+      const endpoints = await getBoxEndpoints(b, engine);
+      return { ...b, state, endpoints };
     }),
   );
 }
@@ -241,8 +245,8 @@ export interface InspectedBox {
   claudeSession: ClaudeSessionInfo | null;
   /** Host paths for `agentbox open` / `agentbox path`. */
   hostPaths: HostPaths;
-  /** noVNC URLs (orb.local + loopback). Empty object when VNC is off for this box. */
-  vnc: VncUrls;
+  /** Box network surface: domain + VNC + service ports. */
+  endpoints: BoxEndpoints;
 }
 
 async function dirSizeBytes(path: string): Promise<number | null> {
@@ -285,7 +289,7 @@ export async function inspectBox(idOrName: string): Promise<InspectedBox> {
 
   const hostPaths = await getHostPaths(record);
   const engine = await detectEngine();
-  const vnc = buildVncUrls(record, engine);
+  const endpoints = await getBoxEndpoints(record, engine);
 
   return {
     record,
@@ -296,7 +300,7 @@ export async function inspectBox(idOrName: string): Promise<InspectedBox> {
     dockerInspect: dockerJson,
     claudeSession,
     hostPaths,
-    vnc,
+    endpoints,
   };
 }
 

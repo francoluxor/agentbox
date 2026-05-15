@@ -6,8 +6,9 @@ import {
   type ClaudeSessionStatus,
   type StatusReply,
 } from '@agentbox/ctl';
-import { execInBox } from '@agentbox/sandbox-docker';
+import { execInBox, inspectBox } from '@agentbox/sandbox-docker';
 import { resolveBoxOrExit } from '../box-ref.js';
+import { renderEndpointLines } from '../endpoints-render.js';
 import { handleLifecycleError } from './_errors.js';
 
 interface StatusOptions {
@@ -37,12 +38,18 @@ export const statusCommand = new Command('status')
       }
       const reply = JSON.parse(proc.stdout) as StatusReply;
       const claude = await fetchClaudeSession(box.container);
+      const { endpoints } = await inspectBox(box.id);
 
       if (opts.json) {
         process.stdout.write(
-          JSON.stringify({ ...reply, claudeSession: claude }, null, 2) + '\n',
+          JSON.stringify({ ...reply, claudeSession: claude, endpoints }, null, 2) + '\n',
         );
       } else {
+        const epLines = renderEndpointLines(endpoints, process.stdout);
+        if (epLines.length > 0) {
+          process.stdout.write('ENDPOINTS\n');
+          process.stdout.write(epLines.join('\n') + '\n\n');
+        }
         if (claude !== null) {
           process.stdout.write(`${renderClaudeLine(claude)}\n`);
         }

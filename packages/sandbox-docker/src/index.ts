@@ -20,6 +20,7 @@ export {
   type StartClaudeSessionOptions,
 } from './claude.js';
 export { createBox, type CreateBoxOptions, type CreatedBox } from './create.js';
+export { getBoxEndpoints, type BoxEndpoint, type BoxEndpoints } from './endpoints.js';
 export { execInBox, type DockerExecResult } from './docker.js';
 export {
   createBoxWorktree,

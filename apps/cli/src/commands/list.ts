@@ -1,44 +1,109 @@
 import { listBoxes, type ListedBox } from '@agentbox/sandbox-docker';
 import { Command } from 'commander';
+import { pathToFileURL } from 'node:url';
+import { hyperlink } from '../hyperlink.js';
 
 interface ListOptions {
   json?: boolean;
 }
 
-function relativeTime(iso: string): string {
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return iso;
-  const diffSec = Math.floor((Date.now() - then) / 1000);
-  if (diffSec < 60) return `${String(diffSec)}s ago`;
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${String(diffMin)}m ago`;
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${String(diffHr)}h ago`;
-  const diffDay = Math.floor(diffHr / 24);
-  return `${String(diffDay)}d ago`;
+/** A table cell: the (possibly OSC-8-wrapped) text to print + its visible width. */
+interface Cell {
+  text: string;
+  width: number;
 }
 
-function truncate(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n - 1) + '…' : s;
+const plain = (s: string): Cell => ({ text: s, width: s.length });
+
+/**
+ * Shorten `s` to `n` visible chars, keeping the head and the final path
+ * segment with `…` in the middle (`/Users/marco/Pr…/test-workspace`). Falls
+ * back to a plain head+ellipsis when the tail alone won't fit.
+ */
+function middleTruncate(s: string, n: number): string {
+  if (s.length <= n) return s;
+  if (n <= 1) return s.length > 0 ? '…' : '';
+  const slash = s.lastIndexOf('/');
+  const tail = slash >= 0 ? s.slice(slash) : '';
+  // Need room for at least one head char + ellipsis + the whole tail.
+  if (tail.length > 0 && tail.length + 2 <= n) {
+    const head = s.slice(0, n - 1 - tail.length);
+    return `${head}…${tail}`;
+  }
+  return s.slice(0, n - 1) + '…';
 }
 
-function renderTable(boxes: ListedBox[]): string {
-  const rows = boxes.map((b) => [
-    typeof b.projectIndex === 'number' ? String(b.projectIndex) : '',
-    b.id,
-    b.name,
-    b.state,
-    truncate(b.image, 28),
-    relativeTime(b.createdAt),
-    truncate(b.workspacePath, 50),
+/**
+ * Compact, clickable URL for the box: the first endpoint with a host-reachable
+ * URL (VNC, else the first reachable service). Display is the bare `host:port`
+ * (no scheme, no query) so the VNC password in the query string stays out of
+ * the table; the OSC-8 target keeps the full URL so a click still works.
+ */
+function urlCell(box: ListedBox, stream: NodeJS.WriteStream): Cell {
+  const ep = box.endpoints.endpoints.find((e) => e.url);
+  if (!ep?.url) return plain('');
+  let display: string;
+  try {
+    display = new URL(ep.url).host;
+  } catch {
+    display = ep.url;
+  }
+  return { text: hyperlink(display, ep.url, stream), width: display.length };
+}
+
+/** Workspace path truncated to `target` and linked to its `file://` URL. */
+function workspaceCell(path: string, target: number, stream: NodeJS.WriteStream): Cell {
+  const display = middleTruncate(path, target);
+  let url: string;
+  try {
+    url = pathToFileURL(path).href;
+  } catch {
+    return { text: display, width: display.length };
+  }
+  return { text: hyperlink(display, url, stream), width: display.length };
+}
+
+function renderTable(boxes: ListedBox[], stream: NodeJS.WriteStream): string {
+  const header = ['N', 'NAME', 'STATE', 'URL', 'WORKSPACE'];
+  const lead: Cell[][] = boxes.map((b) => [
+    plain(typeof b.projectIndex === 'number' ? String(b.projectIndex) : ''),
+    plain(b.name),
+    plain(b.state),
+    urlCell(b, stream),
   ]);
-  const header = ['N', 'ID', 'NAME', 'STATE', 'IMAGE', 'CREATED', 'WORKSPACE'];
-  const all = [header, ...rows];
-  const widths = header.map((_, col) => Math.max(...all.map((r) => (r[col] ?? '').length)));
+  const leadHeader = header.slice(0, 4).map(plain);
+
+  // Widths for the fixed columns (everything but WORKSPACE).
+  const fixedWidths = [0, 1, 2, 3].map((col) =>
+    Math.max(leadHeader[col]?.width ?? 0, ...lead.map((r) => r[col]?.width ?? 0)),
+  );
+
+  // WORKSPACE budget: whatever's left of the terminal after the fixed columns
+  // + the 2-space separators. Never below a usable floor.
+  const term = stream.columns && stream.columns > 0 ? stream.columns : 120;
+  const fixedTotal = fixedWidths.reduce((a, b) => a + b, 0) + header.length * 2;
+  const naturalWs = Math.max(
+    header[4]?.length ?? 0,
+    ...boxes.map((b) => b.workspacePath.length),
+  );
+  const wsWidth = Math.min(naturalWs, Math.max(16, term - fixedTotal));
+
+  const widths = [...fixedWidths, wsWidth];
+  const rows: Cell[][] = boxes.map((b, idx) => [
+    ...(lead[idx] as Cell[]),
+    workspaceCell(b.workspacePath, wsWidth, stream),
+  ]);
+  const all: Cell[][] = [[...leadHeader, plain(header[4] as string)], ...rows];
+
+  const padCell = (cell: Cell, col: number): string => {
+    const target = widths[col] ?? 0;
+    return cell.text + ' '.repeat(Math.max(0, target - cell.width));
+  };
+
   return all
     .map((row) =>
       row
-        .map((cell, i) => (cell ?? '').padEnd(widths[i] ?? 0))
+        .map((cell, i) => padCell(cell ?? plain(''), i))
         .join('  ')
         .trimEnd(),
     )
@@ -59,5 +124,5 @@ export const listCommand = new Command('list')
       process.stdout.write('no boxes — run `agentbox create` to make one\n');
       return;
     }
-    process.stdout.write(renderTable(boxes) + '\n');
+    process.stdout.write(renderTable(boxes, process.stdout) + '\n');
   });
