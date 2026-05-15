@@ -115,6 +115,30 @@ Hook commands whose path is under your host home (e.g. `/Users/you/.config/iterm
 
 **First-run auth onboarding.** macOS Keychain doesn't transfer into containers, so the first `agentbox claude` without a token offers to run `claude setup-token` for you. After the OAuth flow you paste the printed token once, and it's saved to `~/.agentbox/auth.json` (mode 0600). Every later `agentbox claude` forwards it silently as `CLAUDE_CODE_OAUTH_TOKEN`. Resolution order: `ANTHROPIC_API_KEY` env → `CLAUDE_CODE_OAUTH_TOKEN` env → `~/.agentbox/auth.json`. To rotate the saved token: `rm ~/.agentbox/auth.json` then run `agentbox claude` again. Pass `-y` (or run with stdin not a TTY) to skip the prompt entirely — useful for CI; the box will just show "Run /login" inside.
 
+### Docker inside the box (Docker-in-Docker)
+
+Every box ships with its own `dockerd` so the agent can `docker build`, `docker run`, and bring up compose stacks **without** seeing your host's Docker daemon. The inner daemon runs in the box's own mount + network namespaces, so anything it spawns is contained. Storage driver is `fuse-overlayfs` (no host kernel module required), and the outer container is **not** `--privileged` — just the same `SYS_ADMIN` / `/dev/fuse` set the FUSE workspace overlay already needs, plus `NET_ADMIN`, `seccomp=unconfined`, and `--cgroupns=private` so the inner bridge networking + cgroup slice work.
+
+```sh
+agentbox shell mybox -- docker version            # client + server, both inside the box
+agentbox shell mybox -- docker run --rm hello-world
+agentbox shell mybox -- bash -lc 'cd /workspace && docker compose up -d'
+```
+
+The in-container `vscode` user is in the `docker` group, so no `sudo` needed.
+
+The data root `/var/lib/docker` lives in a per-box named volume (`agentbox-docker-<id>`) that's wiped on `agentbox destroy` — clean slate per box. If you want pulled image layers to persist across boxes, opt into the shared cache:
+
+```sh
+agentbox create --shared-docker-cache -n cached-box   # uses agentbox-docker-cache volume
+# or set it as the default for every box
+agentbox config set box.dockerCacheShared true --global
+```
+
+The shared cache is preserved on `destroy` and allowlisted in `prune --all`. Caveat: dockerd takes an exclusive lock on `/var/lib/docker`, so only **one** box at a time can run with the shared cache mounted — fine for serial workflows, not for parallel ones.
+
+`--privileged` is intentionally avoided so the same setup runs in cloud sandboxes (E2B, Modal, Vercel Sandbox, …) that accept the `cap_add` path but reject privileged. Tested on OrbStack; the same flags work on Docker Desktop (`--cgroupns=private` + the in-box remount of `/sys/fs/cgroup` and `/proc/sys` are the load-bearing bits — both engines bind those RO into containers under their default hardening, and the box does the remount itself with its `SYS_ADMIN` capability without affecting the host).
+
 ## Layout
 
 ```
