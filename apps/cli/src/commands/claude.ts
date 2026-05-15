@@ -6,8 +6,13 @@ import {
   claudeSessionInfo,
   createBox,
   DEFAULT_CLAUDE_SESSION,
+  ensureClaudeVolume,
+  inspectBox,
   rebuildPluginNativeDeps,
+  SHARED_CLAUDE_VOLUME,
+  startBox,
   startClaudeSession,
+  unpauseBox,
 } from '@agentbox/sandbox-docker';
 import { Command } from 'commander';
 import {
@@ -20,7 +25,7 @@ import {
   type ResolvedClaudeAuth,
 } from '../auth.js';
 import { resolveAgentLauncher } from '@agentbox/core';
-import { resolveBoxOrExit } from '../box-ref.js';
+import { resolveBoxOrExit, resolveBoxOrShift } from '../box-ref.js';
 import { clampSpinnerLine } from '../spinner-line.js';
 import { maybeRunSetupWizard } from '../wizard.js';
 import { handleLifecycleError } from './_errors.js';
@@ -265,4 +270,133 @@ const claudeAttachCommand = new Command('attach')
     }
   });
 
+interface ClaudeStartOptions {
+  sessionName?: string;
+  syncConfig?: boolean; // commander: --no-sync-config => false; default true
+}
+
+const claudeStartCommand = new Command('start')
+  .description(
+    'Start a Claude Code tmux session in an already-existing box (auto-unpause/start). If a session is already running, just attach.',
+  )
+  .argument(
+    '[box]',
+    'box ref: project index, id, id prefix, name, or container (default: the only box in this project)',
+  )
+  .option('--session-name <name>', 'tmux session name (default from config; built-in: claude)')
+  .option(
+    '--no-sync-config',
+    "skip rsyncing the host's ~/.claude into the box's volume before starting (faster; use existing in-box state)",
+  )
+  .argument(
+    '[claude-args...]',
+    "extra args passed to claude when starting a new session; ignored if a session is already running. Place after `--`, e.g. `agentbox claude start 1 -- --model sonnet`",
+  )
+  .action(async function (
+    this: Command,
+    idOrName: string | undefined,
+    claudeArgs: string[],
+  ) {
+    // optsWithGlobals merges parent + own options. The parent `claude`
+    // command also defines `--session-name` (for the create-and-launch
+    // verb); without this, commander binds the user's --session-name to
+    // the parent and the child's opts.sessionName stays undefined.
+    const opts = this.optsWithGlobals() as ClaudeStartOptions;
+      intro('agentbox claude start');
+      try {
+        // Two positionals (`[box] [claude-args...]`) make commander bind the
+        // first post-`--` token (e.g. `--model`) to `[box]`. resolveBoxOrShift
+        // detects that, auto-picks the project's single box, and tells us to
+        // treat the bound `idOrName` as the first claude-args token instead.
+        const { box, shifted } = await resolveBoxOrShift(idOrName);
+        const effectiveClaudeArgs =
+          shifted && idOrName ? [idOrName, ...claudeArgs] : claudeArgs;
+        const cfg = await loadEffectiveConfig(box.workspacePath, {
+          cliOverrides: opts.sessionName ? { claude: { sessionName: opts.sessionName } } : {},
+        });
+        const sessionName = cfg.effective.claude.sessionName;
+
+        // Auto-unpause/start. Mirrors `agentbox shell` / `agentbox code`.
+        // `startBox` re-mounts the FUSE overlay and relaunches ctl/vnc/dockerd
+        // because those processes die with the container.
+        const insp = await inspectBox(box.id);
+        if (insp.state === 'paused') {
+          log.info('box is paused; unpausing');
+          await unpauseBox(box.id);
+        } else if (insp.state === 'stopped') {
+          log.info('box is stopped; starting (remounting overlay)');
+          await startBox(box.id);
+        } else if (insp.state === 'missing') {
+          throw new Error(`box ${box.name} has no container; was it destroyed?`);
+        }
+
+        // If a tmux session already exists, just attach — no resync, no
+        // plugin rebuild, ignore any post-`--` args (they only apply when
+        // we are launching a fresh claude).
+        const existing = await claudeSessionInfo(box.container, sessionName);
+        if (existing.running) {
+          outro(`session "${sessionName}" already running — attaching (Ctrl-b d to detach)`);
+          attachClaudeSession(box.container, sessionName);
+          return;
+        }
+
+        const s = spinner();
+
+        // Default: re-sync the host's ~/.claude into the box volume so any
+        // updates the user made on the host (new MCP servers, refreshed
+        // OAuth state in _claude.json, …) reach the in-box claude. Slow on
+        // first sync; opt out with --no-sync-config to skip.
+        const syncConfig = opts.syncConfig !== false;
+        if (syncConfig) {
+          s.start('syncing ~/.claude into box volume');
+          // Use the box's recorded volume so isolated boxes hit their own
+          // agentbox-claude-config-<id>, not the shared one.
+          const volume = box.claudeConfigVolume ?? SHARED_CLAUDE_VOLUME;
+          const synced = await ensureClaudeVolume(
+            { volume },
+            {
+              syncFromHost: true,
+              image: box.image,
+              hostWorkspace: box.workspacePath,
+            },
+          );
+          if (synced.synced) s.stop(`synced ${volume} from ~/.claude`);
+          else s.stop(`nothing to sync (no host ~/.claude)`);
+        }
+
+        // Plugin native deps: idempotent — gated by a per-plugin marker. No-op
+        // on subsequent starts unless a new plugin was synced just now.
+        s.start('rebuilding plugin native deps');
+        const rebuild = await rebuildPluginNativeDeps(box.container, {
+          onProgress: (line) => s.message(clampSpinnerLine(line)),
+        });
+        if (rebuild.rebuilt.length === 0 && rebuild.failed.length === 0) {
+          s.stop('plugins ready (nothing to rebuild)');
+        } else {
+          s.stop(`plugins ready (rebuilt ${String(rebuild.rebuilt.length)})`);
+        }
+        for (const f of rebuild.failed) {
+          log.warn(`plugin install failed for ${f.dir}; claude may still load it. stderr:\n${f.stderr.trim()}`);
+        }
+
+        s.start('starting claude session');
+        await startClaudeSession({
+          container: box.container,
+          claudeArgs: effectiveClaudeArgs,
+          sessionName,
+        });
+        s.stop(`tmux session "${sessionName}" started`);
+
+        outro('attaching — Ctrl-b d to detach, leaves claude running');
+        attachClaudeSession(box.container, sessionName);
+      } catch (err) {
+        if (err instanceof ClaudeSessionError) {
+          log.error(err.message);
+          process.exit(1);
+        }
+        handleLifecycleError(err);
+      }
+    });
+
 claudeCommand.addCommand(claudeAttachCommand);
+claudeCommand.addCommand(claudeStartCommand);

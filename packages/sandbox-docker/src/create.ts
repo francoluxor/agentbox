@@ -32,6 +32,7 @@ import {
 } from './state.js';
 import { createSnapshot, snapshotPathFor } from './snapshot.js';
 import { launchCtlDaemon } from './ctl.js';
+import { writeBoxEnvFile } from './box-env.js';
 import {
   ensureRelay,
   generateRelayToken,
@@ -392,6 +393,35 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     ? [{ hostPort: 0, containerPort: VNC_CONTAINER_PORT, hostIp: '127.0.0.1' }]
     : [];
 
+  // Per-project monotonic index. Allocated *before* runBox so it can be
+  // injected as AGENTBOX_PROJECT_INDEX in the container env. Re-reads state
+  // each time so concurrent creates from the same project see each other's
+  // assignments (last-write-wins is fine — `recordBox` upserts by id, and
+  // index collisions are harmless since each box's id is unique).
+  let projectIndex: number | undefined;
+  if (opts.projectRoot) {
+    projectIndex = allocateProjectIndex(await readState(), opts.projectRoot);
+  }
+
+  // Identity vars that make the box self-aware. `AGENTBOX=1` is the sentinel
+  // `[ -n "$AGENTBOX" ]` checks key off. The rest are metadata for in-box
+  // agents — `AGENTBOX_HOST_WORKSPACE` is intentionally the absolute host
+  // path (not a mount), so an agent can explain to the user what host dir
+  // they are looking at.
+  const agentboxEnv: Record<string, string> = {
+    AGENTBOX: '1',
+    AGENTBOX_BOX_NAME: name,
+    AGENTBOX_HOST_WORKSPACE: workspace,
+    ...(opts.projectRoot ? { AGENTBOX_PROJECT_ROOT: opts.projectRoot } : {}),
+    ...(projectIndex !== undefined
+      ? { AGENTBOX_PROJECT_INDEX: String(projectIndex) }
+      : {}),
+  };
+  const boxEnvForFile: Record<string, string> = {
+    AGENTBOX_BOX_ID: id,
+    ...agentboxEnv,
+  };
+
   await runBox({
     name: containerName,
     image: imageRef,
@@ -402,6 +432,7 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     portMappings: vncPortMappings,
     env: {
       AGENTBOX_BOX_ID: id,
+      ...agentboxEnv,
       ...claudeMounts.env,
       ...relayEnv,
       ...vncEnv,
@@ -409,6 +440,14 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     },
   });
   log(`container ${containerName} started`);
+
+  // /etc/agentbox/box.env: sourced by /etc/profile.d/agentbox.sh in login
+  // shells (the docker-run env doesn't reach `agentbox shell <box>` cleanly
+  // without it). Best-effort — env vars on the container are the primary
+  // path; this file is for shells launched via tools that strip env.
+  const boxEnv = await writeBoxEnvFile(containerName, boxEnvForFile);
+  if (boxEnv.ok) log('wrote /etc/agentbox/box.env');
+  else log(`writing /etc/agentbox/box.env failed: ${boxEnv.reason}`);
 
   try {
     await mountOverlay(containerName, { nestedWorktrees: nestedWorktreeBinds });
@@ -488,15 +527,6 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     else log(`vnc stack did not become reachable: ${vnc.reason}`);
     vncHostPort = await publishedHostPort(containerName, VNC_CONTAINER_PORT);
     if (vncHostPort) log(`vnc web on host 127.0.0.1:${String(vncHostPort)}`);
-  }
-
-  // Allocate the per-project monotonic index just before recordBox. We re-read
-  // state here so concurrent creates from the same project see each other's
-  // assignments (last-write-wins is fine — `recordBox` upserts by id, and
-  // index collisions are harmless since each box's id is unique).
-  let projectIndex: number | undefined;
-  if (opts.projectRoot) {
-    projectIndex = allocateProjectIndex(await readState(), opts.projectRoot);
   }
 
   const record: BoxRecord = {

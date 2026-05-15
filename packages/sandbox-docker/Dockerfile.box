@@ -245,6 +245,50 @@ RUN printf '%s\n' \
         'set -g escape-time 0' \
         > /etc/tmux.conf
 
+# System-wide Claude Code hint. NOTE: /etc/claude-code/CLAUDE.md is not a
+# documented Claude Code load path today (only /etc/claude-code/managed-settings.json
+# is, and that's settings-only) — kept here so it's discoverable via
+# `cat /etc/claude-code/CLAUDE.md` and forward-compatible if Claude Code
+# adds it to its memory chain. Until then, in-box agents learn the same
+# facts via /etc/agentbox/box.env + AGENTBOX_* env vars.
+RUN mkdir -p /etc/claude-code \
+    && printf '%s\n' \
+        '# AgentBox sandbox' \
+        '' \
+        'You are running inside an AgentBox sandbox: a Linux Docker container with' \
+        'docker-in-docker (run `docker` directly, no sudo). The host filesystem is' \
+        'mounted read-only at /host-src; /workspace is a FUSE overlay where your' \
+        'writes go to a per-box volume.' \
+        '' \
+        'This container has no SSH credentials and no host gitconfig identity.' \
+        'For git operations that need the user (push, pull from private remotes),' \
+        'use `agentbox-ctl git pull|push -- <args>` — it RPCs to the host, which' \
+        'runs git with the real SSH agent and gitconfig. Local commits work as' \
+        'normal because the main `.git/` is bind-mounted at the same absolute' \
+        'path as on the host.' \
+        '' \
+        'Box identity is in /etc/agentbox/box.env and the AGENTBOX_* env vars.' \
+        > /etc/claude-code/CLAUDE.md \
+    && chmod 0644 /etc/claude-code/CLAUDE.md
+
+# /etc/agentbox/ holds runtime-injected box.env (written by `agentbox create`
+# via docker exec). Pre-created here so the writable layer starts with the
+# right perms; the file itself appears at create time.
+RUN mkdir -p /etc/agentbox && chmod 0755 /etc/agentbox
+
+# Login-shell shim: source /etc/agentbox/box.env so `agentbox shell <box>` and
+# any `bash -l` see AGENTBOX_* even when launched outside `docker run`'s env
+# (e.g. interactive shells). `set -a` exports every sourced var.
+RUN printf '%s\n' \
+        '# Auto-loaded by login shells; box.env is written by `agentbox create`.' \
+        'if [ -r /etc/agentbox/box.env ]; then' \
+        '  set -a' \
+        '  . /etc/agentbox/box.env' \
+        '  set +a' \
+        'fi' \
+        > /etc/profile.d/agentbox.sh \
+    && chmod 0644 /etc/profile.d/agentbox.sh
+
 # Default to the vscode user (UID 1000) provided by base:ubuntu. The overlay
 # mount itself happens via `docker exec --user root`, so this is just the
 # default identity for interactive shells.
