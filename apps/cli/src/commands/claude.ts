@@ -27,6 +27,7 @@ import {
 import { resolveAgentLauncher } from '@agentbox/core';
 import { resolveBoxOrExit, resolveBoxOrShift } from '../box-ref.js';
 import { clampSpinnerLine } from '../spinner-line.js';
+import { resolveLimits } from '../limits.js';
 import { maybeRunSetupWizard } from '../wizard.js';
 import { handleLifecycleError } from './_errors.js';
 
@@ -43,6 +44,10 @@ interface ClaudeCreateOptions {
   vnc?: boolean; // commander: --no-vnc => false; default true (undefined treated as true)
   sharedDockerCache?: boolean;
   sessionName?: string;
+  memory?: string;
+  cpus?: string;
+  pidsLimit?: string;
+  disk?: string;
 }
 
 function buildClaudeCliOverrides(opts: ClaudeCreateOptions): Partial<UserConfig> {
@@ -138,6 +143,10 @@ export const claudeCommand = new Command('claude')
     "use the shared 'agentbox-docker-cache' volume for in-box docker images (preserved on destroy; only one box can run at a time when set)",
   )
   .option('--session-name <name>', 'tmux session name (default from config; built-in: claude)')
+  .option('--memory <size>', 'memory ceiling (e.g. 512m, 2g); unset = unlimited')
+  .option('--cpus <n>', 'CPU count cap (fractional ok, e.g. 1.5); unset = unlimited')
+  .option('--pids-limit <n>', 'max process count (PIDs cgroup); unset = unlimited')
+  .option('--disk <size>', 'best-effort writable-layer size (e.g. 10g); no-op on overlay2/macOS')
   .argument(
     '[claude-args...]',
     "extra args passed to claude inside the box; place after `--`, e.g. `agentbox claude -- --model sonnet`",
@@ -213,6 +222,7 @@ export const claudeCommand = new Command('claude')
         withEnv: cfg.effective.box.withEnv,
         vnc: { enabled: cfg.effective.box.vnc },
         docker: { sharedCache: cfg.effective.box.dockerCacheShared },
+        limits: resolveLimits(cfg.effective.box, opts),
         projectRoot,
         onLog: (line) => s.message(clampSpinnerLine(line)),
       });

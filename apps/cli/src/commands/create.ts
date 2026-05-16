@@ -10,6 +10,7 @@ import { createBox, listBoxes } from '@agentbox/sandbox-docker';
 import { Command } from 'commander';
 import { execSync, spawnSync } from 'node:child_process';
 import { clampSpinnerLine } from '../spinner-line.js';
+import { resolveLimits } from '../limits.js';
 import {
   maybeRunSetupWizard,
   passthroughFlags,
@@ -29,6 +30,10 @@ interface CreateOptions {
   withEnv?: boolean;
   vnc?: boolean; // commander: --no-vnc => false; default true (undefined treated as true)
   sharedDockerCache?: boolean;
+  memory?: string;
+  cpus?: string;
+  pidsLimit?: string;
+  disk?: string;
 }
 
 function buildCliOverrides(opts: CreateOptions): Partial<UserConfig> {
@@ -96,6 +101,10 @@ export const createCommand = new Command('create')
     '--shared-docker-cache',
     "use the shared 'agentbox-docker-cache' volume for in-box docker images (preserved on destroy; only one box can run at a time when set)",
   )
+  .option('--memory <size>', 'memory ceiling (e.g. 512m, 2g); unset = unlimited')
+  .option('--cpus <n>', 'CPU count cap (fractional ok, e.g. 1.5); unset = unlimited')
+  .option('--pids-limit <n>', 'max process count (PIDs cgroup); unset = unlimited')
+  .option('--disk <size>', 'best-effort writable-layer size (e.g. 10g); no-op on overlay2/macOS')
   .option('-y, --yes', 'skip prompts, accept defaults (host-snapshot=on)')
   .action(async (opts: CreateOptions) => {
     intro('agentbox create');
@@ -144,6 +153,7 @@ export const createCommand = new Command('create')
         withEnv: cfg.effective.box.withEnv,
         vnc: { enabled: cfg.effective.box.vnc },
         docker: { sharedCache: cfg.effective.box.dockerCacheShared },
+        limits: resolveLimits(cfg.effective.box, opts),
         projectRoot,
         onLog: (line) => s.message(clampSpinnerLine(line)),
       });

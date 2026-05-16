@@ -1,8 +1,10 @@
 import { log } from '@clack/prompts';
 import { inspectBox, type InspectedBox } from '@agentbox/sandbox-docker';
 import { Command } from 'commander';
+import { projectCheckpointVolumeBytes } from '@agentbox/sandbox-docker';
 import { resolveBoxOrExit } from '../box-ref.js';
 import { renderEndpointLines } from '../endpoints-render.js';
+import { fmtBytes } from '../fmt.js';
 import { withWatchOptions, watchRender, type WatchableOptions } from '../watch.js';
 import { handleLifecycleError } from './_errors.js';
 
@@ -10,15 +12,14 @@ interface InspectOptions extends WatchableOptions {
   json?: boolean;
 }
 
-function fmtBytes(n: number | null): string {
-  if (n === null) return 'n/a';
-  if (n < 1024) return `${String(n)} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
-  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
+function fmtLimit(n: number | null | undefined, unit: string): string {
+  return n && n > 0 ? `${String(n)}${unit}` : 'unlimited';
 }
 
-function renderText(i: InspectedBox): string {
+async function renderText(i: InspectedBox): Promise<string> {
+  const lim = i.record.resourceLimits;
+  const projectRoot = i.record.projectRoot ?? i.record.workspacePath;
+  const ckptBytes = await projectCheckpointVolumeBytes(projectRoot);
   const upperHost = i.hostPaths.upperLiveOnHost
     ? `${i.hostPaths.upperLiveOnHost}  (live)`
     : `${i.hostPaths.upperExport}  (run \`agentbox open --upper\` to refresh)`;
@@ -42,8 +43,13 @@ function renderText(i: InspectedBox): string {
     `env files     ${i.record.withEnv ? 'yes' : 'no'}`,
     'endpoints',
     ...renderEndpoints(i),
+    `mem limit     ${lim?.memoryBytes ? fmtBytes(lim.memoryBytes) : 'unlimited'}`,
+    `cpu limit     ${fmtLimit(lim?.cpus, '')}`,
+    `pids limit    ${fmtLimit(lim?.pidsLimit, '')}`,
+    `disk limit    ${lim?.disk ? `${lim.disk} (best-effort; no-op on overlay2/macOS)` : 'unlimited'}`,
     `snapshot dir  ${i.record.snapshotDir ?? '(none — live workspace mount)'}`,
     `snapshot size ${fmtBytes(i.snapshotSizeBytes)}`,
+    `checkpoint vol ${ckptBytes === null ? '(none)' : fmtBytes(ckptBytes)}`,
     `host export   ${i.hostPaths.mergedExport}  (run \`agentbox open\` to refresh)`,
     `upper host    ${upperHost}`,
     `created       ${i.record.createdAt}`,
@@ -101,7 +107,7 @@ export const inspectCommand = withWatchOptions(
     if (opts.json) {
       process.stdout.write(JSON.stringify(result, null, 2) + '\n');
     } else {
-      process.stdout.write(renderText(result) + '\n');
+      process.stdout.write((await renderText(result)) + '\n');
     }
   } catch (err) {
     handleLifecycleError(err);

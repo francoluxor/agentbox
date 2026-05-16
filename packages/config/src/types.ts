@@ -22,6 +22,10 @@ export interface UserConfig {
     isolateClaudeConfig?: boolean;
     image?: string;
     dockerCacheShared?: boolean;
+    memory?: number;
+    cpus?: number;
+    pidsLimit?: number;
+    disk?: string;
   };
   checkpoint?: {
     maxLayers?: number;
@@ -79,6 +83,10 @@ export interface EffectiveConfig {
     isolateClaudeConfig: boolean;
     image: string;
     dockerCacheShared: boolean;
+    memory: number;
+    cpus: number;
+    pidsLimit: number;
+    disk: string;
   };
   checkpoint: {
     maxLayers: number;
@@ -156,6 +164,10 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     isolateClaudeConfig: false,
     image: 'agentbox/box:dev',
     dockerCacheShared: false,
+    memory: 0,
+    cpus: 0,
+    pidsLimit: 0,
+    disk: '',
   },
   checkpoint: {
     maxLayers: 3,
@@ -266,6 +278,30 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     type: 'bool',
     description:
       "Share the in-box docker image cache across boxes via the 'agentbox-docker-cache' volume (preserved on destroy/prune; only one box can run at a time when set).",
+  },
+  {
+    key: 'box.memory',
+    type: 'int',
+    description:
+      'Hard memory ceiling in MiB for new boxes (0 = unlimited). Use --memory on create/claude for byte/k/m/g strings.',
+  },
+  {
+    key: 'box.cpus',
+    type: 'int',
+    description:
+      'CPU count cap for new boxes (0 = unlimited). Whole cores via config; use --cpus for fractional (e.g. 1.5).',
+  },
+  {
+    key: 'box.pidsLimit',
+    type: 'int',
+    description: 'Max process count (PIDs cgroup) for new boxes (0 = unlimited).',
+  },
+  {
+    key: 'box.disk',
+    type: 'string',
+    description:
+      "Best-effort writable-layer size for new boxes, e.g. '10G'. No-op on overlay2 / the macOS engines.",
+    advanced: true,
   },
   {
     key: 'claude.sessionName',

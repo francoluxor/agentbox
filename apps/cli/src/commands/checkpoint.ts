@@ -1,6 +1,11 @@
 import { confirm, isCancel, log } from '@clack/prompts';
 import { Command } from 'commander';
-import { findProjectRoot, loadEffectiveConfig, setConfigValue } from '@agentbox/config';
+import {
+  findProjectRoot,
+  loadEffectiveConfig,
+  setConfigValue,
+  unsetConfigValue,
+} from '@agentbox/config';
 import {
   createCheckpoint,
   inspectBox,
@@ -96,10 +101,26 @@ const lsSub = new Command('ls')
 
 const setDefaultSub = new Command('set-default')
   .description('Pin a checkpoint as the project default (box.defaultCheckpoint)')
-  .argument('<ref>', 'checkpoint name')
-  .action(async (ref: string) => {
+  .argument('[ref]', 'checkpoint name (omit with --clear)')
+  .option('--clear', 'unset the project default instead of setting one')
+  .action(async (ref: string | undefined, opts: { clear?: boolean }) => {
     try {
       const projectRoot = (await findProjectRoot(process.cwd())).root;
+      if (opts.clear) {
+        if (ref !== undefined) {
+          throw new Error('pass either a <ref> or --clear, not both');
+        }
+        const r = await unsetConfigValue('project', 'box.defaultCheckpoint', projectRoot);
+        process.stdout.write(
+          r.existed
+            ? `cleared project default checkpoint   (wrote ${r.path})\n`
+            : `no project default checkpoint was set   (${r.path})\n`,
+        );
+        return;
+      }
+      if (ref === undefined) {
+        throw new Error('missing <ref> (or pass --clear to unset the default)');
+      }
       const list = await listCheckpoints(projectRoot);
       if (!list.some((c) => c.name === ref)) {
         throw new Error(`checkpoint not found: ${ref} (see \`agentbox checkpoint ls\`)`);
@@ -128,6 +149,20 @@ const rmSub = new Command('rm')
       const removed = await removeCheckpoint(projectRoot, ref);
       if (!removed) throw new Error(`checkpoint not found: ${ref}`);
       process.stdout.write(`removed checkpoint ${ref}\n`);
+
+      // Don't leave box.defaultCheckpoint dangling at a now-deleted ref —
+      // future `agentbox create` would fail to resolve it. Clear it when the
+      // project layer pointed here; warn (can't auto-edit) if it came from a
+      // global / workspace-defaults layer instead.
+      const cfg = await loadEffectiveConfig(projectRoot);
+      if (cfg.layers.project.values.box?.defaultCheckpoint === ref) {
+        await unsetConfigValue('project', 'box.defaultCheckpoint', projectRoot);
+        log.info(`cleared project default checkpoint (was ${ref})`);
+      } else if (cfg.effective.box.defaultCheckpoint === ref) {
+        log.warn(
+          `default checkpoint ${ref} is set outside the per-project config (global or agentbox.yaml defaults) — clear it manually`,
+        );
+      }
     } catch (err) {
       handleLifecycleError(err);
     }

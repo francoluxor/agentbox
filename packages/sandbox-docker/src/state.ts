@@ -144,6 +144,19 @@ export interface BoxRecord {
     /** Checkpoint refs composing the chain, base-most last. */
     chain: string[];
   };
+  /**
+   * Resource ceilings actually applied at `docker run` (bytes/fractional/count;
+   * the `disk` string only present when the engine's storage driver enforces
+   * it — dropped + warned on overlay2/macOS). Absent on legacy boxes → treated
+   * as unlimited. Surfaced by `agentbox inspect` and cross-checked by
+   * `boxResourceStats`.
+   */
+  resourceLimits?: {
+    memoryBytes?: number;
+    cpus?: number;
+    pidsLimit?: number;
+    disk?: string;
+  };
   createdAt: string; // ISO-8601
 }
 

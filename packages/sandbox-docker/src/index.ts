@@ -23,6 +23,12 @@ export {
   type StartClaudeSessionOptions,
 } from './claude.js';
 export { createBox, type CreateBoxOptions, type CreatedBox } from './create.js';
+export {
+  boxResourceStats,
+  parseDockerSize,
+  projectCheckpointVolumeBytes,
+  volumeSizeBytes,
+} from './stats.js';
 export { getBoxEndpoints, type BoxEndpoint, type BoxEndpoints } from './endpoints.js';
 export { execInBox, removeImage, type DockerExecResult } from './docker.js';
 export {
@@ -232,6 +238,15 @@ export const dockerProvider: SandboxProvider = {
       workspacePath: b.workspacePath,
       createdAt: new Date(b.createdAt),
     }));
+  },
+  async stats(id) {
+    const { readState, findBox } = await import('./state.js');
+    const { boxResourceStats } = await import('./stats.js');
+    const found = findBox(id, await readState());
+    if (found.kind !== 'ok') {
+      throw new Error(`box not found: ${id}`);
+    }
+    return boxResourceStats(found.box);
   },
 };
 

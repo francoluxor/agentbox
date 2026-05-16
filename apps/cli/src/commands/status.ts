@@ -7,9 +7,16 @@ import {
   type BoxStatus,
   type StatusReply,
 } from '@agentbox/ctl';
-import { execInBox, inspectBox, type InspectedBox } from '@agentbox/sandbox-docker';
+import {
+  boxResourceStats,
+  execInBox,
+  inspectBox,
+  type InspectedBox,
+} from '@agentbox/sandbox-docker';
+import type { BoxResourceStats } from '@agentbox/core';
 import { resolveBoxOrExit } from '../box-ref.js';
 import { renderEndpointLines } from '../endpoints-render.js';
+import { fmtAgo, fmtBytes, fmtPercent } from '../fmt.js';
 import { withWatchOptions, watchRender, type WatchableOptions } from '../watch.js';
 import { handleLifecycleError } from './_errors.js';
 
@@ -41,12 +48,14 @@ export const statusCommand = withWatchOptions(
     if (opts.json) {
       const inspected = await inspectBox(box.id);
       const live = await fetchLive(inspected.state, box.container);
+      const resources = await boxResourceStats(inspected.record);
       process.stdout.write(
         JSON.stringify(
           {
             state: inspected.state,
             source: live ? 'live' : 'persisted',
             ...(live ?? {}),
+            resources,
             claudeSession: inspected.claudeSession,
             persisted: inspected.persistedStatus,
             endpoints: inspected.endpoints,
@@ -90,7 +99,8 @@ async function buildStatusText(id: string, container: string): Promise<string> {
   if (epLines.length > 0) {
     out.push('ENDPOINTS', epLines.join('\n'), '');
   }
-  out.push(renderClaudeLine(inspected, persistedStatus));
+  out.push('RESOURCES', renderResources(await boxResourceStats(inspected.record)), '');
+  out.push('CLAUDE', renderClaude(inspected, persistedStatus));
 
   if (live) {
     if (live.tasks.length > 0) {
@@ -113,18 +123,51 @@ async function buildStatusText(id: string, container: string): Promise<string> {
   return out.join('\n');
 }
 
-function renderClaudeLine(i: InspectedBox, persisted: BoxStatus | null): string {
+function renderResources(s: BoxResourceStats): string {
+  const lim = (v: string | number | null | undefined): string =>
+    v ? ` (limit ${typeof v === 'number' ? String(v) : v})` : '';
+  const seg: string[] = [];
+  if (s.live) {
+    seg.push(`cpu ${fmtPercent(s.cpuPercent)}${lim(s.limits.cpus)}`);
+    seg.push(
+      `mem ${fmtBytes(s.memUsedBytes)} / ${fmtBytes(s.memLimitBytes)} ` +
+        `(${fmtPercent(s.memPercent)})${lim(s.limits.memoryBytes ? fmtBytes(s.limits.memoryBytes) : null)}`,
+    );
+    seg.push(`pids ${s.pids === null ? '—' : String(s.pids)}${lim(s.limits.pidsLimit)}`);
+  } else {
+    seg.push('not running');
+    if (s.limits.memoryBytes) seg.push(`mem limit ${fmtBytes(s.limits.memoryBytes)}`);
+    if (s.limits.cpus) seg.push(`cpu limit ${String(s.limits.cpus)}`);
+    if (s.limits.pidsLimit) seg.push(`pids limit ${String(s.limits.pidsLimit)}`);
+  }
+  seg.push(
+    `disk ${fmtBytes(s.diskUsedBytes)}${s.limits.disk ? ` (limit ${s.limits.disk}, no-op on overlay2/macOS)` : ''}`,
+  );
+  if (s.snapshotDiskBytes !== null) seg.push(`snapshot ${fmtBytes(s.snapshotDiskBytes)}`);
+  if (s.checkpointVolumeBytes !== null) seg.push(`ckpt ${fmtBytes(s.checkpointVolumeBytes)}`);
+  let line = `  ${seg.join('  ')}`;
+  for (const w of s.warnings) line += `\n  note: ${w}`;
+  return line;
+}
+
+function renderClaude(i: InspectedBox, persisted: BoxStatus | null): string {
   const s = i.claudeSession;
-  const sessionLine =
-    s === null
-      ? `claude session: (n/a — box not running)`
-      : s.running
-        ? `claude session: running ("${s.sessionName}")${s.startedAt ? ` since ${s.startedAt}` : ''}`
-        : `claude session: not running ("${s.sessionName}")`;
-  if (!persisted) return sessionLine;
-  const c = persisted.claude;
-  const updated = c.updatedAt ? ` (updated ${c.updatedAt})` : '';
-  return `${sessionLine}\nclaude activity: ${c.state}${updated}`;
+  let session: string;
+  if (s === null) {
+    session = 'no session (box not running)';
+  } else if (!s.running) {
+    session = `no session ("${s.sessionName}")`;
+  } else {
+    const ago = fmtAgo(s.startedAt);
+    session = `running ("${s.sessionName}")${ago ? `, started ${ago}` : ''}`;
+  }
+  const lines = [`  session   ${session}`];
+  if (persisted) {
+    const c = persisted.claude;
+    const ago = fmtAgo(c.updatedAt);
+    lines.push(`  activity  ${c.state}${ago ? ` (${ago})` : ''}`);
+  }
+  return lines.join('\n');
 }
 
 function renderPersisted(s: BoxStatus, state: string): string {

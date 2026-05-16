@@ -6,8 +6,10 @@ import { execa } from 'execa';
 import { ConfigError, loadConfig } from '@agentbox/ctl';
 import { buildClaudeMounts, ensureClaudeVolume, resolveClaudeVolume } from './claude.js';
 import {
+  type BoxLimitSpec,
   containerExists,
   dockerInfo,
+  dockerStorageDriver,
   ensureVolume,
   publishedHostPort,
   runBox,
@@ -114,12 +116,36 @@ export interface CreateBoxOptions {
    * directly via the programmatic API.
    */
   projectRoot?: string;
+  /**
+   * Container resource ceilings (engine-agnostic: bytes / fractional cpus /
+   * pid count / raw disk size string). Absent fields = unlimited. `disk` is
+   * best-effort: dropped (with a warning via `onLog`) when the engine's
+   * storage driver can't enforce `--storage-opt size=` (overlay2 / macOS).
+   */
+  limits?: BoxLimitSpec;
 }
 
 export interface CreatedBox {
   record: BoxRecord;
   overlayChecks: OverlayCheck[];
   imageBuilt: boolean;
+}
+
+/**
+ * Compact the engine-applied limits into the BoxRecord shape: only fields that
+ * actually constrain the box (>0 / non-empty). Returns undefined when nothing
+ * was applied so legacy/unlimited boxes stay free of the field.
+ */
+function persistableLimits(
+  lim: BoxLimitSpec | undefined,
+): BoxRecord['resourceLimits'] | undefined {
+  if (!lim) return undefined;
+  const out: NonNullable<BoxRecord['resourceLimits']> = {};
+  if (lim.memoryBytes && lim.memoryBytes > 0) out.memoryBytes = Math.floor(lim.memoryBytes);
+  if (lim.cpus && lim.cpus > 0) out.cpus = lim.cpus;
+  if (lim.pidsLimit && lim.pidsLimit > 0) out.pidsLimit = Math.floor(lim.pidsLimit);
+  if (lim.disk) out.disk = lim.disk;
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function generateBoxId(): string {
@@ -479,12 +505,28 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     ...agentboxEnv,
   };
 
+  // `--storage-opt size=` is only enforced by devicemapper/btrfs/zfs — a hard
+  // error on overlay2 / fuse-overlayfs (every macOS engine). Drop it + warn so
+  // create doesn't blow up; the other limits are universal.
+  const appliedLimits: BoxLimitSpec | undefined = opts.limits;
+  let effectiveLimits = appliedLimits;
+  if (appliedLimits?.disk) {
+    const driver = await dockerStorageDriver();
+    if (!/^(devicemapper|btrfs|zfs|windowsfilter)$/.test(driver)) {
+      log(
+        `warning: --disk/box.disk is a no-op on this engine (storage-driver=${driver || 'unknown'}); ignoring`,
+      );
+      effectiveLimits = { ...appliedLimits, disk: null };
+    }
+  }
+
   await runBox({
     name: containerName,
     image: imageRef,
     lowerPath,
     upperVolume,
     extraVolumes,
+    limits: effectiveLimits,
     portMappings: [...vncPortMappings, ...webPortMappings],
     env: {
       AGENTBOX_BOX_ID: id,
@@ -634,6 +676,7 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     lowerDirs,
     checkpointVolume,
     checkpointSource,
+    resourceLimits: persistableLimits(effectiveLimits),
     createdAt,
   };
   await recordBox(record);

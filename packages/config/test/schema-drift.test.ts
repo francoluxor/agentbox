@@ -34,6 +34,10 @@ box:
   vnc: true
   isolateClaudeConfig: false
   image: agentbox/box:dev
+  memory: 2048
+  cpus: 4
+  pidsLimit: 512
+  disk: 10G
 claude:
   sessionName: claude
 code:
@@ -63,6 +67,10 @@ maintenance:
   pruneProjectConfigsEvery: 25
 `,
   },
+  {
+    name: 'box resource limits',
+    yaml: 'box:\n  memory: 1024\n  cpus: 2\n  pidsLimit: 256\n',
+  },
   { name: 'autopause only', yaml: 'autopause:\n  enabled: true\n' },
   { name: 'maintenance only', yaml: 'maintenance:\n  pruneProjectConfigs: true\n' },
 ];
@@ -91,6 +99,14 @@ const INVALID: Fixture[] = [
   {
     name: 'wrong type for int',
     yaml: 'code:\n  timeoutMs: "120000"\n',
+  },
+  {
+    name: 'box.memory wrong type',
+    yaml: 'box:\n  memory: "2g"\n',
+  },
+  {
+    name: 'box.cpu unknown sibling',
+    yaml: 'box:\n  cpu: 2\n',
   },
   {
     name: 'unknown enum value',

@@ -17,6 +17,17 @@ export async function dockerInfo(): Promise<void> {
   }
 }
 
+/**
+ * Engine-agnostic resource ceilings. Memory in bytes, cpus fractional, disk a
+ * raw engine-native size string. `null`/absent = unlimited.
+ */
+export interface BoxLimitSpec {
+  memoryBytes?: number | null;
+  cpus?: number | null;
+  pidsLimit?: number | null;
+  disk?: string | null;
+}
+
 export interface RunBoxSpec {
   name: string;
   image: string;
@@ -24,6 +35,7 @@ export interface RunBoxSpec {
   upperVolume: string;
   extraVolumes?: string[];
   env?: Record<string, string>;
+  limits?: BoxLimitSpec;
   /**
    * docker `-p` mappings to forward host ports into the container. `hostPort: 0`
    * lets Docker pick a free ephemeral port; resolve it back with
@@ -69,6 +81,23 @@ export async function runBox(spec: RunBoxSpec): Promise<string> {
     '-v',
     `${spec.upperVolume}:/upper`,
   ];
+  const lim = spec.limits;
+  if (lim) {
+    if (lim.memoryBytes && lim.memoryBytes > 0) {
+      args.push('--memory', String(Math.floor(lim.memoryBytes)));
+    }
+    if (lim.cpus && lim.cpus > 0) {
+      args.push('--cpus', String(lim.cpus));
+    }
+    if (lim.pidsLimit && lim.pidsLimit > 0) {
+      args.push('--pids-limit', String(Math.floor(lim.pidsLimit)));
+    }
+    // Best-effort: a no-op on overlay2 / the macOS engines. createBox() drops
+    // this on those drivers (and warns) so `docker run` doesn't hard-error.
+    if (lim.disk) {
+      args.push('--storage-opt', `size=${lim.disk}`);
+    }
+  }
   for (const v of spec.extraVolumes ?? []) {
     args.push('-v', v);
   }
@@ -83,6 +112,17 @@ export async function runBox(spec: RunBoxSpec): Promise<string> {
 
   const { stdout } = await execa('docker', args);
   return stdout.trim();
+}
+
+/**
+ * The engine's storage driver (`overlay2`, `fuse-overlayfs`, `btrfs`, …).
+ * `--storage-opt size=` is only enforced by devicemapper/btrfs/zfs/windowsfilter
+ * — a no-op everywhere the macOS engines run. Empty string on probe failure.
+ */
+export async function dockerStorageDriver(): Promise<string> {
+  const result = await execa('docker', ['info', '--format', '{{.Driver}}'], { reject: false });
+  if (result.exitCode !== 0) return '';
+  return (result.stdout ?? '').trim();
 }
 
 export async function execInBox(

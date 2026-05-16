@@ -2,6 +2,8 @@ export type {
   AgentKind,
   BoxDescriptor,
   BoxId,
+  BoxResourceLimits,
+  BoxResourceStats,
   BoxState,
   SandboxProvider,
   StartBoxOptions,
