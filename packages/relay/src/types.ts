@@ -79,3 +79,12 @@ export interface GitRpcResult {
   stdout: string;
   stderr: string;
 }
+
+export interface CheckpointRpcParams {
+  /** Checkpoint name; defaults host-side to `<box-name>-<next>`. */
+  name?: string;
+  /** Flatten lower+upper into one tree instead of a layered delta. */
+  merged?: boolean;
+  /** Mark the new checkpoint as the project default. */
+  setDefault?: boolean;
+}

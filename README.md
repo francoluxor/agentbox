@@ -43,12 +43,19 @@ docker exec -it agentbox-<id> bash
 ## Commands
 
 ```sh
-agentbox create [-w <path>] [-n <name>] [--snapshot | --no-snapshot] [--with-env] [--attach] [-y]
+agentbox create [-w <path>] [-n <name>] [--host-snapshot | --no-host-snapshot]
+                [--snapshot <ref>] [--with-env] [--attach] [-y]
+                                    # --host-snapshot: frozen APFS clone of the host workspace as the lower
+                                    # --snapshot <ref>: start from a project checkpoint (warm state)
                                     # --with-env copies host .env*/secrets.toml/agentbox.yaml into /workspace
-agentbox claude [-w <path>] [-n <name>] [--snapshot | --no-snapshot] [--isolate-claude-config]
+agentbox claude [-w <path>] [-n <name>] [--host-snapshot | --no-host-snapshot]
+                [--snapshot <ref>] [--isolate-claude-config]
                 [--with-env] [--session-name <name>] [-y] [-- <claude-args>...]
                                     # create + start Claude Code in detached tmux + attach
 agentbox claude attach <box> [--session-name <name>]   # reattach to the running session
+agentbox checkpoint [box] [--name <n>] [--merged] [--set-default]   # capture warm box state
+agentbox checkpoint ls | set-default <ref> | rm <ref>
+# inside a box: agentbox-ctl checkpoint [--name <n>] [--merged] [--set-default]  # via the host relay
 agentbox list                       # alias: ls
 agentbox inspect <box> [--json]
 agentbox status <box> [--json]                  # services + claude session state
@@ -283,8 +290,11 @@ One-shot (after a build):
 
 ```sh
 node apps/cli/dist/index.js create --help
-node apps/cli/dist/index.js create --no-snapshot -n my-box
-node apps/cli/dist/index.js create --snapshot -y
+node apps/cli/dist/index.js create --no-host-snapshot -n my-box
+node apps/cli/dist/index.js create --host-snapshot -y
+node apps/cli/dist/index.js checkpoint my-box --set-default   # warm checkpoint -> project default
+node apps/cli/dist/index.js create -n my-box2                  # starts from the default checkpoint
+node apps/cli/dist/index.js create --snapshot my-box-1         # or an explicit checkpoint ref
 ```
 
 Watch-rebuild while editing source:

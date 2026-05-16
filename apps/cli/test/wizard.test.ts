@@ -14,9 +14,14 @@ describe('passthroughFlags', () => {
     expect(passthroughFlags({})).toEqual([]);
   });
 
-  it('emits --snapshot / --no-snapshot based on the tri-state', () => {
-    expect(passthroughFlags({ snapshot: true })).toEqual(['--snapshot']);
-    expect(passthroughFlags({ snapshot: false })).toEqual(['--no-snapshot']);
+  it('emits --host-snapshot / --no-host-snapshot based on the tri-state', () => {
+    expect(passthroughFlags({ hostSnapshot: true })).toEqual(['--host-snapshot']);
+    expect(passthroughFlags({ hostSnapshot: false })).toEqual(['--no-host-snapshot']);
+    expect(passthroughFlags({ hostSnapshot: undefined })).toEqual([]);
+  });
+
+  it('forwards --snapshot <ref> (checkpoint) as a value flag', () => {
+    expect(passthroughFlags({ snapshot: 'warm-1' })).toEqual(['--snapshot', 'warm-1']);
     expect(passthroughFlags({ snapshot: undefined })).toEqual([]);
   });
 

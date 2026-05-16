@@ -5,6 +5,7 @@ import { BoxStatusStore, isValidBoxStatus } from './status-store.js';
 import type {
   BoxRegistration,
   BoxWorktree,
+  CheckpointRpcParams,
   GitRpcParams,
   GitRpcResult,
   PostEventBody,
@@ -34,6 +35,7 @@ const BOX_STATUS_EVENT = 'box-status';
 
 const MAX_BODY_BYTES = 1024 * 1024; // 1 MiB hard cap; relay is for control-plane traffic, not payloads.
 const GIT_RPC_TIMEOUT_MS = 120_000; // git push/pull can be slow on big repos.
+const CHECKPOINT_RPC_TIMEOUT_MS = 600_000; // capturing node_modules/build trees can be slow.
 
 function send(
   res: ServerResponse,
@@ -188,6 +190,15 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
       log(`rpc box=${reg.boxId} method=${body.method}`);
       if (body.method === 'git.pull' || body.method === 'git.push') {
         const result = await handleGitRpc(reg, body.method, body.params as GitRpcParams | undefined);
+        const status = result.exitCode === 0 ? 200 : 500;
+        send(res, status, result);
+        return;
+      }
+      if (body.method === 'checkpoint.create') {
+        const result = await handleCheckpointRpc(
+          reg,
+          body.params as CheckpointRpcParams | undefined,
+        );
         const status = result.exitCode === 0 ? 200 : 500;
         send(res, status, result);
         return;
@@ -386,7 +397,36 @@ async function handleGitRpc(
   return runHostCommand(argv);
 }
 
-function runHostCommand(argv: string[]): Promise<GitRpcResult> {
+/**
+ * Capture a checkpoint host-side by shelling out to the installed agentbox
+ * CLI (same decoupling philosophy as `handleGitRpc` spawning `git`). The
+ * relay only knows the box id; the CLI resolves the BoxRecord (project root,
+ * checkpoint config, snapshot storage) from it. `AGENTBOX_CLI_ENTRY` is set
+ * by `ensureRelay` when it spawns this process.
+ */
+async function handleCheckpointRpc(
+  reg: BoxRegistration,
+  params: CheckpointRpcParams | undefined,
+): Promise<GitRpcResult> {
+  const entry = process.env.AGENTBOX_CLI_ENTRY;
+  if (!entry) {
+    return {
+      exitCode: 64,
+      stdout: '',
+      stderr: 'relay: AGENTBOX_CLI_ENTRY not set; cannot run checkpoint host-side',
+    };
+  }
+  const argv = [process.execPath, entry, 'checkpoint', 'create', reg.boxId];
+  if (params?.name) argv.push('--name', params.name);
+  if (params?.merged === true) argv.push('--merged');
+  if (params?.setDefault === true) argv.push('--set-default');
+  return runHostCommand(argv, CHECKPOINT_RPC_TIMEOUT_MS);
+}
+
+function runHostCommand(
+  argv: string[],
+  timeoutMs: number = GIT_RPC_TIMEOUT_MS,
+): Promise<GitRpcResult> {
   return new Promise<GitRpcResult>((resolve) => {
     const [cmd, ...rest] = argv;
     if (!cmd) {
@@ -407,9 +447,9 @@ function runHostCommand(argv: string[]): Promise<GitRpcResult> {
     };
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
-      stderr += `\nrelay: command timed out after ${String(GIT_RPC_TIMEOUT_MS)}ms\n`;
+      stderr += `\nrelay: command timed out after ${String(timeoutMs)}ms\n`;
       finish(124);
-    }, GIT_RPC_TIMEOUT_MS);
+    }, timeoutMs);
     child.stdout?.on('data', (chunk: Buffer) => {
       stdout += chunk.toString('utf8');
     });

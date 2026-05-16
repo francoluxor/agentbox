@@ -80,6 +80,14 @@ interface WizardArgs {
   workspace: string;
   yes: boolean;
   command: 'create' | 'claude';
+  /**
+   * Resolved checkpoint ref this box will start from (explicit `--snapshot`
+   * or the project's `box.defaultCheckpoint`), if any. When set, the project
+   * is already configured: the checkpoint carries the warm state *and* the
+   * agentbox.yaml that was present when it was captured, so we skip the
+   * "generate one?" prompt entirely.
+   */
+  checkpointRef?: string;
 }
 
 /**
@@ -94,6 +102,7 @@ export async function maybeRunSetupWizard(args: WizardArgs): Promise<WizardOutco
   // installed the skill; just inject the initial prompt for claude.
   if (process.env[WIZARD_AUTOLAUNCH_ENV] === '1') {
     if (args.command !== 'claude') return { action: 'proceed' };
+    if (args.checkpointRef) return { action: 'proceed' };
     const proj = await findProjectRoot(args.workspace);
     if (proj.hasAgentboxYaml) return { action: 'proceed' };
     return {
@@ -107,6 +116,14 @@ export async function maybeRunSetupWizard(args: WizardArgs): Promise<WizardOutco
 
   const proj = await findProjectRoot(args.workspace);
   if (proj.hasAgentboxYaml) return { action: 'proceed' };
+
+  // A configured default checkpoint means the project is already set up — the
+  // checkpoint carries node_modules/env *and* the agentbox.yaml from when it
+  // was captured. Don't nag to regenerate one.
+  if (args.checkpointRef) {
+    log.info(`starting from checkpoint "${args.checkpointRef}"; skipping agentbox.yaml setup`);
+    return { action: 'proceed' };
+  }
 
   log.info(`no agentbox.yaml found in ${proj.root}`);
   const go = await confirm({
@@ -147,7 +164,8 @@ export async function maybeRunSetupWizard(args: WizardArgs): Promise<WizardOutco
 export interface CreatePassthroughOptions {
   workspace?: string;
   name?: string;
-  snapshot?: boolean;
+  hostSnapshot?: boolean;
+  snapshot?: string;
   image?: string;
   withPlaywright?: boolean;
   vnc?: boolean;
@@ -158,8 +176,9 @@ export function passthroughFlags(opts: CreatePassthroughOptions): string[] {
   const out: string[] = [];
   if (opts.workspace) out.push('--workspace', opts.workspace);
   if (opts.name) out.push('--name', opts.name);
-  if (opts.snapshot === true) out.push('--snapshot');
-  if (opts.snapshot === false) out.push('--no-snapshot');
+  if (opts.hostSnapshot === true) out.push('--host-snapshot');
+  if (opts.hostSnapshot === false) out.push('--no-host-snapshot');
+  if (opts.snapshot) out.push('--snapshot', opts.snapshot);
   if (opts.image) out.push('--image', opts.image);
   if (opts.withPlaywright === true) out.push('--with-playwright');
   if (opts.vnc === false) out.push('--no-vnc');

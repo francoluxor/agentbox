@@ -55,6 +55,22 @@ export {
 } from './relay.js';
 export { EXCLUDE_DIRS, SNAPSHOTS_ROOT, snapshotPathFor } from './snapshot.js';
 export {
+  CHECKPOINTS_ROOT,
+  CheckpointError,
+  computeNextCheckpointName,
+  createCheckpoint,
+  listCheckpoints,
+  projectCheckpointsDir,
+  removeCheckpoint,
+  resolveCheckpoint,
+  resolveCheckpointLower,
+  type CheckpointInfo,
+  type CheckpointLowerSpec,
+  type CheckpointManifest,
+  type CheckpointType,
+  type CreateCheckpointOptions,
+} from './checkpoint.js';
+export {
   STATE_DIR,
   STATE_FILE,
   allocateProjectIndex,

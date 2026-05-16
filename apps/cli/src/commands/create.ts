@@ -20,7 +20,8 @@ import { claudeCommand } from './claude.js';
 interface CreateOptions {
   workspace: string;
   name?: string;
-  snapshot?: boolean; // commander: --snapshot / --no-snapshot => true / false / undefined
+  hostSnapshot?: boolean; // commander: --host-snapshot / --no-host-snapshot => true / false / undefined
+  snapshot?: string; // --snapshot <ref>: start from this checkpoint
   image?: string;
   attach?: boolean;
   yes?: boolean;
@@ -32,7 +33,7 @@ interface CreateOptions {
 
 function buildCliOverrides(opts: CreateOptions): Partial<UserConfig> {
   const box: NonNullable<UserConfig['box']> = {};
-  if (opts.snapshot !== undefined) box.snapshot = opts.snapshot;
+  if (opts.hostSnapshot !== undefined) box.hostSnapshot = opts.hostSnapshot;
   if (opts.image !== undefined) box.image = opts.image;
   if (opts.withPlaywright === true) box.withPlaywright = true;
   if (opts.withEnv === true) box.withEnv = true;
@@ -45,12 +46,24 @@ function resolveUseSnapshot(
   opts: CreateOptions,
   configDefault: boolean | undefined,
 ): boolean {
-  // Mirrors `agentbox claude`: snapshot=on by default; explicit CLI flag wins,
-  // then config layers. No interactive prompt — power users override via
-  // `--no-snapshot` or `box.snapshot: false` in their config.
-  if (opts.snapshot === false) return false;
-  if (opts.snapshot === true) return true;
+  // host-snapshot (frozen APFS clone of the host workspace): on by default;
+  // explicit CLI flag wins, then config layers. No interactive prompt — power
+  // users override via `--no-host-snapshot` or `box.hostSnapshot: false`.
+  if (opts.hostSnapshot === false) return false;
+  if (opts.hostSnapshot === true) return true;
   return configDefault ?? true;
+}
+
+/**
+ * Checkpoint to start from: explicit `--snapshot <ref>` wins, else the
+ * project's `box.defaultCheckpoint` (empty string = none).
+ */
+function resolveCheckpointRef(
+  opts: CreateOptions,
+  configDefault: string,
+): string | undefined {
+  if (opts.snapshot && opts.snapshot.length > 0) return opts.snapshot;
+  return configDefault.length > 0 ? configDefault : undefined;
 }
 
 function attachShell(container: string): never {
@@ -65,8 +78,12 @@ export const createCommand = new Command('create')
   .description('Create and start a new agent box (Docker container with FUSE overlay)')
   .option('-w, --workspace <path>', 'host workspace to mount', process.cwd())
   .option('-n, --name <name>', 'friendly box name (default: <workspace-basename>-<id>)')
-  .option('--snapshot', 'use a frozen APFS clone of the workspace as the overlay lower')
-  .option('--no-snapshot', 'bind the live workspace directly (host edits leak into reads)')
+  .option('--host-snapshot', 'use a frozen APFS clone of the host workspace as the overlay lower')
+  .option('--no-host-snapshot', 'bind the live workspace directly (host edits leak into reads)')
+  .option(
+    '--snapshot <ref>',
+    'start from a project checkpoint (see `agentbox checkpoint`); overrides box.defaultCheckpoint',
+  )
   .option('--image <ref>', 'override the box image', undefined)
   .option('--attach', 'drop into a shell inside the box after it is ready')
   .option('--with-playwright', 'also install @playwright/cli@latest globally inside the box')
@@ -79,7 +96,7 @@ export const createCommand = new Command('create')
     '--shared-docker-cache',
     "use the shared 'agentbox-docker-cache' volume for in-box docker images (preserved on destroy; only one box can run at a time when set)",
   )
-  .option('-y, --yes', 'skip prompts, accept defaults (snapshot=on)')
+  .option('-y, --yes', 'skip prompts, accept defaults (host-snapshot=on)')
   .action(async (opts: CreateOptions) => {
     intro('agentbox create');
 
@@ -87,13 +104,16 @@ export const createCommand = new Command('create')
       cliOverrides: buildCliOverrides(opts),
     });
     const projectRoot = (await findProjectRoot(opts.workspace)).root;
+    const checkpointRef = resolveCheckpointRef(opts, cfg.effective.box.defaultCheckpoint);
 
     // First-run wizard: when no agentbox.yaml exists, optionally hand off to
-    // `agentbox claude` so the agent can interactively generate one.
+    // `agentbox claude` so the agent can interactively generate one. Skipped
+    // when starting from a checkpoint (it already carries the config).
     const wiz = await maybeRunSetupWizard({
       workspace: opts.workspace,
       yes: !!opts.yes,
       command: 'create',
+      checkpointRef,
     });
     if (wiz.action === 'switch-to-claude') {
       process.env[WIZARD_AUTOLAUNCH_ENV] = '1';
@@ -105,7 +125,7 @@ export const createCommand = new Command('create')
       return;
     }
 
-    const useSnapshot = resolveUseSnapshot(opts, cfg.effective.box.snapshot);
+    const useSnapshot = resolveUseSnapshot(opts, cfg.effective.box.hostSnapshot);
 
     const s = spinner();
     s.start('creating box');
@@ -118,6 +138,7 @@ export const createCommand = new Command('create')
         workspacePath: opts.workspace,
         name: opts.name,
         useSnapshot,
+        checkpointRef,
         image: cfg.effective.box.image,
         withPlaywright,
         withEnv: cfg.effective.box.withEnv,
@@ -138,6 +159,11 @@ export const createCommand = new Command('create')
       log.info(`upper:     ${result.record.upperVolume}`);
       if (result.record.snapshotDir) {
         log.info(`snapshot:  ${result.record.snapshotDir}`);
+      }
+      if (result.record.checkpointSource) {
+        log.info(
+          `checkpoint: ${result.record.checkpointSource.ref} (${result.record.checkpointSource.type})`,
+        );
       }
 
       for (const check of result.overlayChecks) {

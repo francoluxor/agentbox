@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { applyEngineOverrideAtStartup } from './engine-override.js';
 import { browserCommand } from './commands/browser.js';
 import { claudeCommand } from './commands/claude.js';
+import { checkpointCommand } from './commands/checkpoint.js';
 import { codeCommand } from './commands/code.js';
 import { configCommand } from './commands/config.js';
 import { createCommand } from './commands/create.js';
@@ -50,6 +51,7 @@ program.addCommand(stopCommand);
 program.addCommand(startCommand);
 program.addCommand(destroyCommand);
 program.addCommand(pruneCommand);
+program.addCommand(checkpointCommand);
 program.addCommand(configCommand);
 program.addCommand(updateCommand);
 

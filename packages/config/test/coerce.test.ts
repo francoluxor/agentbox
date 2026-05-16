@@ -4,22 +4,22 @@ import { UserConfigError } from '../src/types.js';
 
 describe('coerceFromString', () => {
   it('parses booleans (true/yes/1/on)', () => {
-    expect(coerceFromString('box.snapshot', 'true')).toBe(true);
-    expect(coerceFromString('box.snapshot', 'yes')).toBe(true);
-    expect(coerceFromString('box.snapshot', '1')).toBe(true);
-    expect(coerceFromString('box.snapshot', 'on')).toBe(true);
-    expect(coerceFromString('box.snapshot', 'TRUE')).toBe(true);
+    expect(coerceFromString('box.hostSnapshot', 'true')).toBe(true);
+    expect(coerceFromString('box.hostSnapshot', 'yes')).toBe(true);
+    expect(coerceFromString('box.hostSnapshot', '1')).toBe(true);
+    expect(coerceFromString('box.hostSnapshot', 'on')).toBe(true);
+    expect(coerceFromString('box.hostSnapshot', 'TRUE')).toBe(true);
   });
 
   it('parses booleans (false/no/0/off)', () => {
-    expect(coerceFromString('box.snapshot', 'false')).toBe(false);
-    expect(coerceFromString('box.snapshot', 'no')).toBe(false);
-    expect(coerceFromString('box.snapshot', '0')).toBe(false);
-    expect(coerceFromString('box.snapshot', 'off')).toBe(false);
+    expect(coerceFromString('box.hostSnapshot', 'false')).toBe(false);
+    expect(coerceFromString('box.hostSnapshot', 'no')).toBe(false);
+    expect(coerceFromString('box.hostSnapshot', '0')).toBe(false);
+    expect(coerceFromString('box.hostSnapshot', 'off')).toBe(false);
   });
 
   it('rejects non-bool strings for bool keys', () => {
-    expect(() => coerceFromString('box.snapshot', 'maybe')).toThrow(UserConfigError);
+    expect(() => coerceFromString('box.hostSnapshot', 'maybe')).toThrow(UserConfigError);
   });
 
   it('parses integers', () => {

@@ -14,13 +14,17 @@ export type BrowserKind = 'agent-browser' | 'playwright' | 'both';
 
 export interface UserConfig {
   box?: {
-    snapshot?: boolean;
+    hostSnapshot?: boolean;
+    defaultCheckpoint?: string;
     withPlaywright?: boolean;
     withEnv?: boolean;
     vnc?: boolean;
     isolateClaudeConfig?: boolean;
     image?: string;
     dockerCacheShared?: boolean;
+  };
+  checkpoint?: {
+    maxLayers?: number;
   };
   claude?: {
     sessionName?: string;
@@ -62,18 +66,22 @@ export interface UserConfig {
  * Required-everywhere variant returned as the merged effective config. Each
  * leaf is filled from BUILT_IN_DEFAULTS when no layer set it.
  *
- * `box.snapshot` is intentionally `boolean | undefined` (unprompted): the
+ * `box.hostSnapshot` is intentionally `boolean | undefined` (unprompted): the
  * default is "ask the user", expressed as undefined.
  */
 export interface EffectiveConfig {
   box: {
-    snapshot: boolean | undefined;
+    hostSnapshot: boolean | undefined;
+    defaultCheckpoint: string;
     withPlaywright: boolean;
     withEnv: boolean;
     vnc: boolean;
     isolateClaudeConfig: boolean;
     image: string;
     dockerCacheShared: boolean;
+  };
+  checkpoint: {
+    maxLayers: number;
   };
   claude: {
     sessionName: string;
@@ -129,7 +137,7 @@ export interface LoadedConfig {
     global: { path: string; values: Partial<UserConfig> };
     defaults: EffectiveConfig;
   };
-  /** Per-leaf source map: 'box.snapshot' -> 'workspace'. Powers `config get --all`. */
+  /** Per-leaf source map: 'box.hostSnapshot' -> 'workspace'. Powers `config get --all`. */
   sources: Record<string, ConfigSource>;
   /** Resolved project root used for the project layer (cwd if no agentbox.yaml found). */
   projectRoot: string;
@@ -140,13 +148,17 @@ export interface LoadedConfig {
 
 export const BUILT_IN_DEFAULTS: EffectiveConfig = {
   box: {
-    snapshot: undefined,
+    hostSnapshot: undefined,
+    defaultCheckpoint: '',
     withPlaywright: false,
     withEnv: false,
     vnc: true,
     isolateClaudeConfig: false,
     image: 'agentbox/box:dev',
     dockerCacheShared: false,
+  },
+  checkpoint: {
+    maxLayers: 3,
   },
   claude: {
     sessionName: 'claude',
@@ -204,9 +216,23 @@ export interface KeyDescriptor {
  */
 export const KEY_REGISTRY: readonly KeyDescriptor[] = [
   {
-    key: 'box.snapshot',
+    key: 'box.hostSnapshot',
     type: 'bool',
-    description: 'Use a frozen APFS clone of the workspace as the overlay lower (default: prompt).',
+    description:
+      'Use a frozen APFS clone of the host workspace as the overlay lower (default: prompt). Was box.snapshot.',
+  },
+  {
+    key: 'box.defaultCheckpoint',
+    type: 'string',
+    description:
+      'Checkpoint ref new boxes in this project start from when --snapshot is not given (set via `agentbox checkpoint set-default`).',
+  },
+  {
+    key: 'checkpoint.maxLayers',
+    type: 'int',
+    description:
+      'Max stacked checkpoint layers before a new checkpoint is materialized merged (flattened) instead of layered.',
+    advanced: true,
   },
   {
     key: 'box.withPlaywright',

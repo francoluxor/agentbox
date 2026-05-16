@@ -10,6 +10,9 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
+/** Keys removed in a rename. Surfaced with a migration hint instead of a bare "unknown key". */
+const RENAMED_KEYS: ReadonlyMap<string, string> = new Map([['box.snapshot', 'box.hostSnapshot']]);
+
 interface BranchSpec {
   name: string;
   /** Map of leaf-key (dot-suffix) → descriptor whose `key` starts with this branch. */
@@ -123,6 +126,12 @@ export function parseUserConfigObject(doc: unknown, where: string): Partial<User
     for (const [leafName, leafRaw] of Object.entries(branchRaw)) {
       const desc = branchSpec.leaves.get(leafName);
       if (!desc) {
+        const renamedTo = RENAMED_KEYS.get(`${branchName}.${leafName}`);
+        if (renamedTo) {
+          throw new UserConfigError(
+            `${where}.${branchName}.${leafName} was renamed to ${renamedTo} — update your config`,
+          );
+        }
         throw new UserConfigError(
           `${where}.${branchName}: unknown key "${leafName}" (known: ${[...branchSpec.leaves.keys()].join(', ')})`,
         );
@@ -174,6 +183,10 @@ export function coerceFromString(key: string, raw: string): unknown {
 }
 
 function lookupKeyOrThrow(key: string): KeyDescriptor {
+  const renamedTo = RENAMED_KEYS.get(key);
+  if (renamedTo) {
+    throw new UserConfigError(`${key} was renamed to ${renamedTo} — use ${renamedTo} instead`);
+  }
   const idx = key.indexOf('.');
   if (idx < 0) {
     throw new UserConfigError(`unknown key "${key}" (must be in branch.leaf form)`);

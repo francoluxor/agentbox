@@ -24,15 +24,17 @@ packages/sandbox-docker/    @agentbox/sandbox-docker — the local Docker provid
   src/ctl.ts                launchCtlDaemon — `docker exec -d` the in-box supervisor
   src/relay.ts              ensureRelay (spawns the host relay node process) / registerBoxWithRelay / forgetBoxFromRelay / rehydrateRelayRegistry / generateRelayToken
   src/git-worktree.ts       detectGitRepos / createBoxWorktree / removeBoxWorktree / pickFreshBranch — host-side worktree management
-  src/{docker,image,overlay,snapshot,state}.ts
+  src/checkpoint.ts         createCheckpoint/listCheckpoints/resolveCheckpointLower — per-project warm-state checkpoints (multi-lower overlay restore)
+  src/{docker,image,overlay,snapshot,state}.ts   overlay.ts mountOverlay takes ordered lowerDirs (multi-lowerdir)
 packages/ctl/               @agentbox/ctl — in-container supervisor + CLI (`agentbox-ctl`)
   src/bin.ts                bundled CJS bin (dist/bin.cjs, baked into the image)
   src/relay-client.ts       fire-and-forget HTTP client the supervisor uses to push state events
   src/commands/git.ts       `agentbox-ctl git pull|push` — routes through the host relay (relay does the actual git op with the user's creds)
+  src/commands/checkpoint.ts  `agentbox-ctl checkpoint` — `/rpc checkpoint.create`; relay shells out to the host `agentbox checkpoint` CLI
   src/{daemon,supervisor,socket,client,config,render}.ts
 packages/relay/             @agentbox/relay — host-side HTTP relay (`agentbox-relay`)
   src/bin.ts                bundled CJS bin (dist/bin.cjs); `serve` subcommand is the daemon `ensureRelay` spawns
-  src/server.ts             /events, /rpc (git.pull|git.push), /admin/* (loopback-only), /healthz
+  src/server.ts             /events, /rpc (git.pull|git.push|checkpoint.create), /admin/* (loopback-only), /healthz
   src/{registry,types,index}.ts
 packages/config/            @agentbox/config — host-side layered config (global / per-project / agentbox.yaml `defaults:`)
   src/types.ts              UserConfig, EffectiveConfig, BUILT_IN_DEFAULTS, KEY_REGISTRY (single source of truth)
@@ -66,7 +68,8 @@ Internal deps are wired via `workspace:*`. Build order is enforced by Turborepo 
 - `~/.agentbox/config.yaml` — global user config (layered defaults). Same shape as the per-project file and the `defaults:` block in `agentbox.yaml`. Owned by `@agentbox/config` (read by every `apps/cli` command at startup). Manage via `agentbox config get|set|unset|list|edit|path|list-projects` — `set/unset/edit` only target `--global` and `--project` (default), the workspace `defaults:` block is hand-edited. Precedence (highest wins): CLI flag > workspace `defaults:` > per-project (`~/.agentbox/projects/<sha1-16-of-abs-path>/config.yaml`) > global > built-in. Engine override (`engine.kind`) is the only key applied at CLI startup via `setEngineOverride()` in `host-export.ts`; everything else flows through `loadEffectiveConfig()` per command. The full key set + types live in `KEY_REGISTRY` (`packages/config/src/types.ts`) — single source of truth for the parser, the JSON schema, and `config set` coercion. The ctl parser accepts top-level `defaults:` as a permissive passthrough (no dep on `@agentbox/config`); the host re-validates strictly when loading.
 - `~/.agentbox/state.json` — registry of created boxes
 - `~/.agentbox/auth.json` (mode 0600) — long-lived Claude OAuth token captured on first `agentbox claude` via `claude setup-token`. Forwarded to every box as `CLAUDE_CODE_OAUTH_TOKEN`. Host env vars (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`) override it. `CLAUDE_EFFORT` and `ANTHROPIC_MODEL` are also forwarded when set on the host — Claude Code stores the user's model selection (Opus/Sonnet/Haiku via `/model` or `--effort`) only in the parent claude's process env, not in `~/.claude.json` or `~/.claude/settings.json`. Both create-time (`docker run -e`) and `agentbox claude start` exec-time (`docker exec -e`) re-read these from the *current* host shell, so launching from inside a host claude session propagates that session's model to the box (`packages/sandbox-docker/src/claude.ts` → `FORWARDED_ENV_KEYS`).
-- `~/.agentbox/snapshots/<id>/` — frozen APFS clones of host workspaces
+- `~/.agentbox/snapshots/<id>/` — frozen APFS clones of host workspaces (the `--host-snapshot` path; config key `box.hostSnapshot`, **renamed from `box.snapshot`** — the old key now errors with a migration hint via `RENAMED_KEYS` in `packages/config/src/parse.ts`)
+- `~/.agentbox/checkpoints/<sha1-16-of-project-root>/<box-name>-<n>/` — per-project warm-state checkpoints: `fs/` (layered = `/upper/upper` delta incl. node_modules; merged = flattened `/workspace`) + `manifest.json` (`type`, `parents`, lineage). Project default ref is the per-project config key `box.defaultCheckpoint`; `agentbox create/claude --snapshot <ref>` (string value, **repurposed** from the old boolean) overrides it. New boxes restore via multi-lowerdir: `BoxRecord.lowerDirs` + `checkpointLayerMounts` (bind dirs revalidated by `startBox`) + `checkpointSource` (lineage for the auto-merge-after-`checkpoint.maxLayers` rule, default 3). Capture/restore is host-side; the in-box agent triggers it through the relay (`agentbox-ctl checkpoint` → `/rpc checkpoint.create` → relay spawns the host `agentbox checkpoint` CLI via `AGENTBOX_CLI_ENTRY`).
 - `~/.agentbox/boxes/<id>/run/ctl.sock` — host-side view of the in-box ctl socket (bind-mounted to `/run/agentbox/` in the container)
 - `~/.agentbox/boxes/<id>/status.json` — durable snapshot the in-box supervisor pushes through the relay (services, tasks, listening ports, the web-service `expose:`, claude activity). **Prefer reading this via `readBoxStatus()` (`host-export.ts`) as the host-side source of box runtime facts** — it works when the box is paused/stopped and avoids a `docker exec` round-trip. Reach for `docker exec agentbox-ctl …` live reads only when you need fresher-than-snapshot data *and* the container is running (e.g. `agentbox status`'s live `TASKS`/`SERVICES` tables). `getBoxEndpoints` follows this rule: snapshot first, host `agentbox.yaml` only as fallback. Additive schema — old snapshots lack newer fields (treated as absent); `schema` stays `1`.
 - `~/.agentbox/boxes/<id>/workspace` and `~/.agentbox/boxes/<id>/upper` — per-box host export targets for `agentbox open` / `agentbox path`. **They are empty until refresh runs** — that's by design. `createBox` `mkdir`s both at create-time and bind-mounts them into the container at `/host-export` and `/host-export-upper` (virtiofs on OrbStack); `refreshExport` in `host-export.ts` does `docker exec rsync /workspace/ /host-export/` (or `--exclude=node_modules` by default for the merged layer). The container `/workspace` mount is `fuse-overlayfs` and lives **only inside the container's mount namespace** — it cannot be reached from the Mac directly, which is why a copy is needed. The upper layer (`agentbox-upper-<id>/upper/`) is a different story on OrbStack: every Docker volume is exposed live at `~/OrbStack/docker/volumes/<name>/`, so `resolveUpperLiveOnHost` returns that path and `agentbox open --upper` skips the rsync entirely. Docker Desktop has no equivalent, so we fall back to the same rsync into `boxes/<id>/upper/`. `agentbox open --print` still refreshes (use `--no-refresh` to skip), so scripts that pipe the path get a fresh snapshot in one call. Boxes created before the bind-mounts existed (`/host-export` absent) fall back to a `docker exec tar | tar -x` pipe into the host dir — slower but doesn't need a container restart.
@@ -157,8 +160,12 @@ pnpm build && pnpm lint && pnpm typecheck && pnpm test
 Manual end-to-end on this repo (slow path on first run — builds the image if missing):
 
 ```sh
-node apps/cli/dist/index.js create --snapshot -y -n smoke
+node apps/cli/dist/index.js create --host-snapshot -y -n smoke   # frozen APFS clone of host workspace as lower (renamed from --snapshot)
 node apps/cli/dist/index.js create --with-env -y -n smoke-env   # also copies host .env*/secrets.toml/agentbox.yaml into /workspace
+node apps/cli/dist/index.js checkpoint smoke --set-default      # capture warm state -> smoke-1, project default
+node apps/cli/dist/index.js checkpoint ls
+node apps/cli/dist/index.js create -y -n smoke2                 # starts from the default checkpoint (warm)
+node apps/cli/dist/index.js create -y -n smoke3 --snapshot smoke-1   # explicit checkpoint ref
 node apps/cli/dist/index.js list
 node apps/cli/dist/index.js inspect smoke
 node apps/cli/dist/index.js status smoke                   # services + claude session state
@@ -197,7 +204,7 @@ git worktree list                              # cleaned up
 Run Claude Code in a sandboxed box (detach with `Ctrl-b d`, reattach with `claude attach`):
 
 ```sh
-node apps/cli/dist/index.js claude --snapshot -y -n cc -- --model sonnet
+node apps/cli/dist/index.js claude --host-snapshot -y -n cc -- --model sonnet
 # (in tmux) Ctrl-b d to detach
 node apps/cli/dist/index.js claude attach cc
 node apps/cli/dist/index.js inspect cc       # shows "claude session: running (...) since ..."

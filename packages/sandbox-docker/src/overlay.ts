@@ -13,6 +13,14 @@ export interface NestedWorktreeBind {
 
 export interface MountOverlayOptions {
   /**
+   * Ordered list of in-container lower directories, upper-most (highest
+   * precedence) first. Composed into `lowerdir=a:b:c`. Defaults to the single
+   * base bind `['/host-src']` so non-checkpoint boxes are byte-identical.
+   * Checkpoint boxes prepend their captured layer dirs (e.g.
+   * `['/checkpoint-layers/0', '/host-src']`).
+   */
+  lowerDirs?: string[];
+  /**
    * Sub-paths under /workspace that should reflect a separate host worktree
    * directly (writes go through to the host, bypassing the FUSE upper layer).
    * Applied as `mount --bind` after fuse-overlayfs is up so the overlay
@@ -20,6 +28,8 @@ export interface MountOverlayOptions {
    */
   nestedWorktrees?: NestedWorktreeBind[];
 }
+
+export const DEFAULT_LOWER_DIRS: readonly string[] = ['/host-src'];
 
 // The `vscode` user provided by mcr.microsoft.com/devcontainers/base:ubuntu.
 // The overlay is mounted as root (FUSE requires it), so without squashing the
@@ -32,7 +42,10 @@ const BOX_USER_GID = 1000;
 /**
  * Mount the FUSE overlay inside a running box:
  *
- *     /workspace = overlay(lower=/host-src, upper=/upper/upper, work=/upper/work)
+ *     /workspace = overlay(lower=<lowerDirs joined>, upper=/upper/upper, work=/upper/work)
+ *
+ * `lowerDirs` is upper-most first; for a plain box it is just `/host-src`,
+ * for a checkpoint box it is the captured layer dir(s) stacked over the base.
  *
  * Runs as root inside the container so it can attach to /dev/fuse. If
  * `nestedWorktrees` is provided, each entry is layered on top of /workspace
@@ -44,8 +57,9 @@ export async function mountOverlay(
   container: string,
   opts: MountOverlayOptions = {},
 ): Promise<MountOverlayResult> {
+  const lowerDirs = opts.lowerDirs && opts.lowerDirs.length > 0 ? opts.lowerDirs : ['/host-src'];
   const mountOpts = [
-    'lowerdir=/host-src',
+    `lowerdir=${lowerDirs.join(':')}`,
     'upperdir=/upper/upper',
     'workdir=/upper/work',
     `squash_to_uid=${String(BOX_USER_UID)}`,
@@ -98,7 +112,10 @@ export interface OverlayCheck {
  * Four-assertion smoke test that proves the overlay actually behaves like an
  * overlay: writes go to upper, lower stays untouched.
  */
-export async function verifyOverlay(container: string): Promise<OverlayCheck[]> {
+export async function verifyOverlay(
+  container: string,
+  lowerDirs: readonly string[] = DEFAULT_LOWER_DIRS,
+): Promise<OverlayCheck[]> {
   const sentinel = '.agentbox-overlay-check';
   const checks: OverlayCheck[] = [];
 
@@ -135,17 +152,17 @@ export async function verifyOverlay(container: string): Promise<OverlayCheck[]> 
         : `expected /upper/upper/${sentinel} to exist`,
   });
 
-  // 4. lower remained untouched.
-  const lower = await execInBox(container, ['bash', '-lc', `test ! -e /host-src/${sentinel}`], {
-    user: 'root',
-  });
+  // 4. no lower layer was touched (write must stay in the upper for every
+  //    stacked lowerdir, not just the base bind).
+  const lowerProbe = lowerDirs.map((d) => `test ! -e ${shellQuote(d)}/${sentinel}`).join(' && ');
+  const lower = await execInBox(container, ['bash', '-lc', lowerProbe], { user: 'root' });
   checks.push({
-    name: 'lower (/host-src) untouched',
+    name: `lower untouched (${lowerDirs.join(', ')})`,
     ok: lower.exitCode === 0,
     detail:
       lower.exitCode === 0
-        ? `/host-src/${sentinel} does not exist`
-        : `/host-src/${sentinel} leaked into the lower layer`,
+        ? `${sentinel} absent from every lower`
+        : `${sentinel} leaked into a lower layer`,
   });
 
   // Tidy up the sentinel so subsequent commands don't see it.

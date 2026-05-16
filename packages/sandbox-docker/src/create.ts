@@ -38,6 +38,7 @@ import {
   type GitWorktreeRecord,
 } from './state.js';
 import { createSnapshot, snapshotPathFor } from './snapshot.js';
+import { resolveCheckpointLower } from './checkpoint.js';
 import { launchCtlDaemon } from './ctl.js';
 import { writeBoxEnvFile } from './box-env.js';
 import {
@@ -57,7 +58,15 @@ import {
 export interface CreateBoxOptions {
   workspacePath: string;
   name?: string;
+  /** Frozen APFS clone of the host workspace as the overlay lower (the `--host-snapshot` path). */
   useSnapshot: boolean;
+  /**
+   * Start the box from a project checkpoint (the `--snapshot <ref>` path).
+   * Resolved against `projectRoot` (or `workspacePath` when unset). A
+   * `layered` checkpoint stacks its captured delta(s) over the normal base
+   * lower; a `merged` checkpoint is the sole, frozen lower.
+   */
+  checkpointRef?: string;
   image?: string;
   onLog?: (line: string) => void;
   /**
@@ -282,6 +291,26 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     lowerPath = snapshotDir;
   }
 
+  // Checkpoint restore: stack the captured layer dir(s) as additional
+  // lowerdirs (layered, over the /host-src base) or as the sole lower
+  // (merged, code frozen). The base bind is always `${lowerPath}:/host-src`.
+  let lowerDirs: string[] | undefined;
+  const checkpointLayerMounts: Array<{ containerPath: string; hostPath: string }> = [];
+  let checkpointSource: BoxRecord['checkpointSource'];
+  if (opts.checkpointRef) {
+    const projectRootForCkpt = opts.projectRoot ?? workspace;
+    const spec = await resolveCheckpointLower(projectRootForCkpt, opts.checkpointRef);
+    spec.hostLowerDirs.forEach((hostPath, i) => {
+      checkpointLayerMounts.push({ containerPath: `/checkpoint-layers/${String(i)}`, hostPath });
+    });
+    const layerPaths = checkpointLayerMounts.map((m) => m.containerPath);
+    lowerDirs = spec.type === 'merged' ? [...layerPaths] : [...layerPaths, '/host-src'];
+    checkpointSource = { ref: opts.checkpointRef, type: spec.type, chain: spec.chain };
+    log(
+      `starting from checkpoint ${opts.checkpointRef} (${spec.type}, ${String(spec.hostLowerDirs.length)} layer(s))`,
+    );
+  }
+
   const upperVolume = `agentbox-upper-${id}`;
   await ensureVolume(upperVolume);
   await ensureIdeVolumes(id);
@@ -364,6 +393,10 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     if (w.kind === 'nested') {
       extraVolumes.push(`${w.hostWorktreeDir}:/agentbox-worktrees/${w.relPathFromWorkspace}`);
     }
+  }
+  // Checkpoint layer dirs as read-only lowerdir sources (see mountOverlay).
+  for (const m of checkpointLayerMounts) {
+    extraVolumes.push(`${m.hostPath}:${m.containerPath}:ro`);
   }
   for (const v of extraVolumes) log(`mounting agent dir: ${v}`);
 
@@ -473,7 +506,7 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
   else log(`writing /etc/agentbox/box.env failed: ${boxEnv.reason}`);
 
   try {
-    await mountOverlay(containerName, { nestedWorktrees: nestedWorktreeBinds });
+    await mountOverlay(containerName, { lowerDirs, nestedWorktrees: nestedWorktreeBinds });
     log('fuse-overlayfs mounted at /workspace');
     if (nestedWorktreeBinds.length > 0) {
       log(`bind-mounted ${String(nestedWorktreeBinds.length)} nested worktree(s) over /workspace`);
@@ -483,7 +516,7 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     throw err;
   }
 
-  const overlayChecks = await verifyOverlay(containerName);
+  const overlayChecks = await verifyOverlay(containerName, lowerDirs ?? ['/host-src']);
   const failed = overlayChecks.filter((c) => !c.ok);
   if (failed.length > 0) {
     const detail = failed.map((c) => `  - ${c.name}: ${c.detail}`).join('\n');
@@ -598,6 +631,9 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     dockerCacheShared: dockerCacheShared || undefined,
     projectRoot: opts.projectRoot,
     projectIndex,
+    lowerDirs,
+    checkpointLayerMounts: checkpointLayerMounts.length > 0 ? checkpointLayerMounts : undefined,
+    checkpointSource,
     createdAt,
   };
   await recordBox(record);

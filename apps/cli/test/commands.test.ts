@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { checkpointCommand } from '../src/commands/checkpoint.js';
 import { claudeCommand } from '../src/commands/claude.js';
 import { createCommand } from '../src/commands/create.js';
 import { destroyCommand } from '../src/commands/destroy.js';
@@ -46,6 +47,16 @@ describe('lifecycle CLI surface', () => {
     expect(createCommand.name()).toBe('create');
   });
 
+  it('checkpoint has create (default) / ls / set-default / rm subcommands', () => {
+    expect(checkpointCommand.name()).toBe('checkpoint');
+    const subs = checkpointCommand.commands.map((c) => c.name());
+    expect(subs).toEqual(expect.arrayContaining(['create', 'ls', 'set-default', 'rm']));
+    const create = checkpointCommand.commands.find((c) => c.name() === 'create');
+    expect(create!.options.map((o) => o.long)).toEqual(
+      expect.arrayContaining(['--name', '--merged', '--set-default']),
+    );
+  });
+
   it('claude is registered with create-style options + isolation flag + variadic claude-args', () => {
     expect(claudeCommand.name()).toBe('claude');
     const longs = claudeCommand.options.map((o) => o.long);
@@ -53,8 +64,9 @@ describe('lifecycle CLI surface', () => {
       expect.arrayContaining([
         '--workspace',
         '--name',
+        '--host-snapshot',
+        '--no-host-snapshot',
         '--snapshot',
-        '--no-snapshot',
         '--image',
         '--yes',
         '--isolate-claude-config',

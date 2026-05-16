@@ -72,6 +72,20 @@ agent-box switch <id>
 
 Upper volume is the agent's "diff against base". Persists across pause/stop. Discarded on destroy. Easy to inspect (`git diff` inside the box) or export (`rsync /workspace → host`) for PR review.
 
+## Checkpoints
+
+A **checkpoint** captures a box's accumulated state (the overlay write delta — which now includes `node_modules`, build caches, in-box `.env` files, since there is no separate node_modules volume) so a *new* box can start warm instead of from bare host code. Primary use: after a setup wizard or a merged PR, `agentbox checkpoint <box> --set-default` makes every future box in the project inherit the warm state.
+
+This is why the overlay's `lowerdir` is **multi-layer**, not a single bind:
+
+- **Plain box**: `lowerdir=/host-src` (unchanged; byte-identical to pre-checkpoint boxes).
+- **Layered checkpoint** (default, fast): the captured upper delta(s) are bind-mounted read-only and stacked: `lowerdir=/checkpoint-layers/0:…:/host-src`. Fresh writes still go to a brand-new upper. The base `/host-src` is a normal fresh git worktree, so tracked code tracks current host HEAD while the checkpoint supplies the expensive non-git artifacts.
+- **Merged checkpoint** (`--merged`, or auto when the chain depth ≥ `checkpoint.maxLayers`, default 3): the box's merged `/workspace` is flattened into one tree used as the sole lower (code frozen at capture time). Caps lowerdir-chain growth and sidesteps cross-layer whiteout edge cases.
+
+Storage: `~/.agentbox/checkpoints/<project-hash>/<box-name>-<n>/` (`fs/` + `manifest.json`), scoped per project via the same `hashProjectPath` used for per-project config. The project default lives in the per-project config key `box.defaultCheckpoint`; `agentbox create --snapshot <ref>` overrides it. Capture/restore is host-side; the in-box agent reaches it through the existing relay (`agentbox-ctl checkpoint` → `/rpc checkpoint.create` → the host CLI), the same channel as `agentbox-ctl git`.
+
+This is distinct from the host **snapshot** (`--host-snapshot`, formerly `--snapshot`; config `box.hostSnapshot`, formerly `box.snapshot`): a frozen APFS clone of the *host* workspace used as the lower. It deliberately prunes `node_modules`/build dirs and cannot carry box-side state — orthogonal to checkpoints, which exist precisely to carry that state.
+
 ## What we explicitly rejected
 
 - **Mount/symlink swapping under a single VS Code window** — causes TS server cache invalidation storms and watcher floods on every switch. Per-box server + pause is strictly better.
@@ -81,6 +95,6 @@ Upper volume is the agent's "diff against base". Persists across pause/stop. Dis
 ## Open questions for implementation
 
 - Idle-timeout policy: auto-pause after N minutes of no VS Code activity? Auto-stop after M hours?
-- Snapshot refresh UX: how does the user re-base a running agent on an updated host snapshot? (Likely: spawn a new box, migrate the upper.)
+- ~~Snapshot refresh UX: how does the user re-base a running agent on an updated host snapshot?~~ Resolved by **checkpoints** (see above): capture the box's state, then `agentbox create --snapshot <ref>` spawns a fresh box layering that state over current host HEAD.
 - Memory ceiling: cap concurrent unpaused boxes, or rely on swap pressure?
 - Cross-box diff dashboard: single pane showing `git diff --stat` per box with deep-links into the right attached VS Code window.

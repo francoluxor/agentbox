@@ -33,7 +33,8 @@ import { handleLifecycleError } from './_errors.js';
 interface ClaudeCreateOptions {
   workspace: string;
   name?: string;
-  snapshot?: boolean;
+  hostSnapshot?: boolean;
+  snapshot?: string; // --snapshot <ref>: start from this checkpoint
   image?: string;
   yes?: boolean;
   isolateClaudeConfig?: boolean;
@@ -46,7 +47,7 @@ interface ClaudeCreateOptions {
 
 function buildClaudeCliOverrides(opts: ClaudeCreateOptions): Partial<UserConfig> {
   const box: NonNullable<UserConfig['box']> = {};
-  if (opts.snapshot !== undefined) box.snapshot = opts.snapshot;
+  if (opts.hostSnapshot !== undefined) box.hostSnapshot = opts.hostSnapshot;
   if (opts.image !== undefined) box.image = opts.image;
   if (opts.withPlaywright === true) box.withPlaywright = true;
   if (opts.withEnv === true) box.withEnv = true;
@@ -114,10 +115,14 @@ export const claudeCommand = new Command('claude')
   // Mirror create's surface so users can swap the verb without re-learning flags.
   .option('-w, --workspace <path>', 'host workspace to mount', process.cwd())
   .option('-n, --name <name>', 'friendly box name (default: <workspace-basename>-<id>)')
-  .option('--snapshot', 'use a frozen APFS clone of the workspace as the overlay lower')
-  .option('--no-snapshot', 'bind the live workspace directly (host edits leak into reads)')
+  .option('--host-snapshot', 'use a frozen APFS clone of the host workspace as the overlay lower')
+  .option('--no-host-snapshot', 'bind the live workspace directly (host edits leak into reads)')
+  .option(
+    '--snapshot <ref>',
+    'start from a project checkpoint (see `agentbox checkpoint`); overrides box.defaultCheckpoint',
+  )
   .option('--image <ref>', 'override the box image')
-  .option('-y, --yes', 'skip prompts, accept defaults (snapshot=on)')
+  .option('-y, --yes', 'skip prompts, accept defaults (host-snapshot=on)')
   .option(
     '--isolate-claude-config',
     'use a per-box ~/.claude volume instead of the shared agentbox-claude-config',
@@ -144,13 +149,21 @@ export const claudeCommand = new Command('claude')
       cliOverrides: buildClaudeCliOverrides(opts),
     });
     const projectRoot = (await findProjectRoot(opts.workspace)).root;
+    const checkpointRef =
+      opts.snapshot && opts.snapshot.length > 0
+        ? opts.snapshot
+        : cfg.effective.box.defaultCheckpoint.length > 0
+          ? cfg.effective.box.defaultCheckpoint
+          : undefined;
 
     // First-run wizard: when no agentbox.yaml exists, offer to inject an
     // initial user-message so claude reads /agentbox-setup and writes one.
+    // Skipped when starting from a checkpoint (it already carries the config).
     const wiz = await maybeRunSetupWizard({
       workspace: opts.workspace,
       yes: !!opts.yes,
       command: 'claude',
+      checkpointRef,
     });
     let effectiveClaudeArgs = claudeArgs;
     if (wiz.action === 'launch-with-prompt' && wiz.initialPrompt) {
@@ -160,14 +173,14 @@ export const claudeCommand = new Command('claude')
       );
     }
 
-    // For the create-and-launch verb the default is snapshot=on; explicit
-    // --no-snapshot still wins. Config can also flip the default.
+    // For the create-and-launch verb the default is host-snapshot=on; explicit
+    // --no-host-snapshot still wins. Config can also flip the default.
     const useSnapshot =
-      opts.snapshot === false
+      opts.hostSnapshot === false
         ? false
-        : opts.snapshot === true
+        : opts.hostSnapshot === true
           ? true
-          : (cfg.effective.box.snapshot ?? true);
+          : (cfg.effective.box.hostSnapshot ?? true);
     const sessionName = cfg.effective.claude.sessionName;
 
     // Resolve auth from env or the saved auth file. On first run (nothing
@@ -192,6 +205,7 @@ export const claudeCommand = new Command('claude')
         workspacePath: opts.workspace,
         name: opts.name,
         useSnapshot,
+        checkpointRef,
         image: cfg.effective.box.image,
         claudeConfig: { isolate: cfg.effective.box.isolateClaudeConfig },
         claudeEnv: resolved.env,

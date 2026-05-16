@@ -38,6 +38,7 @@ import {
   unpauseContainer,
 } from './docker.js';
 import {
+  DEFAULT_LOWER_DIRS,
   mountOverlay,
   verifyOverlay,
   type NestedWorktreeBind,
@@ -166,6 +167,16 @@ export async function startBox(idOrName: string): Promise<StartedBox> {
       );
     }
   }
+  // Checkpoint layer dirs are bind-mounted read-only at create time, same
+  // baked-in story as worktrees — a deleted layer dir can't be recovered by
+  // restart, so fail loudly up front.
+  for (const m of box.checkpointLayerMounts ?? []) {
+    if (!(await pathExists(m.hostPath))) {
+      throw new Error(
+        `box checkpoint layer missing on host: ${m.hostPath} (recreate the box)`,
+      );
+    }
+  }
   await startContainer(box.container);
   const nestedWorktrees: NestedWorktreeBind[] = (box.gitWorktrees ?? [])
     .filter((w) => w.kind === 'nested')
@@ -173,8 +184,9 @@ export async function startBox(idOrName: string): Promise<StartedBox> {
       containerPath: w.containerPath,
       mountFromPath: `/agentbox-worktrees/${w.relPathFromWorkspace}`,
     }));
-  await mountOverlay(box.container, { nestedWorktrees });
-  const overlayChecks = await verifyOverlay(box.container);
+  const lowerDirs = box.lowerDirs && box.lowerDirs.length > 0 ? box.lowerDirs : undefined;
+  await mountOverlay(box.container, { lowerDirs, nestedWorktrees });
+  const overlayChecks = await verifyOverlay(box.container, lowerDirs ?? DEFAULT_LOWER_DIRS);
   if (box.socketPath) {
     // The daemon died with the container; relaunch it. Best-effort, same as
     // create.ts — a missing config or other startup issue shouldn't block

@@ -61,7 +61,8 @@ Per service:
 
 Sets per-project defaults for `agentbox create`/`claude`/`code`/`shell` — same shape as `~/.agentbox/config.yaml`. CLI flags still override. Common keys:
 
-- `box.snapshot` (bool) — frozen APFS clone of the workspace as overlay lower.
+- `box.hostSnapshot` (bool) — frozen APFS clone of the *host* workspace as overlay lower (renamed from `box.snapshot`).
+- `box.defaultCheckpoint` (string) — checkpoint new boxes start from (normally you set this via `agentbox-ctl checkpoint --set-default` at the end of setup — see section 9, not by hand).
 - `box.withPlaywright` (bool) — install `@playwright/cli` globally inside the box.
 - `box.vnc` (bool) — run Xvnc + noVNC on container port 6080.
 - `box.isolateClaudeConfig` (bool) — per-box `~/.claude` volume instead of the shared one.
@@ -154,7 +155,34 @@ services:
    > - commit it inside the box (`git add agentbox.yaml && git commit -m 'add agentbox config'`) — the box's `.git/` is bind-mounted, so the commit shows up on the host immediately; or
    > - on the host, tell the user to run `agentbox pull config` to update their original host workspace. `agentbox pull env` if you also create env files.
 
-## 9. Known issues
+5. **Then do section 9** — once the box is warmed up (deps installed, services ready), checkpoint it so future boxes start ready. This is the real final step; don't stop at hand-off.
+
+## 9. Checkpoint the warm state (do this at the very end)
+
+Once `agentbox-ctl status` shows the install task `done` and services `ready` — i.e. the box is fully warmed up — capture a **checkpoint** so future boxes in this project start from this exact state instead of cold.
+
+A checkpoint snapshots the box's writable layer, which includes everything you just did:
+
+- `node_modules` (and `.next`, `target`, `.venv`, build caches) — the expensive Linux-native install,
+- `.env` / `.env.*` / `secrets.toml` and any other gitignored config files present in `/workspace`,
+- any other files written during setup.
+
+A new box created from the checkpoint reuses all of it (the install task's marker is already present, so it no-ops), while git-tracked code still comes fresh from the host's current HEAD. Result: new boxes are ready in seconds with no reinstall and no missing env vars.
+
+**Run this from inside the box, as the final step:**
+
+```sh
+agentbox-ctl checkpoint --set-default
+```
+
+This routes through the host relay (no host shell needed), captures `<box-name>-<n>`, and writes `box.defaultCheckpoint` into the project's config so **every future `agentbox create` / `claude` in this project starts warm automatically**. Pass `--name <name>` for a stable name, or omit `--set-default` to capture without changing the default. Re-run it whenever the warm state meaningfully changes (e.g. after a dependency bump you want every new box to inherit).
+
+Then tell the user, e.g.:
+
+> I checkpointed the warm box state (node_modules, env files, build caches) and set it as this project's default — `agentbox create` will now spin up new boxes from it in seconds, no reinstall.
+
+## 10. Known issues
 
 - For Nextjs/Vite/Tasnstack projects, makes sure to forward also websocket for hot reload.
+- **Turbo/Nx/Jest and other git-worktree-aware tools may try to write their cache to a read-only host path.** The box runs `/workspace` as a git worktree with the host repo's `.git/` bind-mounted at its absolute host path; tools that derive paths from git (Turbo's cache root = the worktree's git *common dir*) resolve outside `/workspace` and hit `EROFS` on the Mac path. Pin the cache into the writable overlay via the task/service `env:`, e.g. `TURBO_CACHE_DIR: /workspace/.turbo/cache` (or pass `--cache-dir`).
 - The `install` task is intentionally a no-op once `node_modules/.agentbox-installed` exists. Do **not** remove the marker guard to "force a fresh install" — that reinstalls on every box start. To force a one-off rebuild, delete `node_modules` (or just the marker) then run `agentbox-ctl reload`.

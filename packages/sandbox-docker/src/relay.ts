@@ -89,13 +89,20 @@ export async function ensureRelay(opts: EnsureRelayOptions = {}): Promise<RelayE
 
   const relayBin = resolveRelayBin();
   const logFd = openSync(LOG_FILE, 'a');
+  // The relay shells out to this CLI entry for the checkpoint.create RPC
+  // (it only knows the box id; the CLI resolves the rest). Resolve best-effort
+  // — if not found the relay's handler reports a clear error.
+  const cliEntry = resolveCliEntry();
   const child = spawn(
     process.execPath,
     [relayBin, 'serve', '--port', String(PORT), '--host', '0.0.0.0'],
     {
       detached: true,
       stdio: ['ignore', logFd, logFd],
-      env: { ...process.env },
+      env: {
+        ...process.env,
+        ...(cliEntry ? { AGENTBOX_CLI_ENTRY: cliEntry } : {}),
+      },
     },
   );
   child.unref();
@@ -134,6 +141,25 @@ function resolveRelayBin(): string {
   throw new Error(
     `could not locate @agentbox/relay bin; tried:\n  ${candidates.join('\n  ')}`,
   );
+}
+
+/**
+ * Locate the agentbox CLI entry the relay spawns for `checkpoint.create`.
+ * Mirrors {@link resolveRelayBin}'s two layouts:
+ *   1. workspace dev: `<repo>/packages/sandbox-docker/dist` ↔ `<repo>/apps/cli/dist/index.js`
+ *   2. installed: `<...>/agentbox/node_modules/@agentbox/sandbox-docker/dist` ↔ `<...>/agentbox/dist/index.js`
+ * Best-effort: returns null when not found (relay reports a clear error).
+ */
+function resolveCliEntry(): string | null {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    resolve(here, '..', '..', '..', 'apps', 'cli', 'dist', 'index.js'),
+    resolve(here, '..', '..', '..', '..', 'dist', 'index.js'),
+  ];
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+  return null;
 }
 
 export interface StopRelayResult {

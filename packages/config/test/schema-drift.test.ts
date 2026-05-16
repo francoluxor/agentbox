@@ -19,13 +19,16 @@ interface Fixture {
 
 const VALID: Fixture[] = [
   { name: 'empty', yaml: '' },
-  { name: 'box only', yaml: 'box:\n  snapshot: true\n' },
+  { name: 'box only', yaml: 'box:\n  hostSnapshot: true\n' },
+  { name: 'box defaultCheckpoint', yaml: 'box:\n  defaultCheckpoint: warm-1\n' },
+  { name: 'checkpoint maxLayers', yaml: 'checkpoint:\n  maxLayers: 3\n' },
   { name: 'engine override', yaml: 'engine:\n  kind: orbstack\n' },
   {
     name: 'kitchen sink',
     yaml: `
 box:
-  snapshot: false
+  hostSnapshot: false
+  defaultCheckpoint: warm-2
   withPlaywright: true
   withEnv: true
   vnc: true
@@ -41,6 +44,8 @@ code:
 shell:
   user: vscode
   login: true
+checkpoint:
+  maxLayers: 5
 engine:
   kind: orbstack
 browser:
@@ -73,7 +78,11 @@ const INVALID: Fixture[] = [
   },
   {
     name: 'wrong type for bool',
-    yaml: 'box:\n  snapshot: yes\n', // yaml parses bare yes as bool, but YAML 1.2 returns string
+    yaml: 'box:\n  hostSnapshot: yes\n', // yaml parses bare yes as bool, but YAML 1.2 returns string
+  },
+  {
+    name: 'renamed key box.snapshot',
+    yaml: 'box:\n  snapshot: true\n',
   },
   {
     name: 'wrong type for string',

@@ -25,6 +25,7 @@
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
+    "@agentbox/config": "workspace:*",
     "@agentbox/core": "workspace:*",
     "@agentbox/ctl": "workspace:*",
     "@agentbox/relay": "workspace:*",

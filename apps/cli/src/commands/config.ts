@@ -112,7 +112,7 @@ function fmtValue(v: unknown): string {
 
 const getCommand = new Command('get')
   .description('Print the effective value of a config key (with --all, show every layer)')
-  .argument('<key>', 'dot-path key (e.g. box.snapshot)')
+  .argument('<key>', 'dot-path key (e.g. box.hostSnapshot)')
   .option('--all', 'print every layer with its source')
   .option('--json', 'machine-readable output')
   .action(async (key: string, opts: GetOptions) => {
@@ -187,7 +187,7 @@ const getCommand = new Command('get')
 
 const setCommand = new Command('set')
   .description('Set a config key in the global or per-project file (default: --project)')
-  .argument('<key>', 'dot-path key (e.g. box.snapshot)')
+  .argument('<key>', 'dot-path key (e.g. box.hostSnapshot)')
   .argument('<value>', 'value to set; coerced to the key\'s declared type')
   .option('--global', "write to ~/.agentbox/config.yaml")
   .option('--project', 'write to ~/.agentbox/projects/<hash>/config.yaml (default)')
@@ -209,7 +209,7 @@ const setCommand = new Command('set')
 
 const unsetCommand = new Command('unset')
   .description('Remove a config key from the global or per-project file (default: --project)')
-  .argument('<key>', 'dot-path key (e.g. box.snapshot)')
+  .argument('<key>', 'dot-path key (e.g. box.hostSnapshot)')
   .option('--global', "edit ~/.agentbox/config.yaml")
   .option('--project', 'edit ~/.agentbox/projects/<hash>/config.yaml (default)')
   .action(async (key: string, opts: ScopeOptions) => {

@@ -118,6 +118,31 @@ export interface BoxRecord {
    * that box's whole lifetime.
    */
   projectIndex?: number;
+  /**
+   * Ordered in-container lower directories (upper-most first) the FUSE overlay
+   * was mounted with. Persisted so `startBox` re-mounts identically after a
+   * stop/start. Absent on non-checkpoint boxes → `mountOverlay` defaults to
+   * the single base bind `['/host-src']` (byte-identical to legacy boxes).
+   */
+  lowerDirs?: string[];
+  /**
+   * Host paths bind-mounted read-only into the container as the checkpoint
+   * layer dirs referenced by `lowerDirs` (containerPath → hostPath). Empty/
+   * absent on non-checkpoint boxes. `startBox` revalidates these exist (Docker
+   * bakes binds at create time) before re-mounting.
+   */
+  checkpointLayerMounts?: Array<{ containerPath: string; hostPath: string }>;
+  /**
+   * Lineage of the checkpoint this box was created from. Drives chain-depth
+   * (auto-merge threshold) and `agentbox inspect`. Absent when the box was not
+   * created from a checkpoint.
+   */
+  checkpointSource?: {
+    ref: string;
+    type: 'layered' | 'merged';
+    /** Checkpoint refs composing the chain, base-most last. */
+    chain: string[];
+  };
   createdAt: string; // ISO-8601
 }
 
