@@ -98,6 +98,7 @@ services:
 
 ## 7. Validate before handing off
 
+- check with `agentbox-ctl reload` and then `agentbox-ctl status` that everything is running as expected.
 - Every name in `needs:` must reference an existing task or service.
 - A service with `restart: never` and an autostart dependency will block the dependent forever after one failed run — usually a mistake.
 - `command:` is either a shell string (run via `bash -c`) or an argv array. Use the argv form if you need to avoid shell quoting.
@@ -112,3 +113,7 @@ services:
    > I wrote `/workspace/agentbox.yaml` and ran `agentbox-ctl reload` so the supervisor is already running the declared tasks/services. To land the file on the host:
    > - commit it inside the box (`git add agentbox.yaml && git commit -m 'add agentbox config'`) — the box's `.git/` is bind-mounted, so the commit shows up on the host immediately; or
    > - on the host, tell the user to run `agentbox pull env` to update their original host workspace.
+
+## 9. Known issues
+
+- For Nextjs/Vite/Tasnstack projects, makes sure to forward also websocket for hot reload.
