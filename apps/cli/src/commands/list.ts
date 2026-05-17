@@ -1,4 +1,5 @@
 import { log } from '@clack/prompts';
+import { findProjectRoot } from '@agentbox/config';
 import { listBoxes, type ListedBox } from '@agentbox/sandbox-docker';
 import { Command } from 'commander';
 import { pathToFileURL } from 'node:url';
@@ -7,6 +8,7 @@ import { withWatchOptions, watchRender, type WatchableOptions } from '../watch.j
 
 interface ListOptions extends WatchableOptions {
   json?: boolean;
+  all?: boolean;
 }
 
 /** A table cell: the (possibly OSC-8-wrapped) text to print + its visible width. */
@@ -133,30 +135,53 @@ function renderTable(boxes: ListedBox[], stream: NodeJS.WriteStream): string {
     .join('\n');
 }
 
-async function buildListText(): Promise<string> {
+/**
+ * The boxes `list` should render: scoped to the cwd's project by default
+ * (consistent with every other box-arg command, which routes through
+ * `box-ref.ts`'s `findProjectRoot` + `resolveBoxRef`), or all boxes under
+ * `--all`. Pre-feature boxes have no `projectRoot`, so they surface only under
+ * `--all` — same as auto-pick, which never matches them implicitly.
+ */
+async function scopedBoxes(
+  all: boolean,
+): Promise<{ boxes: ListedBox[]; projectRoot: string; scoped: boolean }> {
   const boxes = await listBoxes();
-  if (boxes.length === 0) return 'no boxes — run `agentbox create` to make one';
+  if (all) return { boxes, projectRoot: '', scoped: false };
+  const { root } = await findProjectRoot(process.cwd());
+  return { boxes: boxes.filter((b) => b.projectRoot === root), projectRoot: root, scoped: true };
+}
+
+async function buildListText(all: boolean): Promise<string> {
+  const { boxes, projectRoot, scoped } = await scopedBoxes(all);
+  if (boxes.length === 0) {
+    if (scoped) {
+      return `no boxes in this project (${projectRoot}) — run \`agentbox create\`, or \`agentbox list --all\` to see all`;
+    }
+    return 'no boxes — run `agentbox create` to make one';
+  }
   return renderTable(boxes, process.stdout);
 }
 
 export const listCommand = withWatchOptions(
   new Command('list')
     .alias('ls')
-    .description('List all known agent boxes')
-    .option('-j, --json', 'machine-readable JSON output'),
+    .description('List agent boxes in the current project (-a for all)')
+    .option('-j, --json', 'machine-readable JSON output')
+    .option('-a, --all', 'include boxes from all projects'),
 ).action(async (opts: ListOptions) => {
   if (opts.json && opts.watch) {
     log.error('cannot combine --json with --watch');
     process.exit(2);
   }
+  const all = opts.all ?? false;
   if (opts.watch) {
-    await watchRender(buildListText, opts.interval);
+    await watchRender(() => buildListText(all), opts.interval);
     return;
   }
   if (opts.json) {
-    const boxes = await listBoxes();
+    const { boxes } = await scopedBoxes(all);
     process.stdout.write(JSON.stringify(boxes, null, 2) + '\n');
     return;
   }
-  process.stdout.write((await buildListText()) + '\n');
+  process.stdout.write((await buildListText(all)) + '\n');
 });

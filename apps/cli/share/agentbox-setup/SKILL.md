@@ -149,13 +149,16 @@ services:
 1. Write the file to `/workspace/agentbox.yaml`.
 2. **Apply it live**: from inside the box run `agentbox-ctl reload`. The already-running supervisor re-reads the config and immediately runs the declared tasks and autostarts the services — no box restart needed. It prints the `added` / `removed` / `changed` diff. If it errors because the daemon isn't running, the config is still valid: the next `agentbox start` (or `agentbox create` in this workspace) picks it up automatically.
 3. Confirm with `agentbox-ctl status`: tasks should be `running` or `done`, autostart services `starting` or `ready`. If something failed, tail it with `agentbox-ctl logs <service>` and fix the config, then `agentbox-ctl reload` again.
-4. Tell the user:
+
+4. **Then do section 9** — once the box is warmed up (deps installed, services ready), checkpoint it with `agentbox-ctl checkpoint --set-default` so future boxes start ready. This is the real final step; don't stop at hand-off.
+
+5. Tell the user:
 
    > I wrote `/workspace/agentbox.yaml` and ran `agentbox-ctl reload` so the supervisor is already running the declared tasks/services. To land the file on the host:
+   > - I've created a checkpoint of the warm box state so future boxes start ready in seconds, no reinstall.
    > - commit it inside the box (`git add agentbox.yaml && git commit -m 'add agentbox config'`) — the box's `.git/` is bind-mounted, so the commit shows up on the host immediately; or
-   > - on the host, tell the user to run `agentbox pull config` to update their original host workspace. `agentbox pull env` if you also create env files.
+   > - on the host, tell the user to run `agentbox pull config` to update their original host workspace.
 
-5. **Then do section 9** — once the box is warmed up (deps installed, services ready), checkpoint it so future boxes start ready. This is the real final step; don't stop at hand-off.
 
 ## 9. Checkpoint the warm state (do this at the very end)
 
