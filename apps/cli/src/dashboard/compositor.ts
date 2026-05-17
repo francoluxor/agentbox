@@ -12,20 +12,26 @@ import {
   sidebarLines,
   statusLine,
   menuLines,
+  createMenuLines,
   SIDEBAR_HEADER_LINES,
+  NEW_BOX_ID,
+  BAR_BG,
   type SidebarBox,
 } from './sidebar.js';
 
 // Sidebar panel styling (256-color, portable). Each sidebar line is already
 // padded to the panel width, so wrapping it in a bg SGR tints the full column.
-const SB_BODY = '\x1b[48;5;236m\x1b[38;5;250m';
-const SB_HEADER = '\x1b[48;5;236m\x1b[38;5;39m\x1b[1m';
-const SB_SELECTED = '\x1b[48;5;238m\x1b[38;5;255m\x1b[1m';
+// Background is the footer gray (`BAR_BG`) everywhere — uniform with the status
+// bar; the selected row reads via bold bright-white text + the `▸` marker.
+const SB_BODY = BAR_BG + '\x1b[38;5;250m';
+const SB_HEADER = BAR_BG + '\x1b[38;5;39m\x1b[1m';
+const SB_SELECTED = BAR_BG + '\x1b[38;5;255m\x1b[1m';
 const SGR_RESET = '\x1b[0m';
 
 export type RightTarget =
   | { kind: 'attach'; argv: string[]; mode?: 'claude' | 'shell' }
   | { kind: 'menu' }
+  | { kind: 'create-menu'; where: string }
   | { kind: 'placeholder'; lines: string[] };
 
 export interface CompositorDeps {
@@ -39,6 +45,12 @@ export interface CompositorDeps {
   startClaude: (boxId: string) => Promise<RightTarget>;
   /** Open an interactive shell in the box, resolve to attach. */
   openShell: (boxId: string) => Promise<RightTarget>;
+  /** Create a new box (config defaults). With Claude: also start + return an
+   *  attach target. `onProgress` streams createBox log lines. */
+  createNewBox: (
+    withClaude: boolean,
+    onProgress: (line: string) => void,
+  ) => Promise<{ boxId: string; attach?: RightTarget }>;
   /** Host-side actions for the selected box; return a short status message. */
   openVnc: (boxId: string) => Promise<string>;
   openCode: (boxId: string) => Promise<string>;
@@ -67,6 +79,7 @@ export class Compositor {
   private session: PtySession | null = null;
   private placeholder: string[] | null = null;
   private menu: { boxName: string } | null = null;
+  private createMenu: { where: string } | null = null;
   private activeMode: 'claude' | 'shell' = 'claude';
   private flashMsg: string | null = null;
   private flashTimer: ReturnType<typeof setTimeout> | null = null;
@@ -104,6 +117,7 @@ export class Compositor {
         if (e.type === 'quit') this.onSig();
         else if (e.type === 'switch') this.switchBox(e.dir);
         else if (e.type === 'action') void this.doAction(e.name);
+        else if (this.createMenu) this.handleCreateMenuKey(e.bytes);
         else if (this.menu) this.handleMenuKey(e.bytes);
         else this.session?.write(e.bytes);
       },
@@ -193,6 +207,7 @@ export class Compositor {
     this.disposeSession();
     this.placeholder = null;
     this.menu = null;
+    this.createMenu = null;
     // Wipe the old agent now (synchronous, before the async resolve gap) so it
     // can't bleed through while the new attach redraws. Also resets prevRows.
     this.clearRightPane();
@@ -207,6 +222,7 @@ export class Compositor {
     this.disposeSession();
     this.placeholder = null;
     this.menu = null;
+    this.createMenu = null;
     if (target.kind === 'attach') {
       this.activeMode = target.mode ?? 'claude';
       this.session = new PtySession(
@@ -220,6 +236,8 @@ export class Compositor {
       );
     } else if (target.kind === 'menu') {
       this.menu = { boxName: this.selectedBox()?.name ?? this.selectedId };
+    } else if (target.kind === 'create-menu') {
+      this.createMenu = { where: target.where };
     } else {
       this.placeholder = target.lines;
     }
@@ -247,6 +265,7 @@ export class Compositor {
     const name = this.selectedBox()?.name ?? id;
     this.busy = true;
     this.menu = null;
+    this.createMenu = null;
     this.placeholder = ['', which === 'claude' ? '  Starting Claude…' : '  Opening shell…'];
     this.prevRows = null;
     this.drawChrome();
@@ -277,7 +296,61 @@ export class Compositor {
     }
   }
 
+  private handleCreateMenuKey(bytes: Buffer): void {
+    for (const b of bytes) {
+      if (b === 0x63 || b === 0x0d || b === 0x0a) {
+        void this.chooseCreate(true);
+        return;
+      }
+      if (b === 0x6e) {
+        void this.chooseCreate(false);
+        return;
+      }
+    }
+  }
+
+  private async chooseCreate(withClaude: boolean): Promise<void> {
+    if (this.busy) return;
+    this.busy = true;
+    this.menu = null;
+    this.createMenu = null;
+    this.placeholder = ['', '  Creating box…', ''];
+    this.prevRows = null;
+    this.drawChrome();
+    this.scheduleRender();
+    try {
+      const { boxId, attach } = await this.deps.createNewBox(withClaude, (line) => {
+        if (this.tornDown) return;
+        this.placeholder = ['', '  Creating box…', '  ' + line];
+        this.prevRows = null;
+        this.scheduleRender();
+      });
+      if (this.tornDown) return;
+      this.selectedId = boxId;
+      await this.refreshBoxes();
+      if (attach) {
+        this.applyTarget(attach);
+      } else {
+        await this.spawnActive();
+        this.flash('box created');
+      }
+    } catch (err) {
+      if (this.tornDown) return;
+      const msg = err instanceof Error ? err.message : String(err);
+      this.placeholder = ['', '  Failed to create box:', `  ${msg}`, '', '  Try from a shell: agentbox create'];
+      this.prevRows = null;
+      this.drawChrome();
+      this.scheduleRender();
+    } finally {
+      this.busy = false;
+    }
+  }
+
   private async doAction(name: 'vnc' | 'code' | 'web'): Promise<void> {
+    if (this.selectedId === NEW_BOX_ID) {
+      this.flash('select a box first');
+      return;
+    }
     const id = this.selectedId;
     let msg: string;
     try {
@@ -362,6 +435,11 @@ export class Compositor {
       let s = SYNC_BEGIN + '\x1b[?25l';
       for (let i = 0; i < r.h; i++) s += cursorTo(r.x, r.y + i) + '\x1b[0m' + (lines[i] ?? '');
       this.out.write(s + SYNC_END);
+    } else if (this.createMenu) {
+      const lines = createMenuLines(this.createMenu.where, r.w, r.h);
+      let s = SYNC_BEGIN + '\x1b[?25l';
+      for (let i = 0; i < r.h; i++) s += cursorTo(r.x, r.y + i) + '\x1b[0m' + (lines[i] ?? '');
+      this.out.write(s + SYNC_END);
     } else if (this.placeholder) {
       let s = SYNC_BEGIN + '\x1b[?25l';
       for (let i = 0; i < r.h; i++) {
@@ -390,11 +468,14 @@ export class Compositor {
       const txt = ` ${this.flashMsg} `.slice(0, w).padEnd(w);
       status = `\x1b[7m${txt}\x1b[0m`;
     } else {
-      const stateLabel = this.menu
-        ? 'menu'
-        : this.session && this.activeMode === 'shell'
-          ? 'shell'
-          : undefined;
+      const stateLabel =
+        this.selectedId === NEW_BOX_ID
+          ? 'create'
+          : this.menu
+            ? 'menu'
+            : this.session && this.activeMode === 'shell'
+              ? 'shell'
+              : undefined;
       status = statusLine(this.selectedBox(), this.layout.cols, stateLabel);
     }
     s += cursorTo(0, statusY) + status;

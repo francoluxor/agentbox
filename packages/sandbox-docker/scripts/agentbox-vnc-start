@@ -32,6 +32,9 @@ mkdir -p /var/log/agentbox 2>/dev/null || true
 
 # Xvnc on display :1, loopback-only (websockify is the only public ingress).
 # 1280x800x24 is a sensible laptop-browser viewport.
+# The clipboard params are on-by-default in TigerVNC 1.13 but pinned here so a
+# base-image bump can't silently break host->box paste, and to document intent:
+# accept cut-text from noVNC, set both the X CLIPBOARD and PRIMARY selections.
 Xvnc :1 \
   -localhost \
   -SecurityTypes VncAuth \
@@ -39,6 +42,10 @@ Xvnc :1 \
   -geometry 1280x800 \
   -depth 24 \
   -AlwaysShared \
+  -AcceptCutText=1 \
+  -SendCutText=1 \
+  -SetPrimary=1 \
+  -SendPrimary=1 \
   >/var/log/agentbox/xvnc.log 2>&1 &
 
 # Wait for Xvnc's RFB socket (5901). bash's /dev/tcp pseudo-device makes the
@@ -47,6 +54,16 @@ for _ in $(seq 1 50); do
   if (echo > /dev/tcp/127.0.0.1/5901) 2>/dev/null; then break; fi
   sleep 0.1
 done
+
+# With no window manager, nothing owns the X selections, so Xvnc's RFB cut-text
+# isn't reliably handed to Chromium on Ctrl+V. autocutsel (one daemon per
+# selection) keeps CLIPBOARD and PRIMARY populated and synced. Best-effort: a
+# clipboard failure must never abort VNC, and the pgrep guard keeps a stray
+# re-entry from spawning duplicates (Xvnc is up now, so DISPLAY=:1 resolves).
+if ! pgrep -u "$(id -u)" -x autocutsel >/dev/null; then
+  DISPLAY=:1 autocutsel -selection CLIPBOARD -fork >/dev/null 2>&1 || true
+  DISPLAY=:1 autocutsel -selection PRIMARY -fork >/dev/null 2>&1 || true
+fi
 
 # websockify serves noVNC at /vnc.html (--web) and tunnels WS frames to Xvnc's
 # RFB. Bind 0.0.0.0:6080 so both Docker `-p` mappings and OrbStack's

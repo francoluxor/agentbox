@@ -4,7 +4,10 @@ import {
   sidebarLines,
   statusLine,
   menuLines,
+  createMenuLines,
   SIDEBAR_HEADER_LINES,
+  NEW_BOX_ID,
+  NEW_BOX_LABEL,
 } from '../src/dashboard/sidebar.js';
 
 describe('activityCell', () => {
@@ -41,6 +44,16 @@ describe('sidebarLines', () => {
     expect(lines).toHaveLength(5);
     expect(lines.some((l) => l.includes('(no boxes)'))).toBe(true);
   });
+  it('renders the synthetic "+ New box" entry, selectable like a box', () => {
+    const withNew = [{ id: NEW_BOX_ID, name: NEW_BOX_LABEL, state: 'new' }, ...boxes];
+    const row = sidebarLines(withNew, NEW_BOX_ID, 24, 8)[SIDEBAR_HEADER_LINES]!;
+    expect(row).toHaveLength(24);
+    expect(row).toContain(NEW_BOX_LABEL);
+    expect(row.startsWith('▸ ')).toBe(true); // selected marker
+    const unsel = sidebarLines(withNew, 'aaa', 24, 8)[SIDEBAR_HEADER_LINES]!;
+    expect(unsel.startsWith('  ')).toBe(true);
+    expect(unsel).toContain(NEW_BOX_LABEL);
+  });
   it('renders the AgentBox banner centered as the header, reserves 2 lines', () => {
     expect(SIDEBAR_HEADER_LINES).toBe(2);
     const lines = sidebarLines(boxes, 'aaa', 24, 8);
@@ -62,8 +75,8 @@ describe('statusLine', () => {
 
   it('matches the tmux footer palette with white keys + gray labels', () => {
     const s = statusLine({ id: '1', name: 'api', state: 'running', claudeActivity: 'working' }, 200);
-    // dark bar (236), blue brand block (39), gray labels (245), white keys (255)
-    expect(s).toContain('48;5;236');
+    // dark bar (truecolor #303030), blue brand (39), gray labels (245), white keys (255)
+    expect(s).toContain('48;2;48;48;48');
     expect(s).toContain('48;5;39');
     expect(s).toContain('38;5;245');
     expect(s).toContain('38;5;255');
@@ -114,6 +127,25 @@ describe('menuLines', () => {
 
   it('clamps content when the pane is short', () => {
     const lines = menuLines('b', 30, 3);
+    expect(lines).toHaveLength(3);
+    for (const l of lines) expect(l).toHaveLength(30);
+  });
+});
+
+describe('createMenuLines', () => {
+  it('is exactly h lines × w cols and offers create-with/without-claude', () => {
+    const lines = createMenuLines('/home/me/proj', 50, 20);
+    expect(lines).toHaveLength(20);
+    for (const l of lines) expect(l).toHaveLength(50);
+    const joined = lines.join('\n');
+    expect(joined).toContain('Create a new box');
+    expect(joined).toContain('[c]  Create + launch Claude');
+    expect(joined).toContain('[n]  Create only');
+    expect(joined).toContain('/home/me/proj');
+  });
+
+  it('clamps content when the pane is short', () => {
+    const lines = createMenuLines('/x', 30, 3);
     expect(lines).toHaveLength(3);
     for (const l of lines) expect(l).toHaveLength(30);
   });

@@ -1,11 +1,12 @@
 import { spawn } from 'node:child_process';
 import { log } from '@clack/prompts';
 import { Command } from 'commander';
-import { findProjectRoot } from '@agentbox/config';
+import { findProjectRoot, loadEffectiveConfig } from '@agentbox/config';
 import {
   buildClaudeDashboardAttachArgv,
   buildShellArgv,
   claudeSessionInfo,
+  createBox,
   ensureBoxBrowser,
   listBoxes,
   rebuildPluginNativeDeps,
@@ -13,9 +14,11 @@ import {
   type ListedBox,
 } from '@agentbox/sandbox-docker';
 import { resolveBoxOrExit } from '../box-ref.js';
+import { resolveClaudeAuth } from '../auth.js';
+import { resolveLimits } from '../limits.js';
 import { Compositor, type RightTarget } from '../dashboard/compositor.js';
 import type { PtySpawn, TerminalCtor } from '../dashboard/pty-session.js';
-import type { SidebarBox } from '../dashboard/sidebar.js';
+import { NEW_BOX_ID, NEW_BOX_LABEL, type SidebarBox } from '../dashboard/sidebar.js';
 import { handleLifecycleError } from './_errors.js';
 
 interface DashboardOptions {
@@ -97,19 +100,21 @@ export const dashboardCommand = new Command('dashboard')
         const picked = await resolveBoxOrExit(idOrName);
         initialId = picked.id;
         if (!scoped0.some((b) => b.id === picked.id)) showAll = true; // widen so it shows
+      } else if (scoped0.length === 0) {
+        // No boxes yet — land on the synthetic create entry instead of bailing.
+        initialId = NEW_BOX_ID;
       } else {
-        if (scoped0.length === 0) {
-          log.error(opts.project ? `no boxes in this project (${project.root})` : 'no boxes exist');
-          log.info('run `agentbox create` to make one' + (opts.project ? ', or drop -p' : ''));
-          process.exit(2);
-        }
         initialId = (scoped0.find((b) => b.state === 'running') ?? scoped0[0]!).id;
       }
 
-      const listCandidates = async (): Promise<SidebarBox[]> =>
-        scoped(showAll, project.root, await listBoxes()).map(toSidebar);
+      const newBoxEntry: SidebarBox = { id: NEW_BOX_ID, name: NEW_BOX_LABEL, state: 'new' };
+      const listCandidates = async (): Promise<SidebarBox[]> => [
+        newBoxEntry,
+        ...scoped(showAll, project.root, await listBoxes()).map(toSidebar),
+      ];
 
       const resolveTarget = async (boxId: string): Promise<RightTarget> => {
+        if (boxId === NEW_BOX_ID) return { kind: 'create-menu', where: project.root };
         const box = (await listBoxes()).find((b) => b.id === boxId);
         if (!box) return { kind: 'placeholder', lines: ['', '  box not found'] };
         if (box.state !== 'running') {
@@ -159,6 +164,56 @@ export const dashboardCommand = new Command('dashboard')
       const openShell = async (boxId: string): Promise<RightTarget> => {
         const box = await findBox(boxId);
         return { kind: 'attach', argv: buildShellArgv(box.container), mode: 'shell' };
+      };
+
+      // Non-interactive box creation from the "+ New box" entry: config
+      // defaults only (no CLI overrides, no wizard, no setup-token prompt —
+      // the TUI can't prompt). Mirrors the `agentbox claude` create block.
+      const createNewBox = async (
+        withClaude: boolean,
+        onProgress: (line: string) => void,
+      ): Promise<{ boxId: string; attach?: RightTarget }> => {
+        const cfg = await loadEffectiveConfig(project.root);
+        const auth = await resolveClaudeAuth(process.env);
+        const checkpointRef =
+          cfg.effective.box.defaultCheckpoint.length > 0
+            ? cfg.effective.box.defaultCheckpoint
+            : undefined;
+        const result = await createBox({
+          workspacePath: project.root,
+          useSnapshot: cfg.effective.box.hostSnapshot ?? true,
+          checkpointRef,
+          image: cfg.effective.box.image,
+          claudeConfig: { isolate: cfg.effective.box.isolateClaudeConfig },
+          claudeEnv: auth.env,
+          withPlaywright:
+            cfg.effective.box.withPlaywright ||
+            cfg.effective.browser.default !== 'agent-browser',
+          withEnv: cfg.effective.box.withEnv,
+          vnc: { enabled: cfg.effective.box.vnc },
+          docker: { sharedCache: cfg.effective.box.dockerCacheShared },
+          limits: resolveLimits(cfg.effective.box, {}),
+          projectRoot: project.root,
+          onLog: onProgress,
+        });
+        if (!withClaude) return { boxId: result.record.id };
+        await rebuildPluginNativeDeps(result.record.container, {
+          volume: result.record.claudeConfigVolume,
+        });
+        await startClaudeSession({
+          container: result.record.container,
+          claudeArgs: [],
+          boxName: result.record.name,
+        });
+        const info = await claudeSessionInfo(result.record.container);
+        return {
+          boxId: result.record.id,
+          attach: {
+            kind: 'attach',
+            argv: buildClaudeDashboardAttachArgv(result.record.container, info.sessionName),
+            mode: 'claude',
+          },
+        };
       };
 
       // Detached + stdio ignored: never blocks the dashboard loop and can't
@@ -220,6 +275,7 @@ export const dashboardCommand = new Command('dashboard')
           resolveTarget,
           startClaude,
           openShell,
+          createNewBox,
           openVnc,
           openCode,
           openWeb,

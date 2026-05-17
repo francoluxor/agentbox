@@ -21,6 +21,12 @@ export function activityCell(b: SidebarBox): string {
   }
 }
 
+/** Synthetic sidebar entry pinned at the top: selecting it opens the create
+ *  menu. Carried in the compositor's box list like a real box (sentinel id),
+ *  so selection/switch/highlight need no special-casing. */
+export const NEW_BOX_ID = '__agentbox_new__';
+export const NEW_BOX_LABEL = '+ New box';
+
 /** Sidebar banner text (centered + styled by the compositor). */
 export const SIDEBAR_HEADER = '═ AgentBox ═';
 /** Lines `sidebarLines` reserves before the box rows (banner + blank). The
@@ -55,7 +61,11 @@ export function sidebarLines(
   const nameW = Math.min(16, Math.max(6, ...boxes.map((b) => b.name.length), 6));
   for (const b of boxes) {
     const marker = b.id === selectedId ? '▸ ' : '  ';
-    lines.push(fit(`${marker}${fit(b.name, nameW)}  ${activityCell(b)}`, w));
+    const row =
+      b.id === NEW_BOX_ID
+        ? `${marker}${NEW_BOX_LABEL}`
+        : `${marker}${fit(b.name, nameW)}  ${activityCell(b)}`;
+    lines.push(fit(row, w));
   }
   if (boxes.length === 0) lines.push(fit(' (no boxes)', w));
   while (lines.length < h) lines.push(fit('', w));
@@ -82,10 +92,37 @@ export function menuLines(boxName: string, w: number, h: number): string[] {
   return out;
 }
 
+/**
+ * Centered menu for the synthetic "+ New box" entry. Exactly `h` lines, each
+ * exactly `w` columns. Pure.
+ */
+export function createMenuLines(where: string, w: number, h: number): string[] {
+  const body = [
+    '',
+    '  Create a new box',
+    '',
+    '   [c]  Create + launch Claude',
+    '   [n]  Create only',
+    '',
+    `  in ${where}`,
+    '',
+    '  Ctrl+Option+↑/↓ switch · Ctrl-a then q quit',
+  ];
+  const top = Math.max(0, Math.floor((h - body.length) / 2));
+  const out: string[] = [];
+  for (let i = 0; i < h; i++) out.push(fit(body[i - top] ?? '', w));
+  return out;
+}
+
 // Status-bar palette — matches the in-box tmux footer
 // (`buildClaudeStatusBarArgs`): dark bar, blue brand block, dim-grey hints
 // with white key chords.
-const BAR_BASE = '\x1b[48;5;236m\x1b[38;5;250m';
+/** The footer/sidebar background gray. Truecolor (not palette index 236) so
+ *  it pins an exact RGB — terminals can remap/shade indexed colors per
+ *  context, which made the sidebar and status bar look like different grays.
+ *  Single source so the two regions can't drift. */
+export const BAR_BG = '\x1b[48;2;48;48;48m';
+const BAR_BASE = BAR_BG + '\x1b[38;5;250m';
 const BAR_BRAND = '\x1b[48;5;39m\x1b[38;5;16m'; // blue block (not bold)
 const BRAND_BOLD = '\x1b[1m'; // box name only
 const BRAND_NOBOLD = '\x1b[22m';

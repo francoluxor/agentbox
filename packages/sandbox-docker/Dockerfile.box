@@ -210,10 +210,17 @@ ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/local/bin/chromium
 # launched with DISPLAY=:1 fills the screen, and agents drive tabs through the
 # browser itself. Adding a WM would cost another ~10MB and complicate the
 # lifecycle for no win.
+#
+# autocutsel: with no WM, nothing owns the X11 CLIPBOARD/PRIMARY selections, so
+# the text noVNC delivers via RFB cut-text isn't reliably served back to
+# Chromium on Ctrl+V. autocutsel (one daemon per selection, started by
+# agentbox-vnc-start) keeps both selections populated and in sync. xclip is
+# kept alongside it purely for debugging the clipboard round-trip.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         tigervnc-standalone-server tigervnc-common tigervnc-tools \
         novnc websockify \
+        autocutsel xclip \
     && rm -rf /var/lib/apt/lists/*
 
 # DISPLAY is image-baked so every `docker exec` (the claude tmux session,
