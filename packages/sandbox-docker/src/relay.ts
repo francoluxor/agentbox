@@ -124,13 +124,20 @@ export async function ensureRelay(opts: EnsureRelayOptions = {}): Promise<RelayE
 }
 
 /**
- * Locate the bundled `agentbox-relay` bin. Works in two layouts:
- *   1. workspace dev: `<repo>/packages/sandbox-docker/dist` ↔ `<repo>/packages/relay/dist/bin.cjs`
- *   2. installed: `<...>/node_modules/@agentbox/sandbox-docker/dist` ↔ `<...>/node_modules/@agentbox/relay/dist/bin.cjs`
+ * Locate the `agentbox-relay` bin spawned as a child process. Layouts:
+ *   0. env override: `AGENTBOX_RELAY_BIN`
+ *   1. bundled CLI (dev + published `agent-box`): this module is bundled into
+ *      the CLI at `<root>/dist/index.js`, the stage step puts the bin at
+ *      `<root>/runtime/relay/bin.cjs` (sibling of dist/ in both layouts)
+ *   2. legacy workspace: `<repo>/packages/sandbox-docker/dist` ↔ `<repo>/packages/relay/dist/bin.cjs`
+ *   3. legacy externalized install: `<...>/node_modules/@agentbox/relay/dist/bin.cjs`
  */
 function resolveRelayBin(): string {
+  const override = process.env.AGENTBOX_RELAY_BIN;
+  if (override && existsSync(override)) return override;
   const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
+    resolve(here, '..', 'runtime', 'relay', 'bin.cjs'),
     resolve(here, '..', '..', 'relay', 'dist', 'bin.cjs'),
     resolve(here, '..', '..', '..', '@agentbox', 'relay', 'dist', 'bin.cjs'),
     resolve(here, '..', '..', 'node_modules', '@agentbox', 'relay', 'dist', 'bin.cjs'),
@@ -151,8 +158,13 @@ function resolveRelayBin(): string {
  * Best-effort: returns null when not found (relay reports a clear error).
  */
 function resolveCliEntry(): string | null {
+  const override = process.env.AGENTBOX_CLI_ENTRY;
+  if (override && existsSync(override)) return override;
   const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
+    // Bundled CLI (dev + published): this module IS bundled into the CLI
+    // entry, so the entry is index.js next to this file.
+    resolve(here, 'index.js'),
     resolve(here, '..', '..', '..', 'apps', 'cli', 'dist', 'index.js'),
     resolve(here, '..', '..', '..', '..', 'dist', 'index.js'),
   ];

@@ -1,15 +1,43 @@
 {
-  "name": "agentbox",
-  "version": "0.0.0",
+  "name": "agent-box",
+  "version": "0.1.0",
   "description": "Launch Claude Code, Codex, and other coding agents in isolated sandboxes",
   "license": "MIT",
+  "author": "Marco D'Alia",
   "type": "module",
+  "engines": {
+    "node": ">=20.10"
+  },
   "bin": {
     "agentbox": "./dist/index.js"
   },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "codex",
+    "coding-agent",
+    "sandbox",
+    "docker",
+    "cli",
+    "isolation",
+    "agentbox"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/madarco/agentbox.git",
+    "directory": "apps/cli"
+  },
+  "homepage": "https://github.com/madarco/agentbox#readme",
+  "bugs": {
+    "url": "https://github.com/madarco/agentbox/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
     "dist",
-    "share"
+    "share",
+    "runtime"
   ],
   "scripts": {
     "build": "tsup",
@@ -17,22 +45,27 @@
     "lint": "eslint src test",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist .turbo"
+    "clean": "rm -rf dist runtime .turbo",
+    "prepublishOnly": "cd ../.. && pnpm -w build",
+    "publish:patch": "npm version patch && git push --follow-tags",
+    "publish:minor": "npm version minor && git push --follow-tags"
   },
   "dependencies": {
-    "@agentbox/config": "workspace:*",
-    "@agentbox/core": "workspace:*",
-    "@agentbox/ctl": "workspace:*",
-    "@agentbox/sandbox-docker": "workspace:*",
     "@clack/prompts": "^0.9.0",
     "@xterm/headless": "^5.5.0",
     "commander": "^12.1.0",
-    "supports-hyperlinks": "^3.1.0"
+    "execa": "^9.5.2",
+    "supports-hyperlinks": "^3.1.0",
+    "yaml": "^2.6.1"
   },
   "optionalDependencies": {
     "@homebridge/node-pty-prebuilt-multiarch": "^0.13.1"
   },
   "devDependencies": {
+    "@agentbox/config": "workspace:*",
+    "@agentbox/core": "workspace:*",
+    "@agentbox/ctl": "workspace:*",
+    "@agentbox/sandbox-docker": "workspace:*",
     "@types/node": "^22.10.1",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",

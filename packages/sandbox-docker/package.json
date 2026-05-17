@@ -1,6 +1,7 @@
 {
   "name": "@agentbox/sandbox-docker",
   "version": "0.0.0",
+  "private": true,
   "description": "Local Docker sandbox provider for AgentBox",
   "license": "MIT",
   "type": "module",

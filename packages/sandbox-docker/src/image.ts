@@ -1,17 +1,46 @@
 import { execa } from 'execa';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 export const DEFAULT_BOX_IMAGE = 'agentbox/box:dev';
 
 const here = dirname(fileURLToPath(import.meta.url));
-// src/ is one level under the package root at build/dev time; the Dockerfile
-// sits at the package root next to package.json. The build *context* is the
-// monorepo root because the image bakes in packages/ctl/dist/bin.js.
-const PACKAGE_ROOT = resolve(here, '..');
-const REPO_ROOT = resolve(PACKAGE_ROOT, '..', '..');
-export const DOCKERFILE_PATH = resolve(PACKAGE_ROOT, 'Dockerfile.box');
-export const BUILD_CONTEXT_DIR = REPO_ROOT;
+
+// The Dockerfile's COPY lines reference monorepo-relative paths
+// (packages/ctl/dist/bin.cjs, apps/cli/share/..., packages/sandbox-docker/scripts/*),
+// so the build context must be a dir containing that tree.
+//
+// Resolution order:
+//   0. AGENTBOX_DOCKER_CONTEXT env override (dir holding Dockerfile.box).
+//   1. Staged context shipped with the bundled `agent-box` package: this
+//      module is bundled into the CLI at <root>/dist, the stage step mirrors
+//      the COPY tree at <root>/runtime/docker (sibling of dist/, uniform in
+//      dev and when installed).
+//   2. Legacy monorepo: Dockerfile.box at the sandbox-docker package root,
+//      build context = monorepo root.
+function resolveDockerBuild(): { dockerfile: string; context: string } {
+  const override = process.env.AGENTBOX_DOCKER_CONTEXT;
+  if (override && existsSync(resolve(override, 'Dockerfile.box'))) {
+    return { dockerfile: resolve(override, 'Dockerfile.box'), context: override };
+  }
+  const staged = resolve(here, '..', 'runtime', 'docker');
+  if (existsSync(resolve(staged, 'Dockerfile.box'))) {
+    return { dockerfile: resolve(staged, 'Dockerfile.box'), context: staged };
+  }
+  // Legacy: src/ (or the unbundled package dist/) is one level under the
+  // package root; the monorepo root is two more up.
+  const packageRoot = resolve(here, '..');
+  return {
+    dockerfile: resolve(packageRoot, 'Dockerfile.box'),
+    context: resolve(packageRoot, '..', '..'),
+  };
+}
+
+const { dockerfile: DOCKERFILE_PATH_RESOLVED, context: BUILD_CONTEXT_DIR_RESOLVED } =
+  resolveDockerBuild();
+export const DOCKERFILE_PATH = DOCKERFILE_PATH_RESOLVED;
+export const BUILD_CONTEXT_DIR = BUILD_CONTEXT_DIR_RESOLVED;
 
 export async function imageExists(ref: string): Promise<boolean> {
   const result = await execa('docker', ['image', 'inspect', ref], { reject: false });

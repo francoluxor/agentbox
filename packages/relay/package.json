@@ -1,6 +1,7 @@
 {
   "name": "@agentbox/relay",
   "version": "0.0.0",
+  "private": true,
   "description": "Host-side HTTP relay receiving events and RPCs from agentbox boxes",
   "license": "MIT",
   "type": "module",

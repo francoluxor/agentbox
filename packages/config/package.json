@@ -1,6 +1,7 @@
 {
   "name": "@agentbox/config",
   "version": "0.0.0",
+  "private": true,
   "description": "Layered config (global / per-project / agentbox.yaml) for AgentBox",
   "license": "MIT",
   "type": "module",

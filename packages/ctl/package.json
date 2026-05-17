@@ -1,6 +1,7 @@
 {
   "name": "@agentbox/ctl",
   "version": "0.0.0",
+  "private": true,
   "description": "In-container supervisor daemon and CLI for AgentBox",
   "license": "MIT",
   "type": "module",
