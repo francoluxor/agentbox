@@ -8,7 +8,20 @@ import {
   type PtySpawn,
   type TerminalCtor,
 } from './pty-session.js';
-import { sidebarLines, statusLine, menuLines, type SidebarBox } from './sidebar.js';
+import {
+  sidebarLines,
+  statusLine,
+  menuLines,
+  SIDEBAR_HEADER_LINES,
+  type SidebarBox,
+} from './sidebar.js';
+
+// Sidebar panel styling (256-color, portable). Each sidebar line is already
+// padded to the panel width, so wrapping it in a bg SGR tints the full column.
+const SB_BODY = '\x1b[48;5;236m\x1b[38;5;250m';
+const SB_HEADER = '\x1b[48;5;236m\x1b[38;5;39m\x1b[1m';
+const SB_SELECTED = '\x1b[48;5;238m\x1b[38;5;255m\x1b[1m';
+const SGR_RESET = '\x1b[0m';
 
 export type RightTarget =
   | { kind: 'attach'; argv: string[]; mode?: 'claude' | 'shell' }
@@ -363,8 +376,13 @@ export class Compositor {
     if (this.tornDown || this.layout.tooSmall) return;
     const { sidebar, sepX, statusY } = this.layout;
     const lines = sidebarLines(this.boxes, this.selectedId, sidebar.w, sidebar.h);
+    const selIdx = this.boxes.findIndex((b) => b.id === this.selectedId);
+    const selRow = selIdx >= 0 ? SIDEBAR_HEADER_LINES + selIdx : -1;
     let s = SYNC_BEGIN + '\x1b[0m';
-    for (let i = 0; i < lines.length; i++) s += cursorTo(0, i) + lines[i];
+    for (let i = 0; i < lines.length; i++) {
+      const style = i === 0 ? SB_HEADER : i === selRow ? SB_SELECTED : SB_BODY;
+      s += cursorTo(0, i) + style + lines[i] + SGR_RESET;
+    }
     for (let y = 0; y < sidebar.h; y++) s += cursorTo(sepX, y) + '│';
     let status: string;
     if (this.flashMsg) {

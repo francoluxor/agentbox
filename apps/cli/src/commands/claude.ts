@@ -257,6 +257,7 @@ export const claudeCommand = new Command('claude')
         container: result.record.container,
         claudeArgs: effectiveClaudeArgs,
         sessionName,
+        boxName: result.record.name,
       });
       s.stop(`tmux session "${sessionName}" started`);
 
@@ -362,6 +363,7 @@ async function startOrAttachClaude(
     container: box.container,
     claudeArgs,
     sessionName,
+    boxName: box.name,
   });
   s.stop(`tmux session "${sessionName}" started`);
 

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { activityCell, sidebarLines, statusLine, menuLines } from '../src/dashboard/sidebar.js';
+import {
+  activityCell,
+  sidebarLines,
+  statusLine,
+  menuLines,
+  SIDEBAR_HEADER_LINES,
+} from '../src/dashboard/sidebar.js';
 
 describe('activityCell', () => {
   it('maps claude activity for running boxes', () => {
@@ -35,16 +41,56 @@ describe('sidebarLines', () => {
     expect(lines).toHaveLength(5);
     expect(lines.some((l) => l.includes('(no boxes)'))).toBe(true);
   });
+  it('renders the AgentBox banner centered as the header, reserves 2 lines', () => {
+    expect(SIDEBAR_HEADER_LINES).toBe(2);
+    const lines = sidebarLines(boxes, 'aaa', 24, 8);
+    const h = lines[0]!;
+    expect(h).toHaveLength(24);
+    expect(h.trim()).toContain('AgentBox');
+    expect(h).not.toContain('BOXES');
+    const lead = h.length - h.trimStart().length;
+    const trail = h.length - h.trimEnd().length;
+    expect(Math.abs(lead - trail)).toBeLessThanOrEqual(1); // centered
+    expect(lead).toBeGreaterThan(0);
+    expect(lines[1]!.trim()).toBe('');
+  });
 });
 
 describe('statusLine', () => {
-  it('is inverse video and exactly w printable columns', () => {
-    const s = statusLine({ id: '1', name: 'api', state: 'running', claudeActivity: 'working' }, 60);
-    expect(s.startsWith('\x1b[7m')).toBe(true);
+  const ANSI = new RegExp(String.fromCharCode(27) + '\\[[0-9;]*m', 'g');
+  const stripAnsi = (s: string): string => s.replace(ANSI, '');
+
+  it('matches the tmux footer palette with white keys + gray labels', () => {
+    const s = statusLine({ id: '1', name: 'api', state: 'running', claudeActivity: 'working' }, 200);
+    // dark bar (236), blue brand block (39), gray labels (245), white keys (255)
+    expect(s).toContain('48;5;236');
+    expect(s).toContain('48;5;39');
+    expect(s).toContain('38;5;245');
+    expect(s).toContain('38;5;255');
     expect(s.endsWith('\x1b[0m')).toBe(true);
-    const printable = s.replace('\x1b[7m', '').replace('\x1b[0m', '');
-    expect(printable).toHaveLength(60);
+    // "agentbox" stays normal weight; bold starts at the box name.
+    expect(s).toContain('▸ \x1b[1mapi');
+    expect(s).not.toContain('\x1b[1m agentbox');
+    const printable = stripAnsi(s);
+    expect(printable).toHaveLength(200);
     expect(printable).toContain('api');
+  });
+
+  it('falls back to just the brand block when too narrow for hints', () => {
+    const s = statusLine({ id: '1', name: 'api', state: 'running', claudeActivity: 'idle' }, 40);
+    expect(s).toContain('48;5;39');
+    expect(stripAnsi(s)).toHaveLength(40);
+  });
+
+  it('spells keys by name (no ⌥/^ glyphs) as "KEYS: label"', () => {
+    const s = statusLine({ id: '1', name: 'api', state: 'running', claudeActivity: 'idle' }, 200);
+    const printable = stripAnsi(s);
+    expect(printable).toHaveLength(200);
+    expect(printable).toContain('Control+a c: code');
+    expect(printable).toContain('Control+Option+Up/Down: switch');
+    expect(printable).toContain('│');
+    expect(printable).not.toContain('⌥');
+    expect(printable).not.toContain('^a');
   });
 
   it('uses the stateLabel override (shell/menu) instead of claudeActivity', () => {

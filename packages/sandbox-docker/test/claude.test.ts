@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   buildClaudeDashboardAttachArgv,
   buildClaudeMounts,
+  buildClaudeStatusBarArgs,
   DEFAULT_CLAUDE_SESSION,
   resolveClaudeVolume,
   scanPluginCacheForRebuild,
@@ -66,6 +67,45 @@ describe('buildClaudeDashboardAttachArgv', () => {
     // never attaches directly to the original session (would show its footer)
     const attachIdx = argv.lastIndexOf('attach');
     expect(argv[attachIdx + 2]).toBe('codex-dash');
+  });
+});
+
+describe('buildClaudeStatusBarArgs', () => {
+  it('styles the named session with box name + detach hint, no window clutter', () => {
+    const args = buildClaudeStatusBarArgs(DEFAULT_CLAUDE_SESSION, 'my-box');
+
+    // tmux command separators present and each `set` is scoped to the session
+    expect(args.filter((a) => a === ';').length).toBeGreaterThanOrEqual(9);
+    const setIdxs = args.flatMap((a, i) => (a === 'set' ? [i] : []));
+    expect(setIdxs.length).toBeGreaterThan(0);
+    for (const i of setIdxs) {
+      expect(args[i + 1]).toBe('-t');
+      expect(args[i + 2]).toBe(DEFAULT_CLAUDE_SESSION);
+    }
+
+    // status-left shows the literal box name (no shell/strftime indirection)
+    const leftIdx = args.indexOf('status-left');
+    expect(leftIdx).toBeGreaterThan(-1);
+    const left = args[leftIdx + 1];
+    expect(left).toContain('agentbox ▸ my-box');
+    expect(left).not.toContain('#(');
+    expect(left).not.toContain('%');
+
+    // status-right is the detach hint
+    const rightIdx = args.indexOf('status-right');
+    expect(args[rightIdx + 1]).toContain('Ctrl-b d detach');
+
+    // the noisy window list is emptied
+    expect(args).toContain('window-status-format');
+    expect(args).toContain('window-status-current-format');
+    expect(args[args.indexOf('window-status-current-format') + 1]).toBe('');
+  });
+
+  it('scopes options to a custom session name', () => {
+    const args = buildClaudeStatusBarArgs('codex', 'my-box');
+    for (const i of args.flatMap((a, idx) => (a === 'set' ? [idx] : []))) {
+      expect(args[i + 2]).toBe('codex');
+    }
   });
 });
 

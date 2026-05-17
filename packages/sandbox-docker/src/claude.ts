@@ -579,6 +579,9 @@ export interface StartClaudeSessionOptions {
   container: string;
   claudeArgs: string[];
   sessionName?: string;
+  /** Shown in the session's tmux status bar. Defaults to the container name
+   *  with the `agentbox-` prefix stripped (containers are `agentbox-<name>`). */
+  boxName?: string;
 }
 
 /**
@@ -608,6 +611,7 @@ function shQuote(arg: string): string {
  */
 export async function startClaudeSession(opts: StartClaudeSessionOptions): Promise<void> {
   const sessionName = opts.sessionName ?? DEFAULT_CLAUDE_SESSION;
+  const boxName = opts.boxName ?? opts.container.replace(/^agentbox-/, '');
   const cmd = ['claude', ...opts.claudeArgs].map(shQuote).join(' ');
   const term = process.env['TERM'] ?? 'xterm-256color';
   const envFlags: string[] = ['-e', `TERM=${term}`];
@@ -629,6 +633,7 @@ export async function startClaudeSession(opts: StartClaudeSessionOptions): Promi
       '-s',
       sessionName,
       cmd,
+      ...buildClaudeStatusBarArgs(sessionName, boxName),
     ],
     { reject: false },
   );
@@ -728,6 +733,40 @@ export function buildClaudeDashboardAttachArgv(
     'attach',
     '-t',
     dash,
+  ];
+}
+
+/**
+ * tmux command-list (separator-prefixed) that styles the claude session's
+ * status bar: ` agentbox ▸ <box> ` on the left, ` Ctrl-b d detach ` on the
+ * right, dark bar, no window-list clutter — visually consistent with the
+ * dashboard's own `statusLine()`.
+ *
+ * Appended after `tmux new-session …` in {@link startClaudeSession}; the bare
+ * `;` elements are tmux's command separator (execa array args, no host shell,
+ * so they reach tmux verbatim). `status-*` are session options scoped with
+ * `-t <session>` — the dashboard's grouped `<name>-dash` runs its own
+ * `status off` and is unaffected.
+ *
+ * The box name is injected as a literal string (known host-side at session
+ * start) rather than read in-box via tmux `#()` — tmux runs `status-left`
+ * through strftime, so a shell-substituted value was fragile (a `%`/clock
+ * artifact slipped through). Box names are a restricted charset (no `%`, `#`,
+ * spaces, or globs), so the literal is strftime- and tmux-format-safe as-is.
+ */
+export function buildClaudeStatusBarArgs(sessionName: string, boxName: string): string[] {
+  const s = sessionName;
+  const name = boxName;
+  return [
+    ';', 'set', '-t', s, 'status-interval', '60',
+    ';', 'set', '-t', s, 'status-justify', 'left',
+    ';', 'set', '-t', s, 'status-style', 'bg=colour236,fg=colour250',
+    ';', 'set', '-t', s, 'status-left-length', '60',
+    ';', 'set', '-t', s, 'status-left', `#[fg=colour16,bg=colour39,bold] agentbox ▸ ${name} #[default] `,
+    ';', 'set', '-t', s, 'status-right-length', '30',
+    ';', 'set', '-t', s, 'status-right', '#[fg=colour245]Ctrl-b d detach ',
+    ';', 'set', '-t', s, 'window-status-format', '',
+    ';', 'set', '-t', s, 'window-status-current-format', '',
   ];
 }
 

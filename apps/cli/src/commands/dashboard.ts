@@ -147,7 +147,7 @@ export const dashboardCommand = new Command('dashboard')
         await rebuildPluginNativeDeps(box.container, {
           volume: box.claudeConfigVolume,
         });
-        await startClaudeSession({ container: box.container, claudeArgs: [] });
+        await startClaudeSession({ container: box.container, claudeArgs: [], boxName: box.name });
         const info = await claudeSessionInfo(box.container);
         return {
           kind: 'attach',

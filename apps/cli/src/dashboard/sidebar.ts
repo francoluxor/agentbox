@@ -21,10 +21,24 @@ export function activityCell(b: SidebarBox): string {
   }
 }
 
+/** Sidebar banner text (centered + styled by the compositor). */
+export const SIDEBAR_HEADER = '═ AgentBox ═';
+/** Lines `sidebarLines` reserves before the box rows (banner + blank). The
+ *  compositor uses this to locate the selected box row for highlighting. */
+export const SIDEBAR_HEADER_LINES = 2;
+
 function fit(s: string, w: number): string {
   if (s.length === w) return s;
   if (s.length > w) return s.slice(0, w);
   return s + ' '.repeat(w - s.length);
+}
+
+/** `s` centered in a field of `w` columns (truncated if it doesn't fit). */
+function center(s: string, w: number): string {
+  if (s.length >= w) return s.slice(0, w);
+  const pad = w - s.length;
+  const leftPad = Math.floor(pad / 2);
+  return ' '.repeat(leftPad) + s + ' '.repeat(pad - leftPad);
 }
 
 /**
@@ -37,7 +51,7 @@ export function sidebarLines(
   w: number,
   h: number,
 ): string[] {
-  const lines: string[] = [fit(' BOXES', w), fit('', w)];
+  const lines: string[] = [center(SIDEBAR_HEADER, w), fit('', w)];
   const nameW = Math.min(16, Math.max(6, ...boxes.map((b) => b.name.length), 6));
   for (const b of boxes) {
     const marker = b.id === selectedId ? '▸ ' : '  ';
@@ -68,10 +82,33 @@ export function menuLines(boxName: string, w: number, h: number): string[] {
   return out;
 }
 
+// Status-bar palette — matches the in-box tmux footer
+// (`buildClaudeStatusBarArgs`): dark bar, blue brand block, dim-grey hints
+// with white key chords.
+const BAR_BASE = '\x1b[48;5;236m\x1b[38;5;250m';
+const BAR_BRAND = '\x1b[48;5;39m\x1b[38;5;16m'; // blue block (not bold)
+const BRAND_BOLD = '\x1b[1m'; // box name only
+const BRAND_NOBOLD = '\x1b[22m';
+const HINT_KEY = '\x1b[38;5;255m'; // white: the key chord
+const HINT_TXT = '\x1b[38;5;245m'; // gray: labels + separators
+const BAR_RESET = '\x1b[0m';
+
+// [key chord, label]. Keys spelled out (no ⌥/^ glyphs). Rendered as
+// `KEYS: label` with the chord white and the label gray.
+const HINT_GROUPS: ReadonlyArray<readonly [string, string]> = [
+  ['Control+Option+Up/Down', 'switch'],
+  ['Control+a c', 'code'],
+  ['Control+a v', 'vnc'],
+  ['Control+a w', 'web'],
+  ['Control+a q', 'quit'],
+];
+
 /**
- * Inverse-video status line, exactly `w` columns. `stateLabel` overrides the
- * box's activity text (used for `shell` / `menu` panes where claudeActivity
- * would otherwise show a misleading `unknown`).
+ * Status line, exactly `w` printable columns, colored to match the in-box tmux
+ * footer (dark bar, blue ` agentbox ▸ … ` brand block on the left, dim-grey
+ * shortcut hints on the right). `stateLabel` overrides the box's activity text
+ * (used for `shell` / `menu` panes where claudeActivity would otherwise show a
+ * misleading `unknown`).
  */
 export function statusLine(
   box: SidebarBox | undefined,
@@ -80,12 +117,33 @@ export function statusLine(
 ): string {
   const state =
     stateLabel ?? (box ? (box.state === 'running' ? (box.claudeActivity ?? 'unknown') : box.state) : '');
-  const left = box ? ` agentbox ▸ ${box.name} (${state})` : ' agentbox';
-  const right = '^⌥↑↓ switch · ^a v vnc · ^a c code · ^a w web · ^a q quit ';
-  const gap = Math.max(1, w - left.length - right.length);
-  const text =
-    left.length + right.length + 1 > w
-      ? fit(left, w)
-      : left + ' '.repeat(gap) + right;
-  return `\x1b[7m${fit(text, w)}\x1b[0m`;
+  // "agentbox ▸ " stays normal weight; only the box name + state are bold.
+  const brandPrefix = box ? ' agentbox ▸ ' : ' agentbox ';
+  const brandMain = box ? `${box.name} (${state}) ` : '';
+  const left = brandPrefix + brandMain;
+  const leftStyled =
+    BAR_BRAND + brandPrefix + BRAND_BOLD + brandMain + BRAND_NOBOLD;
+  // Plain (uncolored) form for width math; styled form for output.
+  const SEP = '   │   ';
+  const rightPlain =
+    HINT_GROUPS.map(([k, l]) => `${k}: ${l}`).join(SEP) + ' ';
+  const rightStyled =
+    HINT_GROUPS.map(([k, l]) => `${HINT_KEY}${k}${HINT_TXT}: ${l}`).join(
+      `${HINT_TXT}${SEP}`,
+    ) + ' ';
+  if (left.length + rightPlain.length + 1 > w) {
+    // Too narrow for the hints — just the brand block (normal weight),
+    // padded to width.
+    return BAR_BASE + BAR_BRAND + fit(left, w) + BAR_RESET;
+  }
+  const gap = w - left.length - rightPlain.length;
+  // brand block (name bold) → base bar → gap → white/gray hints.
+  return (
+    BAR_BASE +
+    leftStyled +
+    BAR_BASE +
+    ' '.repeat(gap) +
+    rightStyled +
+    BAR_RESET
+  );
 }

@@ -5,6 +5,7 @@ export {
   buildClaudeAttachArgv,
   buildClaudeDashboardAttachArgv,
   buildClaudeMounts,
+  buildClaudeStatusBarArgs,
   buildShellArgv,
   ClaudeSessionError,
   claudeSessionInfo,
