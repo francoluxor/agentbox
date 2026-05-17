@@ -3,7 +3,7 @@ import { log } from '@clack/prompts';
 import { Command } from 'commander';
 import { findProjectRoot } from '@agentbox/config';
 import {
-  buildClaudeAttachArgv,
+  buildClaudeDashboardAttachArgv,
   buildShellArgv,
   claudeSessionInfo,
   ensureBoxBrowser,
@@ -124,7 +124,10 @@ export const dashboardCommand = new Command('dashboard')
         }
         const info = await claudeSessionInfo(box.container);
         if (info.running) {
-          return { kind: 'attach', argv: buildClaudeAttachArgv(box.container, info.sessionName) };
+          return {
+            kind: 'attach',
+            argv: buildClaudeDashboardAttachArgv(box.container, info.sessionName),
+          };
         }
         return { kind: 'menu' };
       };
@@ -148,7 +151,7 @@ export const dashboardCommand = new Command('dashboard')
         const info = await claudeSessionInfo(box.container);
         return {
           kind: 'attach',
-          argv: buildClaudeAttachArgv(box.container, info.sessionName),
+          argv: buildClaudeDashboardAttachArgv(box.container, info.sessionName),
           mode: 'claude',
         };
       };

@@ -684,6 +684,54 @@ export function buildClaudeAttachArgv(container: string, sessionName?: string): 
 }
 
 /**
+ * Like {@link buildClaudeAttachArgv}, but for the dashboard's right pane. The
+ * dashboard already draws its own bottom status bar, so a second client must
+ * not show the inner tmux status bar. We attach via a *grouped* sibling session
+ * (`<name>-dash`, `tmux new-session -t <name>`): grouped sessions share the
+ * same windows/panes (identical live screen + scrollback) but keep independent
+ * session options, so `status off` here does not affect a direct
+ * `agentbox claude attach` to `<name>`. The bare `;` elements are tmux's
+ * command separator — node-pty spawns docker without a shell, so they reach
+ * tmux verbatim. `new-session -A -d` is a no-op if the grouped session already
+ * exists; `attach` runs after `status off` so the footer is gone on first paint.
+ */
+export function buildClaudeDashboardAttachArgv(
+  container: string,
+  sessionName?: string,
+): string[] {
+  const name = sessionName ?? DEFAULT_CLAUDE_SESSION;
+  const dash = `${name}-dash`;
+  const term = process.env['TERM'] ?? 'xterm-256color';
+  return [
+    'exec',
+    '-it',
+    '-e',
+    `TERM=${term}`,
+    '--user',
+    CONTAINER_USER,
+    container,
+    'tmux',
+    'new-session',
+    '-A',
+    '-d',
+    '-s',
+    dash,
+    '-t',
+    name,
+    ';',
+    'set',
+    '-t',
+    dash,
+    'status',
+    'off',
+    ';',
+    'attach',
+    '-t',
+    dash,
+  ];
+}
+
+/**
  * The `docker` argv for an interactive login shell in a box — the same shape
  * `agentbox shell` uses (vscode user, image WORKDIR `/workspace`, `bash -l`).
  * Handed to node-pty by the dashboard's "open a shell" action.

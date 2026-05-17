@@ -3,6 +3,7 @@ import type { SandboxProvider } from '@agentbox/core';
 export {
   attachClaudeSession,
   buildClaudeAttachArgv,
+  buildClaudeDashboardAttachArgv,
   buildClaudeMounts,
   buildShellArgv,
   ClaudeSessionError,

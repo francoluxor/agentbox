@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  buildClaudeDashboardAttachArgv,
   buildClaudeMounts,
+  DEFAULT_CLAUDE_SESSION,
   resolveClaudeVolume,
   scanPluginCacheForRebuild,
   SHARED_CLAUDE_VOLUME,
@@ -20,6 +22,50 @@ describe('resolveClaudeVolume', () => {
     expect(resolveClaudeVolume({ isolate: true, boxId: 'aabbccdd' })).toEqual({
       volume: `${SHARED_CLAUDE_VOLUME}-aabbccdd`,
     });
+  });
+});
+
+describe('buildClaudeDashboardAttachArgv', () => {
+  it('attaches via a grouped sibling session with the inner status bar off', () => {
+    const argv = buildClaudeDashboardAttachArgv('agentbox-box1');
+    const dash = `${DEFAULT_CLAUDE_SESSION}-dash`;
+    // grouped session created (or no-op) before status is changed, attach last
+    expect(argv).toEqual([
+      'exec',
+      '-it',
+      '-e',
+      `TERM=${process.env['TERM'] ?? 'xterm-256color'}`,
+      '--user',
+      'vscode',
+      'agentbox-box1',
+      'tmux',
+      'new-session',
+      '-A',
+      '-d',
+      '-s',
+      dash,
+      '-t',
+      DEFAULT_CLAUDE_SESSION,
+      ';',
+      'set',
+      '-t',
+      dash,
+      'status',
+      'off',
+      ';',
+      'attach',
+      '-t',
+      dash,
+    ]);
+  });
+
+  it('derives the grouped session from a custom session name', () => {
+    const argv = buildClaudeDashboardAttachArgv('agentbox-box1', 'codex');
+    expect(argv).toContain('codex');
+    expect(argv).toContain('codex-dash');
+    // never attaches directly to the original session (would show its footer)
+    const attachIdx = argv.lastIndexOf('attach');
+    expect(argv[attachIdx + 2]).toBe('codex-dash');
   });
 });
 
