@@ -25,8 +25,12 @@
     "@agentbox/ctl": "workspace:*",
     "@agentbox/sandbox-docker": "workspace:*",
     "@clack/prompts": "^0.9.0",
+    "@xterm/headless": "^5.5.0",
     "commander": "^12.1.0",
     "supports-hyperlinks": "^3.1.0"
+  },
+  "optionalDependencies": {
+    "@homebridge/node-pty-prebuilt-multiarch": "^0.13.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.1",

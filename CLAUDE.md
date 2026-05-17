@@ -59,7 +59,7 @@ Internal deps are wired via `workspace:*`. Build order is enforced by Turborepo 
 - **vitest** for tests, default discovery (`test/**/*.test.ts`). Keep unit tests pure — no docker, no network. Integration testing is manual for now (see README → Development).
 - **eslint + prettier**, flat config at repo root. `pnpm lint` and `pnpm format` are the commands.
 - **commander** for CLI surface; **@clack/prompts** for any interactivity. Don't add a third prompts/CLI lib.
-- **execa** for shelling out to `docker` (debuggable, no native deps). Don't introduce `dockerode` without a good reason.
+- **execa** for shelling out to `docker` (debuggable, no native deps). Don't introduce `dockerode` without a good reason. **One sanctioned native-dep exception**: `@homebridge/node-pty-prebuilt-multiarch` (ships ABI-stable N-API prebuilds, no end-user compiler) is used **only** by `agentbox dashboard` for the in-process terminal compositor. It is an `optionalDependencies` of `apps/cli` with a guarded dynamic import — a missing prebuild degrades `dashboard` to a clear error, never breaks the rest of the CLI.
 - **No emojis in code or output** unless explicitly requested.
 - **Comments only when the WHY is non-obvious** (a constraint, a workaround, a surprising invariant). Names should carry the WHAT.
 
