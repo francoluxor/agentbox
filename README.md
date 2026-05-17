@@ -29,8 +29,9 @@ npm -g install @madarco/agentbox
 
 # Launch a new box with Claude, your DB, web server, screen sharing and a dedicated browser
 agentbox claude
+> box 1 created
 
-# Claude keeps working even when you close the terminal — reattach by project index:
+# Claude keeps working even when you close the terminal — reattach by box index:
 agentbox claude attach 1
 
 # Spin up another, independent box for a parallel task:
