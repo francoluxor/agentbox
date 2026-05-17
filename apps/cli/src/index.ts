@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { applyEngineOverrideAtStartup } from './engine-override.js';
+import { buildGroupedHelp } from './help.js';
 import { browserCommand } from './commands/browser.js';
 import { claudeCommand } from './commands/claude.js';
 import { checkpointCommand } from './commands/checkpoint.js';
@@ -8,14 +9,13 @@ import { configCommand } from './commands/config.js';
 import { createCommand } from './commands/create.js';
 import { dashboardCommand } from './commands/dashboard.js';
 import { destroyCommand } from './commands/destroy.js';
-import { inspectCommand } from './commands/inspect.js';
 import { listCommand } from './commands/list.js';
 import { logsCommand } from './commands/logs.js';
 import { openCommand } from './commands/open.js';
-import { pathCommand } from './commands/path.js';
 import { pauseCommand } from './commands/pause.js';
 import { pruneCommand } from './commands/prune.js';
 import { pullCommand } from './commands/pull.js';
+import { screenCommand } from './commands/screen.js';
 import { shellCommand } from './commands/shell.js';
 import { startCommand } from './commands/start.js';
 import { statusCommand } from './commands/status.js';
@@ -39,10 +39,9 @@ program.addCommand(claudeCommand);
 program.addCommand(codeCommand);
 program.addCommand(shellCommand);
 program.addCommand(listCommand);
-program.addCommand(inspectCommand);
 program.addCommand(openCommand);
 program.addCommand(browserCommand);
-program.addCommand(pathCommand);
+program.addCommand(screenCommand);
 program.addCommand(pullCommand);
 program.addCommand(statusCommand);
 program.addCommand(topCommand);
@@ -58,6 +57,9 @@ program.addCommand(pruneCommand);
 program.addCommand(checkpointCommand);
 program.addCommand(configCommand);
 program.addCommand(updateCommand);
+
+program.configureHelp({ visibleCommands: () => [] });
+program.addHelpText('after', () => '\n' + buildGroupedHelp(program));
 
 await applyEngineOverrideAtStartup();
 

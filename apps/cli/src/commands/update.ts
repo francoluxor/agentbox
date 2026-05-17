@@ -46,7 +46,7 @@ function runInherit(cmd: string, args: string[]): Promise<number> {
   });
 }
 
-export const updateCommand = new Command('update')
+export const updateCommand = new Command('self-update')
   .description(
     'Update agentbox: self-update via npm/pnpm (unless run via npx), wipe the box image so it rebuilds, and reload the relay',
   )
@@ -60,7 +60,7 @@ export const updateCommand = new Command('update')
         argv1: process.argv[1],
       });
 
-      intro('agentbox update');
+      intro('agentbox self-update');
 
       const selfStep = opts.skipSelf
         ? 'self-update: skipped (--skip-self)'

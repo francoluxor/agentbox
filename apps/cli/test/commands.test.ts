@@ -3,8 +3,12 @@ import { checkpointCommand } from '../src/commands/checkpoint.js';
 import { claudeCommand } from '../src/commands/claude.js';
 import { createCommand } from '../src/commands/create.js';
 import { destroyCommand } from '../src/commands/destroy.js';
-import { inspectCommand } from '../src/commands/inspect.js';
+import { statusCommand } from '../src/commands/status.js';
+import { runInspect } from '../src/commands/inspect.js';
 import { listCommand } from '../src/commands/list.js';
+import { openCommand } from '../src/commands/open.js';
+import { browserCommand } from '../src/commands/browser.js';
+import { screenCommand } from '../src/commands/screen.js';
 import { pauseCommand } from '../src/commands/pause.js';
 import { pruneCommand } from '../src/commands/prune.js';
 import { shellCommand } from '../src/commands/shell.js';
@@ -19,9 +23,13 @@ describe('lifecycle CLI surface', () => {
     expect(listCommand.options.map((o) => o.long)).toContain('--json');
   });
 
-  it('inspect takes a <box> arg and --json', () => {
-    expect(inspectCommand.name()).toBe('inspect');
-    expect(inspectCommand.options.map((o) => o.long)).toContain('--json');
+  it('status takes a <box> arg, --json, and absorbs inspect via --inspect', () => {
+    expect(statusCommand.name()).toBe('status');
+    const longs = statusCommand.options.map((o) => o.long);
+    expect(longs).toEqual(expect.arrayContaining(['--json', '--inspect']));
+    expect(statusCommand.registeredArguments[0]!.required).toBe(false);
+    // inspect logic retained as a callable function (no top-level command).
+    expect(typeof runInspect).toBe('function');
   });
 
   it('pause/unpause/stop/start each take a <box> arg', () => {
@@ -45,6 +53,27 @@ describe('lifecycle CLI surface', () => {
 
   it('create is still wired (regression check)', () => {
     expect(createCommand.name()).toBe('create');
+  });
+
+  it('open is files-only (Finder + --path), no --browser/--loopback', () => {
+    expect(openCommand.name()).toBe('open');
+    expect(openCommand.commands).toHaveLength(0);
+    const longs = openCommand.options.map((o) => o.long);
+    expect(longs).toEqual(
+      expect.arrayContaining(['--upper', '--no-refresh', '--include-node-modules', '--path', '--print']),
+    );
+    expect(longs).not.toContain('--browser');
+    expect(longs).not.toContain('--loopback');
+  });
+
+  it('browser/screen are separate top-level commands with [box] + --print/--loopback', () => {
+    expect(browserCommand.name()).toBe('browser');
+    expect(screenCommand.name()).toBe('screen');
+    for (const cmd of [browserCommand, screenCommand]) {
+      expect(cmd.registeredArguments[0]!.required, `${cmd.name()}: [box]`).toBe(false);
+      const longs = cmd.options.map((o) => o.long);
+      expect(longs, cmd.name()).toEqual(expect.arrayContaining(['--print', '--loopback']));
+    }
   });
 
   it('checkpoint has create (default) / ls / set-default / rm subcommands', () => {
@@ -95,7 +124,7 @@ describe('lifecycle CLI surface', () => {
 
   it('all box-arg commands now accept [box] (optional) for auto-pick', () => {
     const optionalBoxCmds = [
-      inspectCommand,
+      statusCommand,
       pauseCommand,
       unpauseCommand,
       stopCommand,

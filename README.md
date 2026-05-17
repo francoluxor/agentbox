@@ -57,8 +57,8 @@ agentbox checkpoint [box] [--name <n>] [--merged] [--set-default]   # capture wa
 agentbox checkpoint ls | set-default <ref> | rm <ref>
 # inside a box: agentbox-ctl checkpoint [--name <n>] [--merged] [--set-default]  # via the host relay
 agentbox list                       # alias: ls
-agentbox inspect <box> [--json]
-agentbox status <box> [--json]                  # services + claude session state
+agentbox status <box> [--json] [--inspect]      # services + claude session state
+                                                # --inspect: detailed box info (volumes, limits, paths)
 agentbox logs <box> <service> [-f] [-n <tail>]  # tail or stream a service's stdout/stderr
 # inside a box: agentbox-ctl validate [path]    # check agentbox.yaml shape without starting the daemon
 # inside a box: agentbox-ctl claude-session [--json]   # report tmux 'claude' session state
@@ -66,10 +66,13 @@ agentbox pause <box>                # docker pause — 0 CPU, RAM stays mapped
 agentbox unpause <box>              # docker unpause — sub-second resume
 agentbox stop <box>                 # docker stop — preserves the upper volume (node_modules included)
 agentbox start <box>                # docker start + re-mount the FUSE overlay + relaunch ctl daemon
-agentbox open <box> [--upper] [--no-refresh] [--include-node-modules] [--print]
+agentbox open <box> [--upper] [--no-refresh] [--include-node-modules] [--path]
                                     # open the box's workspace in Finder (refreshes via rsync first)
-agentbox path <box> [--upper] [--refresh] [--include-node-modules]
-                                    # print the host path; --refresh runs the same rsync as `open`
+                                    # --path prints the host path instead (--print is a kept alias)
+agentbox browser <box> [--print] [--loopback]
+                                    # open the box's web app URL in your browser (even with no expose: service)
+agentbox screen <box> [--print] [--loopback]
+                                    # open the box's VNC (noVNC) viewer in your browser
 agentbox pull [box] [--with-env] [--dry-run] [-y]   # box -> host pull of /workspace (gitignore-aware)
 agentbox pull env [box] [--dry-run] [-y]            # just gitignored env/config files
 agentbox pull config [box] [--dry-run] [-y]         # just agentbox.yaml (gitignore-bypassing)
@@ -86,7 +89,7 @@ Quick tour:
 ```sh
 agentbox create -n alpha          # spin one up
 agentbox list                     # see it
-agentbox inspect alpha            # state, overlay status, claude session, sizes
+agentbox status alpha --inspect   # state, overlay status, claude session, sizes
 agentbox pause alpha              # freeze (TS server cache, RAM all stays)
 agentbox unpause alpha            # resume
 agentbox stop alpha               # full shutdown
@@ -95,7 +98,7 @@ agentbox destroy alpha            # nuke it (prompts to confirm — `-y` to skip
 agentbox prune --all              # clean up any orphan containers/volumes/snapshots
 ```
 
-### Browsing what the agent did (`open` / `path`)
+### Browsing what the agent did (`open`)
 
 The box's `/workspace` is a **FUSE-overlay filesystem that only exists inside the container** — it composes the read-only lower (your snapshot) with the writable upper (a named Docker volume) on the fly. That means the merged view can't be browsed live from macOS: there's nothing on the host side for the in-container FUSE mount to point at. `agentbox open` works around this by rsyncing the merged view into a per-box host directory you can open in Finder.
 
@@ -104,9 +107,16 @@ agentbox open mybox                       # rsync /workspace → ~/.agentbox/box
 agentbox open mybox --upper               # the writes layer only (see live note below)
 agentbox open mybox --no-refresh          # open whatever's already on disk; skip the rsync
 agentbox open mybox --include-node-modules# merged export: include /workspace/node_modules (off by default — it's big; --upper always carries it)
-agentbox open mybox --print               # still refreshes; prints the host path instead of launching Finder
-agentbox path mybox [--upper] [--refresh] # just the host path — pipe it into your editor / scripts
+agentbox open mybox --path                # prints the host path instead of launching Finder (still refreshes; --print is a kept alias)
+agentbox open mybox --path --no-refresh   # just the host path, no rsync — pipe it into your editor / scripts
+agentbox browser mybox                    # open the box's web app URL (orb.local on OrbStack, 127.0.0.1:<port> otherwise)
+agentbox browser mybox --loopback         # force the 127.0.0.1 URL even on OrbStack
+agentbox browser mybox --print            # print the web URL instead of launching the browser
+agentbox screen mybox                     # open the box's VNC (noVNC) viewer in your browser
+agentbox screen mybox --print             # print the noVNC URL instead of launching the browser
 ```
+
+`agentbox browser` works even when no service declares `expose:` — every box reserves the web port at create, so the URL is always openable (you'll just get a connection error until something listens on it).
 
 The merged export lives at `~/.agentbox/boxes/<id>/workspace`, the upper-only export at `~/.agentbox/boxes/<id>/upper`. The rsync runs inside the box (`docker exec rsync`) targeting a virtiofs bind-mount, so a refresh is a single mostly-zero-copy operation.
 

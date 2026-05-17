@@ -1,0 +1,94 @@
+import { Command } from 'commander';
+import { describe, expect, it } from 'vitest';
+import { HELP_GROUPS, buildGroupedHelp } from '../src/help.js';
+import { checkpointCommand } from '../src/commands/checkpoint.js';
+import { claudeCommand } from '../src/commands/claude.js';
+import { codeCommand } from '../src/commands/code.js';
+import { configCommand } from '../src/commands/config.js';
+import { createCommand } from '../src/commands/create.js';
+import { dashboardCommand } from '../src/commands/dashboard.js';
+import { destroyCommand } from '../src/commands/destroy.js';
+import { listCommand } from '../src/commands/list.js';
+import { logsCommand } from '../src/commands/logs.js';
+import { openCommand } from '../src/commands/open.js';
+import { browserCommand } from '../src/commands/browser.js';
+import { screenCommand } from '../src/commands/screen.js';
+import { pauseCommand } from '../src/commands/pause.js';
+import { pruneCommand } from '../src/commands/prune.js';
+import { pullCommand } from '../src/commands/pull.js';
+import { shellCommand } from '../src/commands/shell.js';
+import { startCommand } from '../src/commands/start.js';
+import { statusCommand } from '../src/commands/status.js';
+import { stopCommand } from '../src/commands/stop.js';
+import { topCommand } from '../src/commands/top.js';
+import { unpauseCommand } from '../src/commands/unpause.js';
+import { updateCommand } from '../src/commands/update.js';
+import { waitCommand } from '../src/commands/wait.js';
+
+// Mirrors the registration order in src/index.ts. If a command is added there
+// it must be added here AND to HELP_GROUPS — the "no Other group" assertion
+// below is the drift guard.
+function buildProgram(): Command {
+  const program = new Command();
+  for (const cmd of [
+    createCommand,
+    claudeCommand,
+    codeCommand,
+    shellCommand,
+    listCommand,
+    openCommand,
+    browserCommand,
+    screenCommand,
+    pullCommand,
+    statusCommand,
+    topCommand,
+    dashboardCommand,
+    waitCommand,
+    logsCommand,
+    pauseCommand,
+    unpauseCommand,
+    stopCommand,
+    startCommand,
+    destroyCommand,
+    pruneCommand,
+    checkpointCommand,
+    configCommand,
+    updateCommand,
+  ]) {
+    program.addCommand(cmd);
+  }
+  return program;
+}
+
+describe('grouped --help', () => {
+  it('every group command name resolves to a registered command', () => {
+    const registered = new Set(buildProgram().commands.map((c) => c.name()));
+    for (const g of HELP_GROUPS) {
+      for (const name of g.commands) {
+        expect(registered.has(name), `${name} in group "${g.title}"`).toBe(true);
+      }
+    }
+  });
+
+  it('groups cover every registered command (no Other group / drift)', () => {
+    const help = buildGroupedHelp(buildProgram());
+    expect(help).not.toContain('Other');
+    const grouped = HELP_GROUPS.flatMap((g) => g.commands).sort();
+    const registered = buildProgram()
+      .commands.map((c) => c.name())
+      .sort();
+    expect(grouped).toEqual(registered);
+  });
+
+  it('renders each group title and the help footer', () => {
+    const help = buildGroupedHelp(buildProgram());
+    for (const g of HELP_GROUPS) expect(help).toContain(g.title);
+    expect(help).toContain('Advanced');
+    expect(help).toContain('Run `agentbox <command> --help`');
+    // browser/screen are top-level commands listed under Access.
+    expect(help).toMatch(/^\s+browser\s/m);
+    expect(help).toMatch(/^\s+screen\s/m);
+    // `path` was folded into `open --path`; not a standalone command.
+    expect(help).not.toMatch(/^\s+path\s/m);
+  });
+});

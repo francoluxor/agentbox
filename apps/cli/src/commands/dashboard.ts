@@ -47,13 +47,8 @@ function toSidebar(b: ListedBox): SidebarBox {
 }
 
 export const dashboardCommand = new Command('dashboard')
-  .description(
-    'Split-screen TUI: box list + the selected box live Claude session (pure Node, no tmux)',
-  )
-  .argument(
-    '[box]',
-    'initial box (default: first running box; -p restricts to the cwd project)',
-  )
+  .description('Box list + the selected box live Agent session')
+  .argument('[box]', 'initial box (default: first running box; -p restricts to the cwd project)')
   .option('-p, --project', "only this project's boxes (default: all boxes globally)")
   .action(async (idOrName: string | undefined, opts: DashboardOptions) => {
     try {
@@ -104,9 +99,7 @@ export const dashboardCommand = new Command('dashboard')
         if (!scoped0.some((b) => b.id === picked.id)) showAll = true; // widen so it shows
       } else {
         if (scoped0.length === 0) {
-          log.error(
-            opts.project ? `no boxes in this project (${project.root})` : 'no boxes exist',
-          );
+          log.error(opts.project ? `no boxes in this project (${project.root})` : 'no boxes exist');
           log.info('run `agentbox create` to make one' + (opts.project ? ', or drop -p' : ''));
           process.exit(2);
         }
@@ -122,7 +115,11 @@ export const dashboardCommand = new Command('dashboard')
         if (box.state !== 'running') {
           return {
             kind: 'placeholder',
-            lines: ['', `  box ${box.name} is ${box.state}.`, `  Start it: agentbox start ${box.name}`],
+            lines: [
+              '',
+              `  box ${box.name} is ${box.state}.`,
+              `  Start it: agentbox start ${box.name}`,
+            ],
           };
         }
         const info = await claudeSessionInfo(box.container);

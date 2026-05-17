@@ -1,15 +1,15 @@
 import { log } from '@clack/prompts';
-import { inspectBox, type InspectedBox } from '@agentbox/sandbox-docker';
-import { Command } from 'commander';
+import { inspectBox, type BoxRecord, type InspectedBox } from '@agentbox/sandbox-docker';
 import { projectCheckpointVolumeBytes } from '@agentbox/sandbox-docker';
-import { resolveBoxOrExit } from '../box-ref.js';
 import { renderEndpointLines } from '../endpoints-render.js';
 import { fmtBytes } from '../fmt.js';
-import { withWatchOptions, watchRender, type WatchableOptions } from '../watch.js';
+import { watchRender } from '../watch.js';
 import { handleLifecycleError } from './_errors.js';
 
-interface InspectOptions extends WatchableOptions {
+export interface InspectRunOptions {
   json?: boolean;
+  watch?: boolean;
+  interval?: string;
 }
 
 function fmtLimit(n: number | null | undefined, unit: string): string {
@@ -84,21 +84,14 @@ function renderEndpoints(i: InspectedBox): string[] {
   return lines.length > 0 ? lines : ['  (none)'];
 }
 
-export const inspectCommand = withWatchOptions(
-  new Command('inspect')
-    .description('Show detailed information about a single box')
-    .argument(
-      '[box]',
-      'box ref: project index, id, id prefix, name, or container (default: the only box in this project)',
-    )
-    .option('-j, --json', 'machine-readable JSON output'),
-).action(async (idOrName: string | undefined, opts: InspectOptions) => {
+// `agentbox inspect` was folded into `agentbox status --inspect`; this is the
+// extracted body, called by status.ts with an already-resolved box.
+export async function runInspect(box: BoxRecord, opts: InspectRunOptions): Promise<void> {
   try {
     if (opts.json && opts.watch) {
       log.error('cannot combine --json with --watch');
       process.exit(2);
     }
-    const box = await resolveBoxOrExit(idOrName);
     if (opts.watch) {
       await watchRender(async () => renderText(await inspectBox(box.id)), opts.interval);
       return;
@@ -112,4 +105,4 @@ export const inspectCommand = withWatchOptions(
   } catch (err) {
     handleLifecycleError(err);
   }
-});
+}

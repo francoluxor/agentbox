@@ -55,7 +55,7 @@ describe('detectExecutionMethod', () => {
 
 describe('update command surface', () => {
   it('is registered with -y/--yes, --dry-run and --skip-self', () => {
-    expect(updateCommand.name()).toBe('update');
+    expect(updateCommand.name()).toBe('self-update');
     const longs = updateCommand.options.map((o) => o.long);
     expect(longs).toEqual(expect.arrayContaining(['--yes', '--dry-run', '--skip-self']));
   });

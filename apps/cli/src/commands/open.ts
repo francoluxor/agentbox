@@ -2,6 +2,7 @@ import { log } from '@clack/prompts';
 import { openBoxInFinder } from '@agentbox/sandbox-docker';
 import { Command } from 'commander';
 import { resolveBoxOrExit } from '../box-ref.js';
+import { runPath } from './path.js';
 import { handleLifecycleError } from './_errors.js';
 
 interface OpenOpts {
@@ -9,6 +10,7 @@ interface OpenOpts {
   refresh: boolean; // commander gives `--no-refresh` => refresh=false
   includeNodeModules?: boolean;
   print?: boolean;
+  path?: boolean;
 }
 
 export const openCommand = new Command('open')
@@ -23,30 +25,36 @@ export const openCommand = new Command('open')
     '--include-node-modules',
     'include /workspace/node_modules in the merged export (off by default)',
   )
-  .option(
-    '--print',
-    'print the host path instead of launching Finder (still refreshes; combine with --no-refresh to skip)',
-  )
+  .option('--path', 'print the host workspace path instead of launching Finder')
+  .option('--print', 'alias of --path')
   .action(async (idOrName: string | undefined, opts: OpenOpts) => {
     try {
       const box = await resolveBoxOrExit(idOrName);
+
+      if (opts.path || opts.print) {
+        await runPath(box, {
+          upper: opts.upper,
+          refresh: opts.refresh, // print refreshes by default; --no-refresh skips
+          includeNodeModules: opts.includeNodeModules,
+        });
+        return;
+      }
+
       const layer = opts.upper ? 'upper' : 'merged';
       const result = await openBoxInFinder(box.id, {
         layer,
         includeNodeModules: opts.includeNodeModules,
         noRefresh: !opts.refresh,
-        noOpen: !!opts.print,
+        noOpen: false,
       });
 
-      if (opts.print) {
-        process.stdout.write(`${result.hostPath}\n`);
-      } else {
-        const liveNote = !result.copied ? ' (live)' : result.usedFallback ? ' (tar fallback)' : '';
-        process.stdout.write(`opened ${result.hostPath}${liveNote}\n`);
-      }
+      const liveNote = !result.copied ? ' (live)' : result.usedFallback ? ' (tar fallback)' : '';
+      process.stdout.write(`opened ${result.hostPath}${liveNote}\n`);
 
-      if (opts.upper && result.engine !== 'orbstack' && result.copied && !opts.print) {
-        log.info('Tip: live upper-layer browsing requires OrbStack. Re-run `agentbox open --upper` to refresh.');
+      if (opts.upper && result.engine !== 'orbstack' && result.copied) {
+        log.info(
+          'Tip: live upper-layer browsing requires OrbStack. Re-run `agentbox open --upper` to refresh.',
+        );
       }
     } catch (err) {
       handleLifecycleError(err);

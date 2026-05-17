@@ -1,8 +1,9 @@
 import { spawnSync } from 'node:child_process';
 import { log } from '@clack/prompts';
 import {
+  buildVncUrls,
   detectEngine,
-  getBoxHostPaths,
+  ensureBoxBrowser,
   inspectBox,
   startBox,
   unpauseBox,
@@ -11,24 +12,26 @@ import { Command } from 'commander';
 import { resolveBoxOrExit } from '../box-ref.js';
 import { handleLifecycleError } from './_errors.js';
 
-interface BrowserOptions {
+interface ScreenOptions {
   print?: boolean;
   loopback?: boolean;
 }
 
-export const browserCommand = new Command('browser')
-  .description(
-    "Open a box's web app URL in the browser, even when no service declares `expose:` (auto-unpause/start)",
-  )
+export const screenCommand = new Command('screen')
+  .description("Open a box's VNC (noVNC) viewer in the browser (auto-unpause/start)")
   .argument(
     '[box]',
     'box ref: project index, id, id prefix, name, or container (default: the only box in this project)',
   )
   .option('--print', 'print the URL to stdout instead of launching the browser')
   .option('--loopback', 'use the 127.0.0.1 URL instead of the OrbStack .orb.local URL')
-  .action(async (idOrName: string | undefined, opts: BrowserOptions) => {
+  .action(async (idOrName: string | undefined, opts: ScreenOptions) => {
     try {
       const box = await resolveBoxOrExit(idOrName);
+
+      if (!box.vncEnabled) {
+        throw new Error(`VNC is disabled for box ${box.name} — recreate without \`--no-vnc\``);
+      }
 
       const insp = await inspectBox(box.id);
       if (insp.state === 'paused') {
@@ -41,28 +44,17 @@ export const browserCommand = new Command('browser')
         throw new Error(`box ${box.name} has no container; was it destroyed?`);
       }
 
-      // Re-read after a possible start: startBox re-resolves & persists the
-      // reallocated webHostPort (lifecycle.ts).
-      const { record } = await getBoxHostPaths(box.id);
-      if (record.webContainerPort === undefined) {
-        throw new Error(
-          `box ${box.name} predates the reserved web port; recreate it to use \`agentbox browser\``,
-        );
-      }
+      const br = await ensureBoxBrowser(box.container);
+      if (br.up && !br.alreadyRunning) log.info('started in-box browser');
+      else if (!br.up) log.warn(`could not start in-box browser: ${br.reason ?? 'unknown'}`);
 
       const engine = await detectEngine();
-      let url: string;
-      if (engine === 'orbstack' && !opts.loopback) {
-        // OrbStack auto-routes <container>.orb.local to the container; :80 is
-        // declared (EXPOSE 80) so no port suffix is needed.
-        url = `http://${record.container}.orb.local`;
-      } else {
-        if (record.webHostPort === undefined) {
-          throw new Error(
-            `web port not resolved for box ${box.name}; is the container running? try \`agentbox inspect ${box.name}\``,
-          );
-        }
-        url = `http://127.0.0.1:${String(record.webHostPort)}`;
+      const urls = buildVncUrls(box, engine);
+      const url = opts.loopback ? urls.loopbackUrl : (urls.orbUrl ?? urls.loopbackUrl);
+      if (!url) {
+        throw new Error(
+          `VNC URL unavailable (daemon may not be up); try \`agentbox inspect ${box.name}\``,
+        );
       }
 
       if (opts.print) {

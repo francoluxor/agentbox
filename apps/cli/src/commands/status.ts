@@ -18,10 +18,12 @@ import { resolveBoxOrExit } from '../box-ref.js';
 import { renderEndpointLines } from '../endpoints-render.js';
 import { fmtAgo, fmtBytes, fmtPercent } from '../fmt.js';
 import { withWatchOptions, watchRender, type WatchableOptions } from '../watch.js';
+import { runInspect } from './inspect.js';
 import { handleLifecycleError } from './_errors.js';
 
 interface StatusOptions extends WatchableOptions {
   json?: boolean;
+  inspect?: boolean;
 }
 
 export const statusCommand = withWatchOptions(
@@ -31,7 +33,8 @@ export const statusCommand = withWatchOptions(
       '[box]',
       'box ref: project index, id, id prefix, name, or container (default: the only box in this project)',
     )
-    .option('-j, --json', 'machine-readable JSON output'),
+    .option('-j, --json', 'machine-readable JSON output')
+    .option('--inspect', 'show detailed box info (volumes, limits, paths) instead of service/task status'),
 ).action(async (idOrName: string | undefined, opts: StatusOptions) => {
   try {
     if (opts.json && opts.watch) {
@@ -39,6 +42,11 @@ export const statusCommand = withWatchOptions(
       process.exit(2);
     }
     const box = await resolveBoxOrExit(idOrName);
+
+    if (opts.inspect) {
+      await runInspect(box, { json: opts.json, watch: opts.watch, interval: opts.interval });
+      return;
+    }
 
     if (opts.watch) {
       await watchRender(() => buildStatusText(box.id, box.container), opts.interval);
