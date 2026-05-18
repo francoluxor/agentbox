@@ -4,7 +4,10 @@ import {
   buildVncUrls,
   detectEngine,
   ensureBoxBrowser,
+  getBoxEndpoints,
+  getBoxHostPaths,
   inspectBox,
+  readBoxStatus,
   startBox,
   unpauseBox,
 } from '@agentbox/sandbox-docker';
@@ -67,6 +70,28 @@ export const screenCommand = new Command('screen')
         throw new Error(`open ${url} failed (exit ${String(opened.status ?? 'n/a')})`);
       }
       process.stdout.write(`opened ${url}\n`);
+
+      // Also pop the web app when a service declares `expose:`. The `web`
+      // endpoint is only reachable+url'd in that case (startBox reallocates
+      // webHostPort, so re-read the record). Best-effort: the VNC viewer
+      // already opened, so a failure here must not fail the command.
+      try {
+        const { record } = await getBoxHostPaths(box.id);
+        const persisted = await readBoxStatus(box.id);
+        const eps = await getBoxEndpoints(record, engine, persisted);
+        const webEp = eps.endpoints.find((e) => e.kind === 'web');
+        if (webEp?.reachable && webEp.url) {
+          const webUrl =
+            engine === 'orbstack' && !opts.loopback
+              ? `http://${record.container}.orb.local`
+              : webEp.url;
+          const w = spawnSync('open', [webUrl], { stdio: 'inherit' });
+          if (w.status === 0) process.stdout.write(`also opened ${webUrl}\n`);
+          else log.warn(`could not open web app (${webUrl})`);
+        }
+      } catch (e) {
+        log.warn(`could not open web app: ${e instanceof Error ? e.message : String(e)}`);
+      }
     } catch (err) {
       handleLifecycleError(err);
     }

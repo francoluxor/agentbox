@@ -249,27 +249,49 @@ export const dashboardCommand = new Command('dashboard')
         return { name: box.name, url: ep && ep.reachable && ep.url ? ep.url : null };
       };
 
+      // The box web-app URL plus whether a service actually declares `expose:`
+      // (engine-independent: the `web` endpoint is only reachable+url'd when a
+      // service is exposed and the host port is resolved). On OrbStack prefer
+      // the stable <container>.orb.local domain (routes to :80; WebProxy
+      // forwards to the exposed service) over the loopback port, which Docker
+      // reallocates on every restart. Mirrors `agentbox browser`. Other
+      // engines have no `.local` DNS, so use the published loopback endpoint.
+      const webTarget = (box: ListedBox): { url: string; exposed: boolean } => {
+        const ep = box.endpoints.endpoints.find((e) => e.kind === 'web');
+        const exposed = Boolean(ep && ep.reachable && ep.url);
+        const url = box.endpoints.domainIsOrb
+          ? `http://${box.endpoints.domain}`
+          : exposed && ep?.url
+            ? ep.url
+            : `http://${box.endpoints.domain}`;
+        return { url, exposed };
+      };
+
       const openVnc = async (boxId: string): Promise<string> => {
         const { url } = await findEndpointUrl(boxId, 'vnc');
         if (!url) return 'VNC not available for this box';
+        let exposedWebUrl: string | null = null;
         try {
           const box = await findBox(boxId);
+          const web = webTarget(box);
+          if (web.exposed) exposedWebUrl = web.url;
           const br = await ensureBoxBrowser(box.container);
           if (!br.up) return `VNC: in-box browser unavailable (${br.reason ?? 'box not running?'})`;
         } catch {
           // Best-effort — still open the viewer even if the box isn't running.
         }
         detach('open', [url]);
+        if (exposedWebUrl) {
+          detach('open', [exposedWebUrl]);
+          return 'Opening VNC + web in browser…';
+        }
         return 'Opening VNC in browser…';
       };
 
       const openWeb = async (boxId: string): Promise<string> => {
         const box = (await listBoxes()).find((b) => b.id === boxId);
         if (!box) return 'box not found';
-        const ep = box.endpoints.endpoints.find((e) => e.kind === 'web');
-        // Prefer the published web endpoint when a service declares `expose:`;
-        // otherwise just open the box domain (e.g. <box>.orb.local) regardless.
-        const url = ep && ep.reachable && ep.url ? ep.url : `http://${box.endpoints.domain}`;
+        const { url } = webTarget(box);
         detach('open', [url]);
         return `Opening ${url.replace(/^https?:\/\//, '')}…`;
       };
