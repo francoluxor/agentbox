@@ -260,7 +260,7 @@ export const claudeCommand = new Command('claude')
         log.warn(`plugin install failed for ${f.dir}; claude may still load it. stderr:\n${f.stderr.trim()}`);
       }
 
-      outro('attaching — Ctrl-b d to detach, leaves claude running');
+      outro('attaching — Control+a q to detach, leaves claude running');
       attachClaudeSession(result.record.container, sessionName, reattachRef(result.record));
     } catch (err) {
       s.stop('failed');
@@ -306,7 +306,7 @@ async function startOrAttachClaude(
   // rebuild, ignore any post-`--` args (they only apply to a fresh claude).
   const existing = await claudeSessionInfo(box.container, sessionName);
   if (existing.running) {
-    outro(`session "${sessionName}" already running — attaching (Ctrl-b d to detach)`);
+    outro(`session "${sessionName}" already running — attaching (Control+a q to detach)`);
     attachClaudeSession(box.container, sessionName, reattachRef(box));
     return;
   }
@@ -367,7 +367,7 @@ async function startOrAttachClaude(
     log.warn(`plugin install failed for ${f.dir}; claude may still load it. stderr:\n${f.stderr.trim()}`);
   }
 
-  outro('attaching — Ctrl-b d to detach, leaves claude running');
+  outro('attaching — Control+a q to detach, leaves claude running');
   attachClaudeSession(box.container, sessionName, reattachRef(box));
 }
 

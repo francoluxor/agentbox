@@ -88,13 +88,19 @@ describe('buildClaudeStatusBarArgs', () => {
   it('styles the named session with box name + detach hint, no window clutter', () => {
     const args = buildClaudeStatusBarArgs(DEFAULT_CLAUDE_SESSION, 'my-box');
 
-    // tmux command separators present and each `set` is scoped to the session
+    // tmux command separators present; status-* `set`s are scoped to the
+    // session, prefix `set`s are server-global (-g).
     expect(args.filter((a) => a === ';').length).toBeGreaterThanOrEqual(9);
     const setIdxs = args.flatMap((a, i) => (a === 'set' ? [i] : []));
     expect(setIdxs.length).toBeGreaterThan(0);
-    for (const i of setIdxs) {
-      expect(args[i + 1]).toBe('-t');
+    const sessionSetIdxs = setIdxs.filter((i) => args[i + 1] === '-t');
+    expect(sessionSetIdxs.length).toBeGreaterThan(0);
+    for (const i of sessionSetIdxs) {
       expect(args[i + 2]).toBe(DEFAULT_CLAUDE_SESSION);
+    }
+    // every other `set` is server-global
+    for (const i of setIdxs.filter((i) => args[i + 1] !== '-t')) {
+      expect(args[i + 1]).toBe('-g');
     }
 
     // status-left shows the literal box name (no shell/strftime indirection)
@@ -105,9 +111,18 @@ describe('buildClaudeStatusBarArgs', () => {
     expect(left).not.toContain('#(');
     expect(left).not.toContain('%');
 
-    // status-right is the detach hint
+    // status-right is the detach hint: white chord + gray label (dashboard parity)
     const rightIdx = args.indexOf('status-right');
-    expect(args[rightIdx + 1]).toContain('Ctrl-b d detach');
+    expect(args[rightIdx + 1]).toContain('Control+a q');
+    expect(args[rightIdx + 1]).toContain(': detach');
+    expect(args[rightIdx + 1]).toContain('#[fg=colour255]');
+
+    // prefix remapped to Ctrl+a with `q` bound to detach (matches dashboard quit chord)
+    expect(args).toContain('prefix');
+    expect(args[args.indexOf('prefix') + 1]).toBe('C-a');
+    const bindIdxs = args.flatMap((a, i) => (a === 'bind-key' ? [i] : []));
+    expect(bindIdxs.some((i) => args[i + 1] === 'q' && args[i + 2] === 'detach-client')).toBe(true);
+    expect(bindIdxs.some((i) => args[i + 1] === 'C-a' && args[i + 2] === 'send-prefix')).toBe(true);
 
     // the noisy window list is emptied
     expect(args).toContain('window-status-format');
@@ -117,7 +132,11 @@ describe('buildClaudeStatusBarArgs', () => {
 
   it('scopes options to a custom session name', () => {
     const args = buildClaudeStatusBarArgs('codex', 'my-box');
-    for (const i of args.flatMap((a, idx) => (a === 'set' ? [idx] : []))) {
+    const sessionSetIdxs = args.flatMap((a, idx) =>
+      a === 'set' && args[idx + 1] === '-t' ? [idx] : [],
+    );
+    expect(sessionSetIdxs.length).toBeGreaterThan(0);
+    for (const i of sessionSetIdxs) {
       expect(args[i + 2]).toBe('codex');
     }
   });

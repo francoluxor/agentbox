@@ -741,7 +741,7 @@ export async function startClaudeSession(opts: StartClaudeSessionOptions): Promi
 }
 
 /**
- * Replace the current process with `docker exec -it tmux attach`. Ctrl-b d returns
+ * Replace the current process with `docker exec -it tmux attach`. Ctrl+a q returns
  * the user to their host shell with exit 0. We forward TERM so tmux declares
  * the outer terminal's true-color and hyperlink capabilities; without it
  * docker exec sets TERM=xterm and Claude renders without RGB.
@@ -818,10 +818,20 @@ export function buildClaudeDashboardAttachArgv(
 }
 
 /**
- * tmux command-list (separator-prefixed) that styles the claude session's
- * status bar: ` agentbox ▸ <box> ` on the left, ` Ctrl-b d detach ` on the
- * right, dark bar, no window-list clutter — visually consistent with the
- * dashboard's own `statusLine()`.
+ * tmux command-list (separator-prefixed) that remaps the prefix and styles the
+ * claude session's status bar: ` agentbox ▸ <box> ` on the left,
+ * ` Control+a q: detach ` on the right (white chord, gray label — exact parity
+ * with the dashboard's `statusLine()`), dark bar, no window-list clutter.
+ *
+ * The prefix is remapped from tmux's default `Ctrl-b` to `Ctrl+a` and `q` is
+ * bound to `detach-client`, so `Ctrl+a q` detaches — matching the dashboard's
+ * `Ctrl+a q` quit chord so the two surfaces feel like one product. `Ctrl+a`
+ * `Ctrl+a` sends a literal `Ctrl+a` through to Claude (`send-prefix`), the
+ * same screen-style escape hatch the dashboard's input parser uses for its
+ * double-leader. `prefix`/`bind-key` are tmux server-global (no `-t`); that's
+ * fine because each box's tmux server hosts only the claude session. Applied
+ * here (not in the image) so existing boxes pick it up on the next fresh
+ * session with no rebuild.
  *
  * Appended after `tmux new-session …` in {@link startClaudeSession}; the bare
  * `;` elements are tmux's command separator (execa array args, no host shell,
@@ -839,13 +849,21 @@ export function buildClaudeStatusBarArgs(sessionName: string, boxName: string): 
   const s = sessionName;
   const name = boxName;
   return [
+    // Server-global (no -t): remap prefix Ctrl-b -> Ctrl+a, bind `q` to detach
+    // so Ctrl+a q matches the dashboard's quit chord. `send-prefix` makes a
+    // double Ctrl+a reach Claude as a literal Ctrl+a.
+    ';', 'set', '-g', 'prefix', 'C-a',
+    ';', 'set', '-g', 'prefix2', 'None',
+    ';', 'unbind-key', 'C-b',
+    ';', 'bind-key', 'C-a', 'send-prefix',
+    ';', 'bind-key', 'q', 'detach-client',
     ';', 'set', '-t', s, 'status-interval', '60',
     ';', 'set', '-t', s, 'status-justify', 'left',
     ';', 'set', '-t', s, 'status-style', 'bg=colour236,fg=colour250',
     ';', 'set', '-t', s, 'status-left-length', '60',
     ';', 'set', '-t', s, 'status-left', `#[fg=colour16,bg=colour39,bold] agentbox ▸ ${name} #[default] `,
     ';', 'set', '-t', s, 'status-right-length', '30',
-    ';', 'set', '-t', s, 'status-right', '#[fg=colour245]Ctrl-b d detach ',
+    ';', 'set', '-t', s, 'status-right', '#[fg=colour255]Control+a q#[fg=colour245]: detach ',
     ';', 'set', '-t', s, 'window-status-format', '',
     ';', 'set', '-t', s, 'window-status-current-format', '',
   ];
