@@ -39,6 +39,11 @@ agentbox claude
 
 # See status and quickly switch between agents:
 agentbox dashboard
+
+# Launch web screen viewer (VNC), open in browser, open VSCode/Cursor
+agentbox screen
+agentbox browser
+agentbox code
 ```
 
 ## Demo
