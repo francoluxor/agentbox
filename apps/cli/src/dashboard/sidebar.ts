@@ -176,6 +176,18 @@ const HINT_GROUPS: ReadonlyArray<readonly [string, string]> = [
   ['Control+a q', 'quit'],
 ];
 
+/** The expanded "which-key" chord menu shown while the Ctrl-a leader is
+ *  pending — every chord, compact (`KEY: label`), reverts on the next key. */
+export const ADVANCED_HINT_GROUPS: ReadonlyArray<readonly [string, string]> = [
+  ['c', 'code'],
+  ['v', 'vnc'],
+  ['w', 'web'],
+  ['s', 'stop'],
+  ['p', 'pause'],
+  ['d', 'destroy'],
+  ['q', 'quit'],
+];
+
 /**
  * Status line, exactly `w` printable columns, colored to match the in-box tmux
  * footer (dark bar, blue ` agentbox ▸ … ` brand block on the left, dim-grey
@@ -187,6 +199,7 @@ export function statusLine(
   box: SidebarBox | undefined,
   w: number,
   stateLabel?: string,
+  groups: ReadonlyArray<readonly [string, string]> = HINT_GROUPS,
 ): string {
   const state =
     stateLabel ?? (box ? (box.state === 'running' ? (box.claudeActivity ?? 'unknown') : box.state) : '');
@@ -199,9 +212,9 @@ export function statusLine(
   // Plain (uncolored) form for width math; styled form for output.
   const SEP = '   │   ';
   const rightPlain =
-    HINT_GROUPS.map(([k, l]) => `${k}: ${l}`).join(SEP) + ' ';
+    groups.map(([k, l]) => `${k}: ${l}`).join(SEP) + ' ';
   const rightStyled =
-    HINT_GROUPS.map(([k, l]) => `${HINT_KEY}${k}${HINT_TXT}: ${l}`).join(
+    groups.map(([k, l]) => `${HINT_KEY}${k}${HINT_TXT}: ${l}`).join(
       `${HINT_TXT}${SEP}`,
     ) + ' ';
   if (left.length + rightPlain.length + 1 > w) {

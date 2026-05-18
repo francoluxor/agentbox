@@ -16,6 +16,7 @@ import {
   createMenuLines,
   SIDEBAR_HEADER_LINES,
   NEW_BOX_ID,
+  ADVANCED_HINT_GROUPS,
   BAR_BG,
   type SidebarBox,
 } from './sidebar.js';
@@ -55,6 +56,10 @@ export interface CompositorDeps {
   ) => Promise<{ boxId: string; attach?: RightTarget }>;
   /** Resume a non-running box (unpause if paused, start if stopped). */
   resumeBox: (boxId: string) => Promise<void>;
+  /** Pause a running box. */
+  pauseBox: (boxId: string) => Promise<void>;
+  /** Stop a running box. */
+  stopBox: (boxId: string) => Promise<void>;
   /** Destroy a box (container + volumes + record). Irreversible. */
   destroyBox: (boxId: string) => Promise<void>;
   /** Host-side actions for the selected box; return a short status message. */
@@ -91,6 +96,11 @@ export class Compositor {
     confirmDestroy: boolean;
   } | null = null;
   private createMenu: { where: string } | null = null;
+  /** True while the Ctrl-a leader is pending — swaps the footer to the
+   *  expanded chord menu (chrome only; never touches the right pane). */
+  private leaderActive = false;
+  /** Set while a destroy confirm is pending in the status bar. */
+  private pendingConfirm: { boxId: string; name: string } | null = null;
   private activeMode: 'claude' | 'shell' = 'claude';
   private flashMsg: string | null = null;
   private flashTimer: ReturnType<typeof setTimeout> | null = null;
@@ -125,10 +135,29 @@ export class Compositor {
     this.layout = computeLayout(this.out.columns ?? 100, this.out.rows ?? 30);
     this.parser = new InputParser({
       onEvent: (e) => {
+        if (e.type === 'leader') {
+          this.leaderActive = e.active;
+          this.drawChrome();
+          return;
+        }
+        if (this.pendingConfirm) {
+          if (e.type === 'forward') {
+            this.handleConfirmKey(e.bytes);
+            return;
+          }
+          // Any non-forward event cancels the confirm, then proceeds normally.
+          this.pendingConfirm = null;
+          this.drawChrome();
+        }
         if (e.type === 'quit') this.onSig();
         else if (e.type === 'switch') this.switchBox(e.dir);
-        else if (e.type === 'action') void this.doAction(e.name);
-        else if (this.createMenu) this.handleCreateMenuKey(e.bytes);
+        else if (e.type === 'action') {
+          if (e.name === 'pause' || e.name === 'stop' || e.name === 'destroy') {
+            void this.doLifecycle(e.name);
+          } else {
+            void this.doAction(e.name);
+          }
+        } else if (this.createMenu) this.handleCreateMenuKey(e.bytes);
         else if (this.lifecycleMenu) this.handleLifecycleMenuKey(e.bytes);
         else if (this.menu) this.handleMenuKey(e.bytes);
         else this.session?.write(e.bytes);
@@ -222,6 +251,7 @@ export class Compositor {
     this.menu = null;
     this.lifecycleMenu = null;
     this.createMenu = null;
+    this.pendingConfirm = null;
     // Wipe the old agent now (synchronous, before the async resolve gap) so it
     // can't bleed through while the new attach redraws. Also resets prevRows.
     this.clearRightPane();
@@ -238,6 +268,7 @@ export class Compositor {
     this.menu = null;
     this.lifecycleMenu = null;
     this.createMenu = null;
+    this.pendingConfirm = null;
     if (target.kind === 'attach') {
       this.activeMode = target.mode ?? 'claude';
       this.session = new PtySession(
@@ -323,7 +354,7 @@ export class Compositor {
     for (const b of bytes) {
       if (m.confirmDestroy) {
         if (b === 0x79 || b === 0x0d || b === 0x0a) {
-          void this.choosePaused('destroy');
+          void this.runDestroy(this.selectedId, this.selectedBox()?.name ?? this.selectedId);
         } else {
           // Any other key cancels the confirm and returns to the menu.
           m.confirmDestroy = false;
@@ -334,7 +365,7 @@ export class Compositor {
       }
       const resumeKey = m.state === 'paused' ? 0x75 /* u */ : 0x73 /* s */;
       if (b === resumeKey) {
-        void this.choosePaused('resume');
+        void this.resumeSelected();
         return;
       }
       if (b === 0x64 /* d */) {
@@ -346,39 +377,27 @@ export class Compositor {
     }
   }
 
-  private async choosePaused(which: 'resume' | 'destroy'): Promise<void> {
+  private async resumeSelected(): Promise<void> {
     if (this.busy) return;
     const id = this.selectedId;
     const name = this.selectedBox()?.name ?? id;
-    const resumeVerb = this.lifecycleMenu?.state === 'stopped' ? 'start' : 'unpause';
+    const verb = this.lifecycleMenu?.state === 'stopped' ? 'start' : 'unpause';
     this.busy = true;
     this.menu = null;
     this.lifecycleMenu = null;
     this.createMenu = null;
-    this.placeholder = ['', which === 'resume' ? '  Resuming…' : '  Destroying…'];
+    this.placeholder = ['', '  Resuming…'];
     this.prevRows = null;
     this.drawChrome();
     this.scheduleRender();
     try {
-      if (which === 'resume') {
-        await this.deps.resumeBox(id);
-        if (this.selectedId !== id || this.tornDown) return; // switched away
-        await this.refreshBoxes();
-        await this.spawnActive();
-      } else {
-        await this.deps.destroyBox(id);
-        if (this.tornDown) return;
-        await this.refreshBoxes();
-        // The box is gone from the list; fall back to the first entry (the
-        // synthetic "+ New box", always boxes[0] via listCandidates).
-        if (this.boxes[0]) this.selectedId = this.boxes[0].id;
-        await this.spawnActive();
-        this.flash(`destroyed ${name}`);
-      }
+      await this.deps.resumeBox(id);
+      if (this.selectedId !== id || this.tornDown) return; // switched away
+      await this.refreshBoxes();
+      await this.spawnActive();
     } catch (err) {
       if (this.selectedId !== id || this.tornDown) return;
       const msg = err instanceof Error ? err.message : String(err);
-      const verb = which === 'resume' ? resumeVerb : 'destroy';
       this.placeholder = [
         '',
         `  Failed to ${verb} ${name}:`,
@@ -390,6 +409,108 @@ export class Compositor {
       this.scheduleRender();
     } finally {
       this.busy = false;
+    }
+  }
+
+  /** Destroy `id` and recover the selection. Shared by the lifecycle-menu
+   *  confirm and the running-box `Ctrl-a d` status-bar confirm. */
+  private async runDestroy(id: string, name: string): Promise<void> {
+    if (this.busy) return;
+    this.busy = true;
+    this.menu = null;
+    this.lifecycleMenu = null;
+    this.createMenu = null;
+    this.placeholder = ['', '  Destroying…'];
+    this.prevRows = null;
+    this.drawChrome();
+    this.scheduleRender();
+    try {
+      await this.deps.destroyBox(id);
+      if (this.tornDown) return;
+      await this.refreshBoxes();
+      // The box is gone from the list; fall back to the first entry (the
+      // synthetic "+ New box", always boxes[0] via listCandidates).
+      if (this.boxes[0]) this.selectedId = this.boxes[0].id;
+      await this.spawnActive();
+      this.flash(`destroyed ${name}`);
+    } catch (err) {
+      if (this.tornDown) return;
+      const msg = err instanceof Error ? err.message : String(err);
+      this.placeholder = [
+        '',
+        `  Failed to destroy ${name}:`,
+        `  ${msg}`,
+        '',
+        `  Try from a shell: agentbox destroy ${name}`,
+      ];
+      this.prevRows = null;
+      this.scheduleRender();
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  /** Ctrl-a p/s/d on the selected box. pause/stop transition state (the pane
+   *  re-resolves to the lifecycle menu); destroy asks to confirm first. */
+  private async doLifecycle(name: 'pause' | 'stop' | 'destroy'): Promise<void> {
+    if (this.selectedId === NEW_BOX_ID) {
+      this.flash('select a box first');
+      return;
+    }
+    const id = this.selectedId;
+    const boxName = this.selectedBox()?.name ?? id;
+    if (name === 'destroy') {
+      this.pendingConfirm = { boxId: id, name: boxName };
+      this.drawChrome();
+      return;
+    }
+    if (this.selectedBox()?.state !== 'running') {
+      this.flash(`${boxName} is not running`);
+      return;
+    }
+    if (this.busy) return;
+    this.busy = true;
+    this.menu = null;
+    this.lifecycleMenu = null;
+    this.createMenu = null;
+    this.placeholder = ['', name === 'pause' ? '  Pausing…' : '  Stopping…'];
+    this.prevRows = null;
+    this.drawChrome();
+    this.scheduleRender();
+    try {
+      if (name === 'pause') await this.deps.pauseBox(id);
+      else await this.deps.stopBox(id);
+      if (this.selectedId !== id || this.tornDown) return; // switched away
+      await this.refreshBoxes();
+      await this.spawnActive();
+      this.flash(`${name === 'pause' ? 'paused' : 'stopped'} ${boxName}`);
+    } catch (err) {
+      if (this.selectedId !== id || this.tornDown) return;
+      const msg = err instanceof Error ? err.message : String(err);
+      this.placeholder = [
+        '',
+        `  Failed to ${name} ${boxName}:`,
+        `  ${msg}`,
+        '',
+        `  Try from a shell: agentbox ${name} ${boxName}`,
+      ];
+      this.prevRows = null;
+      this.scheduleRender();
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  private handleConfirmKey(bytes: Buffer): void {
+    const c = this.pendingConfirm;
+    if (!c) return;
+    const b = bytes[0];
+    this.pendingConfirm = null;
+    if (b === 0x79 || b === 0x0d || b === 0x0a) {
+      void this.runDestroy(c.boxId, c.name);
+    } else {
+      // Cancelled — restore the footer.
+      this.drawChrome();
     }
   }
 
@@ -486,6 +607,7 @@ export class Compositor {
 
   private switchBox(dir: 'next' | 'prev'): void {
     if (this.boxes.length === 0) return;
+    this.pendingConfirm = null;
     const i = Math.max(
       0,
       this.boxes.findIndex((b) => b.id === this.selectedId),
@@ -571,7 +693,13 @@ export class Compositor {
     }
     for (let y = 0; y < sidebar.h; y++) s += cursorTo(sepX, y) + '│';
     let status: string;
-    if (this.flashMsg) {
+    if (this.pendingConfirm) {
+      const w = this.layout.cols;
+      const txt = ` Destroy ${this.pendingConfirm.name}?  y = confirm  ·  any other key = cancel `
+        .slice(0, w)
+        .padEnd(w);
+      status = `\x1b[7m${txt}\x1b[0m`;
+    } else if (this.flashMsg) {
       const w = this.layout.cols;
       const txt = ` ${this.flashMsg} `.slice(0, w).padEnd(w);
       status = `\x1b[7m${txt}\x1b[0m`;
@@ -584,7 +712,12 @@ export class Compositor {
             : this.session && this.activeMode === 'shell'
               ? 'shell'
               : undefined;
-      status = statusLine(this.selectedBox(), this.layout.cols, stateLabel);
+      status = statusLine(
+        this.selectedBox(),
+        this.layout.cols,
+        stateLabel,
+        this.leaderActive ? ADVANCED_HINT_GROUPS : undefined,
+      );
     }
     s += cursorTo(0, statusY) + status;
     this.out.write(s + SYNC_END);

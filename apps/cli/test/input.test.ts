@@ -41,6 +41,10 @@ describe('InputParser keymap', () => {
     ]);
   });
 
+  // Leader events are footer-only chrome; filter them out for chord assertions.
+  const chords = (events: InputEvent[]): InputEvent[] =>
+    events.filter((e) => e.type !== 'leader');
+
   it('Ctrl-a leader: v/c/w → actions, q → quit, k/j → switch', () => {
     const h = harness();
     h.parser.feed(Buffer.from([0x01, 0x76])); // ^A v
@@ -49,7 +53,7 @@ describe('InputParser keymap', () => {
     h.parser.feed(Buffer.from([0x01, 0x71])); // ^A q
     h.parser.feed(Buffer.from([0x01, 0x6b])); // ^A k
     h.parser.feed(Buffer.from([0x01, 0x6a])); // ^A j
-    expect(h.events).toEqual([
+    expect(chords(h.events)).toEqual([
       { type: 'action', name: 'vnc' },
       { type: 'action', name: 'code' },
       { type: 'action', name: 'web' },
@@ -57,6 +61,38 @@ describe('InputParser keymap', () => {
       { type: 'switch', dir: 'prev' },
       { type: 'switch', dir: 'next' },
     ]);
+  });
+
+  it('Ctrl-a leader: s/p/d → stop/pause/destroy (d no longer quit, p no longer prev)', () => {
+    const h = harness();
+    h.parser.feed(Buffer.from([0x01, 0x73])); // ^A s
+    h.parser.feed(Buffer.from([0x01, 0x70])); // ^A p
+    h.parser.feed(Buffer.from([0x01, 0x64])); // ^A d
+    expect(chords(h.events)).toEqual([
+      { type: 'action', name: 'stop' },
+      { type: 'action', name: 'pause' },
+      { type: 'action', name: 'destroy' },
+    ]);
+  });
+
+  it('emits leader active true→false around a chord', () => {
+    const h = harness();
+    h.parser.feed(Buffer.from([0x01, 0x76])); // ^A v
+    expect(h.events).toEqual([
+      { type: 'leader', active: true },
+      { type: 'action', name: 'vnc' },
+      { type: 'leader', active: false },
+    ]);
+  });
+
+  it('lone Ctrl-a: leader true, then false + literal ^A on timeout', () => {
+    const h = harness();
+    h.parser.feed(Buffer.from([0x01]));
+    expect(h.events).toEqual([{ type: 'leader', active: true }]);
+    expect(h.fwd()).toBe('');
+    h.fire();
+    expect(h.events).toContainEqual({ type: 'leader', active: false });
+    expect(h.fwd()).toBe('\x01');
   });
 
   it('double Ctrl-a sends one literal Ctrl-a; lone Ctrl-a flushes on timeout', () => {
@@ -74,7 +110,11 @@ describe('InputParser keymap', () => {
     const h = harness();
     h.parser.feed(Buffer.from([0x01, 0x7a])); // ^A z
     expect(h.fwd()).toBe('z');
-    expect(h.events.some((e) => e.type !== 'forward')).toBe(false);
+    expect(
+      h.events.some(
+        (e) => e.type === 'action' || e.type === 'switch' || e.type === 'quit',
+      ),
+    ).toBe(false);
   });
 
   it('forwards a plain arrow key verbatim (not a chord)', () => {

@@ -1,17 +1,14 @@
-<h1 style="font-weight:normal">
-  AgentBox&nbsp;
-  <a href="./LICENSE"><img src="https://img.shields.io/github/license/madarco/agentbox.svg?colorB=ff0000"></a>
-  <a href="https://www.npmjs.com/package/@madarco/agentbox"><img src="https://img.shields.io/npm/d18m/%40madarco%2Fagentbox?label=npm" /></a>
-  <img src="https://img.shields.io/github/stars/madarco/agentbox" />
-</h1>
+# AgentBox 
 
 Run multiple agents in parallel, with a single command, on your PC, self-hosted
-<br>
+  
 
-<p align="center">
 
-![AgentBox](./docs/cover.jpg)
-</p>
+
+
+AgentBox
+
+
 
 ## How it works
 
@@ -22,7 +19,6 @@ Just run `agentbox claude` to automatically spin a new VM from the current folde
 - 🎛️ **Dashboard** - Control all agents from a single view, with activity notifications and autosleep
 - 💾 **Checkpoints** — Sub <1s startup of new boxes
 - 🌐 **A full Computer** — each box get his own dedicated Chromium browser, screen sharing web viewer, shell and a VS Code / Cursor IDE
-
 
 ```sh
 npm -g install @madarco/agentbox
@@ -39,11 +35,16 @@ agentbox claude
 
 # See status and quickly switch between agents:
 agentbox dashboard
+
+# See screen sharing, vscode, open *.local url
+agentbox screen 2
+agentbox code 2
+agentbox browser 2
 ```
 
 ## Demo
 
-![AgentBox demo](docs/demo.gif)
+AgentBox demo
 
 ## Install
 

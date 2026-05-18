@@ -1,7 +1,8 @@
 export type InputEvent =
   | { type: 'switch'; dir: 'next' | 'prev' }
   | { type: 'quit' }
-  | { type: 'action'; name: 'vnc' | 'code' | 'web' }
+  | { type: 'action'; name: 'vnc' | 'code' | 'web' | 'pause' | 'stop' | 'destroy' }
+  | { type: 'leader'; active: boolean }
   | { type: 'forward'; bytes: Buffer };
 
 export interface InputParserOptions {
@@ -68,6 +69,7 @@ export class InputParser {
         if (b === LEADER) {
           this.flush();
           this.state = 'leader';
+          this.onEvent({ type: 'leader', active: true });
           this.arm(this.leaderMs, 'leader');
         } else if (b === ESC) {
           this.flush();
@@ -90,8 +92,11 @@ export class InputParser {
           if (c === 'v') this.onEvent({ type: 'action', name: 'vnc' });
           else if (c === 'w') this.onEvent({ type: 'action', name: 'web' });
           else if (c === 'c') this.onEvent({ type: 'action', name: 'code' });
-          else if (c === 'q' || c === 'd') this.onEvent({ type: 'quit' });
-          else if (c === 'k' || c === 'p' || c === 'P') this.onEvent({ type: 'switch', dir: 'prev' });
+          else if (c === 's') this.onEvent({ type: 'action', name: 'stop' });
+          else if (c === 'p') this.onEvent({ type: 'action', name: 'pause' });
+          else if (c === 'd') this.onEvent({ type: 'action', name: 'destroy' });
+          else if (c === 'q') this.onEvent({ type: 'quit' });
+          else if (c === 'k') this.onEvent({ type: 'switch', dir: 'prev' });
           else if (c === 'j' || c === 'n' || c === 'N') this.onEvent({ type: 'switch', dir: 'next' });
           else {
             // Unrecognized chord: leader consumed, forward this byte only.
@@ -99,6 +104,7 @@ export class InputParser {
             this.flush();
           }
         }
+        this.onEvent({ type: 'leader', active: false });
         this.state = 'normal';
         i++;
         continue;
@@ -215,6 +221,7 @@ export class InputParser {
       if (kind === 'leader' && this.state === 'leader') {
         this.fwd.push(LEADER); // lone Ctrl-a → send it through
         this.flush();
+        this.onEvent({ type: 'leader', active: false });
         this.state = 'normal';
       } else if (kind === 'esc' && (this.state === 'esc' || this.state === 'mouseX10')) {
         this.forwardVerbatim(this.esc);

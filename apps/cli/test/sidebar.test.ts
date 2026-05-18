@@ -9,6 +9,7 @@ import {
   SIDEBAR_HEADER_LINES,
   NEW_BOX_ID,
   NEW_BOX_LABEL,
+  ADVANCED_HINT_GROUPS,
 } from '../src/dashboard/sidebar.js';
 
 describe('activityCell', () => {
@@ -105,6 +106,20 @@ describe('statusLine', () => {
     expect(printable).toContain('│');
     expect(printable).not.toContain('⌥');
     expect(printable).not.toContain('^a');
+  });
+
+  it('default hints stay code/vnc/web; advanced groups add stop/pause/destroy', () => {
+    const box = { id: '1', name: 'api', state: 'running', claudeActivity: 'idle' };
+    const normal = stripAnsi(statusLine(box, 200));
+    expect(normal).toContain('code');
+    expect(normal).not.toContain('stop');
+    expect(normal).not.toContain('destroy');
+    const advanced = stripAnsi(statusLine(box, 200, undefined, ADVANCED_HINT_GROUPS));
+    expect(advanced).toContain('s: stop');
+    expect(advanced).toContain('p: pause');
+    expect(advanced).toContain('d: destroy');
+    expect(advanced).toContain('c: code');
+    expect(advanced).toHaveLength(200);
   });
 
   it('uses the stateLabel override (shell/menu) instead of claudeActivity', () => {

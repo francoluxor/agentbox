@@ -10,9 +10,11 @@ import {
   destroyBox,
   ensureBoxBrowser,
   listBoxes,
+  pauseBox,
   rebuildPluginNativeDeps,
   startBox,
   startClaudeSession,
+  stopBox,
   unpauseBox,
   type ListedBox,
 } from '@agentbox/sandbox-docker';
@@ -280,6 +282,14 @@ export const dashboardCommand = new Command('dashboard')
         else await startBox(box.id);
       };
 
+      const pauseBoxAction = async (boxId: string): Promise<void> => {
+        await pauseBox(boxId);
+      };
+
+      const stopBoxAction = async (boxId: string): Promise<void> => {
+        await stopBox(boxId);
+      };
+
       const destroyBoxAction = async (boxId: string): Promise<void> => {
         await destroyBox(boxId);
       };
@@ -294,6 +304,8 @@ export const dashboardCommand = new Command('dashboard')
           openShell,
           createNewBox,
           resumeBox,
+          pauseBox: pauseBoxAction,
+          stopBox: stopBoxAction,
           destroyBox: destroyBoxAction,
           openVnc,
           openCode,
