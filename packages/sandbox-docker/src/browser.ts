@@ -21,11 +21,13 @@ export function browserSessionActive(stdout: string, exitCode: number): boolean 
  * Ensure the box's in-box browser (agent-browser's persistent default-session
  * Chromium) is running, so the VNC view shows a browser instead of a blank X
  * screen. Idempotent: if a session is already active we do nothing — the agent
- * may be mid-task and we must not navigate its page away. Otherwise we open a
- * neutral page **headed** (agent-browser defaults to headless — a headless
- * Chromium renders nothing on the VNC display, defeating the whole point), so
- * the agent's subsequent `agent-browser open <url>` reuses the same visible
- * window (it just navigates it).
+ * may be mid-task and we must not navigate its page away. Otherwise we open
+ * `targetUrl` (default `about:blank`) **headed** (agent-browser defaults to
+ * headless — a headless Chromium renders nothing on the VNC display, defeating
+ * the whole point), so the agent's subsequent `agent-browser open <url>` reuses
+ * the same visible window (it just navigates it). `agentbox screen` passes the
+ * box's own web-service URL (`http://localhost:<expose.port>`) so the app is
+ * shown *inside* the VNC desktop rather than popped open on the host.
  *
  * Best-effort, mirroring {@link import('./vnc.js').launchVncDaemon} — the
  * caller warns on failure but never aborts (the noVNC client still connects).
@@ -35,6 +37,7 @@ export function browserSessionActive(stdout: string, exitCode: number): boolean 
 export async function ensureBoxBrowser(
   container: string,
   timeoutMs = 8000,
+  targetUrl = 'about:blank',
 ): Promise<BoxBrowserResult> {
   const list = await execInBox(container, ['agent-browser', 'session', 'list'], {
     user: 'vscode',
@@ -44,7 +47,7 @@ export async function ensureBoxBrowser(
     return { up: true, alreadyRunning: true };
   }
 
-  const open = await execInBox(container, ['agent-browser', 'open', '--headed', 'about:blank'], {
+  const open = await execInBox(container, ['agent-browser', 'open', '--headed', targetUrl], {
     user: 'vscode',
     timeoutMs,
   });

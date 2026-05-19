@@ -156,7 +156,7 @@ export const claudeCommand = new Command('claude')
     "extra args passed to claude inside the box; place after `--`, e.g. `agentbox claude -- --model sonnet`",
   )
   .action(async (claudeArgs: string[], opts: ClaudeCreateOptions) => {
-    intro('agentbox claude');
+    intro('Starting Claude in a box...');
 
     const cfg = await loadEffectiveConfig(opts.workspace, {
       cliOverrides: buildClaudeCliOverrides(opts),
@@ -393,7 +393,7 @@ const claudeAttachCommand = new Command('attach')
     // optsWithGlobals merges parent + own options — the parent `claude`
     // command also defines `--session-name`.
     const opts = this.optsWithGlobals() as ClaudeStartOptions;
-    intro('agentbox claude attach');
+    intro('Attaching to Claude session...');
     try {
       const box = await resolveBoxOrExit(idOrName);
       await startOrAttachClaude(box, [], opts);
@@ -425,7 +425,7 @@ const claudeStartCommand = new Command('start')
   )
   .action(async function (this: Command, idOrName: string | undefined, claudeArgs: string[]) {
     const opts = this.optsWithGlobals() as ClaudeStartOptions;
-    intro('agentbox claude start');
+    intro('Starting Claude in a box...');
     try {
       // Two positionals (`[box] [claude-args...]`) make commander bind the
       // first post-`--` token (e.g. `--model`) to `[box]`. resolveBoxOrShift

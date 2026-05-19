@@ -4,8 +4,6 @@ import {
   buildVncUrls,
   detectEngine,
   ensureBoxBrowser,
-  getBoxEndpoints,
-  getBoxHostPaths,
   inspectBox,
   readBoxStatus,
   startBox,
@@ -47,9 +45,28 @@ export const screenCommand = new Command('screen')
         throw new Error(`box ${box.name} has no container; was it destroyed?`);
       }
 
-      const br = await ensureBoxBrowser(box.container);
-      if (br.up && !br.alreadyRunning) log.info('started in-box browser');
-      else if (!br.up) log.warn(`could not start in-box browser: ${br.reason ?? 'unknown'}`);
+      // Point the in-box browser at the box's own web service so the app is
+      // shown *inside* the VNC desktop (the host browser only gets the noVNC
+      // viewer). The expose port is reachable at 127.0.0.1:<port> inside the
+      // box; absent a web service we fall back to a neutral page so the VNC
+      // view isn't a connection-refused error.
+      const persisted = await readBoxStatus(box.id);
+      const exposePort = persisted?.services.find((s) => s.expose)?.expose?.port;
+      const inBoxUrl =
+        exposePort !== undefined ? `http://localhost:${String(exposePort)}` : 'about:blank';
+
+      const br = await ensureBoxBrowser(box.container, undefined, inBoxUrl);
+      if (br.up && !br.alreadyRunning) {
+        log.info(
+          exposePort !== undefined
+            ? `opened ${inBoxUrl} in the in-box browser (visible in the VNC view)`
+            : 'started in-box browser',
+        );
+      } else if (br.alreadyRunning) {
+        log.info('in-box browser already running; left it untouched');
+      } else {
+        log.warn(`could not start in-box browser: ${br.reason ?? 'unknown'}`);
+      }
 
       const engine = await detectEngine();
       const urls = buildVncUrls(box, engine);
@@ -70,28 +87,6 @@ export const screenCommand = new Command('screen')
         throw new Error(`open ${url} failed (exit ${String(opened.status ?? 'n/a')})`);
       }
       process.stdout.write(`opened ${url}\n`);
-
-      // Also pop the web app when a service declares `expose:`. The `web`
-      // endpoint is only reachable+url'd in that case (startBox reallocates
-      // webHostPort, so re-read the record). Best-effort: the VNC viewer
-      // already opened, so a failure here must not fail the command.
-      try {
-        const { record } = await getBoxHostPaths(box.id);
-        const persisted = await readBoxStatus(box.id);
-        const eps = await getBoxEndpoints(record, engine, persisted);
-        const webEp = eps.endpoints.find((e) => e.kind === 'web');
-        if (webEp?.reachable && webEp.url) {
-          const webUrl =
-            engine === 'orbstack' && !opts.loopback
-              ? `http://${record.container}.orb.local`
-              : webEp.url;
-          const w = spawnSync('open', [webUrl], { stdio: 'inherit' });
-          if (w.status === 0) process.stdout.write(`also opened ${webUrl}\n`);
-          else log.warn(`could not open web app (${webUrl})`);
-        }
-      } catch (e) {
-        log.warn(`could not open web app: ${e instanceof Error ? e.message : String(e)}`);
-      }
     } catch (err) {
       handleLifecycleError(err);
     }

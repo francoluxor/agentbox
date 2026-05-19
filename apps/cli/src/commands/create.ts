@@ -107,7 +107,7 @@ export const createCommand = new Command('create')
   .option('--disk <size>', 'best-effort writable-layer size (e.g. 10g); no-op on overlay2/macOS')
   .option('-y, --yes', 'skip prompts, accept defaults (host-snapshot=on)')
   .action(async (opts: CreateOptions) => {
-    intro('agentbox create');
+    intro('Setting up a new box...');
 
     const cfg = await loadEffectiveConfig(opts.workspace, {
       cliOverrides: buildCliOverrides(opts),

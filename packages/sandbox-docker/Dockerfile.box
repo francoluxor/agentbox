@@ -79,6 +79,19 @@ RUN apt-get update \
 # sandbox — strictly narrower than the existing NET_ADMIN/seccomp=unconfined.
 RUN setcap cap_net_bind_service=+ep "$(readlink -f "$(command -v node)")"
 
+# Enable corepack (pnpm/yarn shims) at build time as root. Doing this here
+# rather than in the wizard's install task avoids two failures the runtime
+# `corepack enable` (run as non-root `vscode`) hits: it can't write shims into
+# the root-owned NodeSource bin dir (/usr/bin), and node 22's bundled corepack
+# resolves its dist path relative to the symlink dirname, so a
+# ~/.local/bin/pnpm symlink looks for ~/.local/dist/pnpm.js and breaks.
+# `corepack@latest` fixes the symlink resolution; baking the shims into
+# /usr/bin makes them root-owned-but-world-executable so `vscode` just uses
+# them (each project's `packageManager` version is lazily fetched into the
+# writable ~/.cache/node/corepack on first use, inside the install task).
+RUN npm install -g corepack@latest \
+    && corepack enable pnpm yarn
+
 # Host repos are bind-mounted in at their identical absolute path (worktree
 # pointer files contain absolute paths to <main>/.git/worktrees/<name>, so both
 # sides have to resolve the same path), and the host owns those `.git/` dirs.

@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { createWriteStream, type WriteStream } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
@@ -69,6 +69,29 @@ function resolveCwd(unitCwd: string | undefined, baseCwd: string): string {
 function spawnArgs(cmd: string | string[]): { bin: string; args: string[] } {
   if (typeof cmd === 'string') return { bin: 'bash', args: ['-c', cmd] };
   return { bin: cmd[0]!, args: cmd.slice(1) };
+}
+
+let cachedLoginPath: string | undefined;
+
+/**
+ * The PATH a `bash -l` interactive shell sees inside the box. The supervisor is
+ * launched via `docker exec` (no profile sourcing), so without this, tasks and
+ * services run with a thinner PATH than `agentbox shell` — tools the native
+ * installer drops in ~/.local/bin (and the box's pnpm wrapper) would be missed.
+ * Resolved once, lazily, and memoized; falls back to the supervisor's own PATH.
+ */
+function loginShellPath(): string {
+  if (cachedLoginPath !== undefined) return cachedLoginPath;
+  try {
+    const out = execFileSync('bash', ['-lc', 'printf %s "$PATH"'], {
+      encoding: 'utf8',
+      timeout: 5000,
+    }).trim();
+    cachedLoginPath = out || (process.env.PATH ?? '');
+  } catch {
+    cachedLoginPath = process.env.PATH ?? '';
+  }
+  return cachedLoginPath;
 }
 
 export class ServiceRunner extends EventEmitter<ServiceRunnerEvents> implements Unit {
@@ -205,7 +228,7 @@ export class ServiceRunner extends EventEmitter<ServiceRunnerEvents> implements 
     try {
       child = this.spawnFn(bin, args, {
         cwd,
-        env: { ...process.env, ...(spec.env ?? {}) },
+        env: { ...process.env, PATH: loginShellPath(), ...(spec.env ?? {}) },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (err) {
@@ -435,7 +458,7 @@ export class TaskRunner extends EventEmitter<TaskRunnerEvents> implements Unit {
     try {
       child = this.spawnFn(bin, args, {
         cwd,
-        env: { ...process.env, ...(spec.env ?? {}) },
+        env: { ...process.env, PATH: loginShellPath(), ...(spec.env ?? {}) },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (err) {
@@ -780,6 +803,20 @@ export class Supervisor extends EventEmitter<SupervisorEvents> {
         this.dropUnit(spec.name);
         this.addTaskUnit(spec);
         changed.push(spec.name);
+      }
+    }
+
+    // A task skipped because a dependency failed stays terminal otherwise:
+    // scheduleOnce only re-evaluates pending/waiting units. On reload (the
+    // setup-iteration loop where the user just fixed the failing dependency)
+    // reset every still-skipped task to pending so the scheduler re-runs it if
+    // the dependency now succeeds, or re-skips it if it still fails.
+    for (const [name, unit] of this.units) {
+      if (unit.kind !== 'task') continue;
+      const task = unit as TaskRunner;
+      if (task.getState() === 'skipped') {
+        this.failed.delete(name);
+        task.resetForRerun();
       }
     }
 

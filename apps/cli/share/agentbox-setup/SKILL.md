@@ -149,8 +149,7 @@ services:
 1. Write the file to `/workspace/agentbox.yaml`.
 2. **Apply it live**: from inside the box run `agentbox-ctl reload`. The already-running supervisor re-reads the config and immediately runs the declared tasks and autostarts the services — no box restart needed. It prints the `added` / `removed` / `changed` diff. If it errors because the daemon isn't running, the config is still valid: the next `agentbox start` (or `agentbox create` in this workspace) picks it up automatically.
 3. Confirm with `agentbox-ctl status`: tasks should be `running` or `done`, autostart services `starting` or `ready`. If something failed, tail it with `agentbox-ctl logs <service>` and fix the config, then `agentbox-ctl reload` again.
-
-4. **Then do section 9** — once the box is warmed up (deps installed, services ready), checkpoint it with `agentbox-ctl checkpoint --set-default` so future boxes start ready. This is the real final step; don't stop at hand-off.
+4. Checkpoint (snapshot) this box writable layer: once the box is warmed up (deps installed, services ready), checkpoint it with `agentbox-ctl checkpoint --set-default` so future boxes start ready.
 
 5. Tell the user:
 
@@ -159,34 +158,15 @@ services:
    > - commit it inside the box (`git add agentbox.yaml && git commit -m 'add agentbox config'`) — the box's `.git/` is bind-mounted, so the commit shows up on the host immediately; or
    > - on the host, tell the user to run `agentbox pull config` to update their original host workspace.
 
-
-## 9. Checkpoint the warm state (do this at the very end)
-
-Once `agentbox-ctl status` shows the install task `done` and services `ready` — i.e. the box is fully warmed up — capture a **checkpoint** so future boxes in this project start from this exact state instead of cold.
-
-A checkpoint snapshots the box's writable layer, which includes everything you just did:
-
-- `node_modules` (and `.next`, `target`, `.venv`, build caches) — the expensive Linux-native install,
-- `.env` / `.env.*` / `secrets.toml` and any other gitignored config files present in `/workspace`,
-- any other files written during setup.
-
-A new box created from the checkpoint reuses all of it (the install task's marker is already present, so it no-ops), while git-tracked code still comes fresh from the host's current HEAD. Result: new boxes are ready in seconds with no reinstall and no missing env vars.
-
-**Run this from inside the box, as the final step:**
-
-```sh
-agentbox-ctl checkpoint --set-default
-```
-
-This routes through the host relay (no host shell needed), captures `<box-name>-<n>`, and writes `box.defaultCheckpoint` into the project's config so **every future `agentbox create` / `claude` in this project starts warm automatically**. Pass `--name <name>` for a stable name, or omit `--set-default` to capture without changing the default. Re-run it whenever the warm state meaningfully changes (e.g. after a dependency bump you want every new box to inherit).
-
-Then tell the user, e.g.:
-
-> I checkpointed the warm box state (node_modules, env files, build caches) and set it as this project's default — `agentbox create` will now spin up new boxes from it in seconds, no reinstall.
-
-## 10. Known issues
+## 9. Known issues
 
 - For Nextjs/Vite/Tasnstack projects, makes sure to forward also websocket for hot reload.
+
 - **Turbo/Nx/Jest and other git-worktree-aware tools may try to write their cache to a read-only host path.** The box runs `/workspace` as a git worktree with the host repo's `.git/` bind-mounted at its absolute host path; tools that derive paths from git (Turbo's cache root = the worktree's git *common dir*) resolve outside `/workspace` and hit `EROFS` on the Mac path. Pin the cache into the writable overlay via the task/service `env:`, e.g. `TURBO_CACHE_DIR: /workspace/.turbo/cache` (or pass `--cache-dir`).
+
+- `.pnpm-store` default location is read only, so you need to point it to a writable location in the box's writable workspace eg: `PNPM_STORE: /workspace/.pnpm-store` or `--store-dir /workspace/.pnpm-store` and add `.pnpm-store/` to the `.gitignore` if the workspace root is git-tracked.
+Make sure to apply the fixt to every task and service that invokes turbo in the agentbox.yaml file.
+
 - The `install` task is intentionally a no-op once `node_modules/.agentbox-installed` exists. Do **not** remove the marker guard to "force a fresh install" — that reinstalls on every box start. To force a one-off rebuild, delete `node_modules` (or just the marker) then run `agentbox-ctl reload`.
-- `.pnpm-store` default location is read only, so you need to point it to a writable location in the box's writable workspace eg: `PNPM_STORE: /workspace/.pnpm-store` and add `.pnpm-store/` to the `.gitignore` if the workspace root is git-tracked.
+
+- Host-only CLI wrappers (portless, etc.) must be bypassed, eg some projects wrap the dev server with a host-side proxy (here: `portless projectname next dev --turbopack`). Override the service command: to call the underlying tool directly (`next dev --turbopack`)

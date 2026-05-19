@@ -85,7 +85,7 @@ export async function maybeRunSetupWizard(args: WizardArgs): Promise<WizardOutco
   }
 
   const go = await confirm({
-    message: 'Set up a new Agentbox environment?',
+    message: 'New project detected, run setup wizard?',
     initialValue: true,
   });
   if (isCancel(go) || !go) return { action: 'proceed' };

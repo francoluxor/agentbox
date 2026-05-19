@@ -247,6 +247,48 @@ describe('Supervisor', () => {
     expect(after.lastExitCode).toBeNull();
   });
 
+  it('reload re-queues a skipped task once its failed dependency is fixed', async () => {
+    const sup = new Supervisor({ workspace: dir, logDir: dir });
+    await sup.init(
+      cfg(
+        [],
+        [
+          taskSpec({ name: 'broken', command: [NODE, '-e', 'process.exit(1)'] }),
+          taskSpec({
+            name: 'after',
+            command: [NODE, '-e', 'process.exit(0)'],
+            needs: ['broken'],
+          }),
+        ],
+      ),
+    );
+    await waitFor(() => {
+      const t = sup.listTasks().find((x) => x.name === 'after');
+      return t && t.state === 'skipped' ? t : null;
+    }, 3000);
+
+    // User fixes the failing dependency and reloads (the setup-iteration loop).
+    await sup.reload(
+      cfg(
+        [],
+        [
+          taskSpec({ name: 'broken', command: [NODE, '-e', 'process.exit(0)'] }),
+          taskSpec({
+            name: 'after',
+            command: [NODE, '-e', 'process.exit(0)'],
+            needs: ['broken'],
+          }),
+        ],
+      ),
+    );
+
+    const after = await waitFor(() => {
+      const t = sup.listTasks().find((x) => x.name === 'after');
+      return t && t.state === 'done' ? t : null;
+    }, 3000);
+    expect(after.lastExitCode).toBe(0);
+  });
+
   it('service with port probe transitions running → ready and unblocks dependents', async () => {
     const sup = new Supervisor({ workspace: dir, logDir: dir });
     // Pick an unlikely-to-be-used high port.
