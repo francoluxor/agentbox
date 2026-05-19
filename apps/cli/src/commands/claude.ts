@@ -8,6 +8,7 @@ import {
   ensureClaudeVolume,
   inspectBox,
   rebuildPluginNativeDeps,
+  seedSetupSkillIntoVolume,
   SHARED_CLAUDE_VOLUME,
   startBox,
   startClaudeSession,
@@ -345,6 +346,10 @@ async function startOrAttachClaude(
       },
     );
   }
+
+  // Box-only: ensure /agentbox-setup is in the volume (image-seeded, never
+  // on the host). Idempotent — skipped when a copy already exists.
+  await seedSetupSkillIntoVolume(box.claudeConfigVolume ?? SHARED_CLAUDE_VOLUME, box.image);
 
   // Plugin native deps: idempotent — gated by a per-plugin marker. No-op
   // on subsequent starts unless a new plugin was synced just now.

@@ -4,7 +4,12 @@ import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { execa } from 'execa';
 import { ConfigError, loadConfig } from '@agentbox/ctl';
-import { buildClaudeMounts, ensureClaudeVolume, resolveClaudeVolume } from './claude.js';
+import {
+  buildClaudeMounts,
+  ensureClaudeVolume,
+  resolveClaudeVolume,
+  seedSetupSkillIntoVolume,
+} from './claude.js';
 import {
   type BoxLimitSpec,
   containerExists,
@@ -380,6 +385,10 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
   } else {
     log(`reusing volume ${claudeSpec.volume} (no host ~/.claude to sync)`);
   }
+  // Box-only: seed /agentbox-setup into the volume from the image. Never
+  // touches the host's ~/.claude. Skipped if a copy already exists.
+  const seeded = await seedSetupSkillIntoVolume(claudeSpec.volume, imageRef);
+  if (seeded.seeded) log(`seeded /agentbox-setup skill into ${claudeSpec.volume}`);
   const claudeMounts = buildClaudeMounts(claudeSpec, process.env);
 
   const boxDir = boxRunDirFor(id);

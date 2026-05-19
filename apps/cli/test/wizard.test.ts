@@ -1,11 +1,7 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   buildSetupInitialPrompt,
   IN_BOX_SETUP_GUIDE_PATH,
-  installAgentboxSetupSkill,
   passthroughFlags,
 } from '../src/wizard.js';
 
@@ -66,47 +62,5 @@ describe('buildSetupInitialPrompt', () => {
   it('instructs claude to reload the supervisor so tasks run immediately', () => {
     const prompt = buildSetupInitialPrompt('/x/y');
     expect(prompt).toContain('agentbox-ctl reload');
-  });
-});
-
-describe('installAgentboxSetupSkill', () => {
-  let dir: string;
-  let target: string;
-  let source: string;
-
-  beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), 'agentbox-wizard-test-'));
-    target = join(dir, 'skills', 'agentbox-setup', 'SKILL.md');
-    source = join(dir, 'src-SKILL.md');
-    await writeFile(source, '# bundled-skill-content\n', 'utf8');
-  });
-  afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
-  });
-
-  it('copies the bundled skill into the target dir when absent', async () => {
-    const res = await installAgentboxSetupSkill({ targetFile: target, sourceFile: source });
-    expect(res.installed).toBe(true);
-    expect(res.targetFile).toBe(target);
-    const written = await readFile(target, 'utf8');
-    expect(written).toBe('# bundled-skill-content\n');
-  });
-
-  it('is a no-op when the target file already exists', async () => {
-    await installAgentboxSetupSkill({ targetFile: target, sourceFile: source });
-    // Overwrite with a sentinel; second call must NOT clobber it.
-    await writeFile(target, '# user-edited\n', 'utf8');
-    const res = await installAgentboxSetupSkill({ targetFile: target, sourceFile: source });
-    expect(res.installed).toBe(false);
-    const written = await readFile(target, 'utf8');
-    expect(written).toBe('# user-edited\n');
-  });
-
-  it('silently skips when the bundled source is missing', async () => {
-    const res = await installAgentboxSetupSkill({
-      targetFile: target,
-      sourceFile: join(dir, 'does-not-exist.md'),
-    });
-    expect(res.installed).toBe(false);
   });
 });

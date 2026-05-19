@@ -17,10 +17,11 @@ export type PullCategory = (typeof PULL_CATEGORIES)[number];
 
 /**
  * Skills whose directory name starts with one of these prefixes are agentbox's
- * own (currently just `agentbox-setup`, installed onto the host by
- * `apps/cli/src/wizard.ts`). They round-trip into the box via the forward sync;
- * pulling them back would be a no-op at best and noise at worst, so we never
- * treat them as user-authored additions.
+ * own (currently just `agentbox-setup`, seeded box-only into the claude-config
+ * volume by `seedSetupSkillIntoVolume` in claude.ts — never on the host).
+ * Pulling them back would re-introduce them onto the host, which is exactly
+ * what the box-only design avoids, so we never treat them as user-authored
+ * additions.
  */
 export const SKILL_EXCLUDE_PREFIXES = ['agentbox-'] as const;
 

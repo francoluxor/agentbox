@@ -17,6 +17,7 @@ export {
   rebuildPluginNativeDeps,
   resolveClaudeVolume,
   scanPluginCacheForRebuild,
+  seedSetupSkillIntoVolume,
   SHARED_CLAUDE_VOLUME,
   startClaudeSession,
   type ClaudeConfigSpec,

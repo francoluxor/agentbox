@@ -19,6 +19,15 @@ const CONTAINER_CLAUDE_DIR = '/home/vscode/.claude';
 export const CONTAINER_USER = 'vscode';
 /** Workspace is always mounted here inside the box, regardless of host path. */
 const CONTAINER_WORKSPACE = '/workspace';
+/**
+ * Image-baked copy of the agentbox-setup skill (Dockerfile.box COPYs
+ * `apps/cli/share/agentbox-setup/SKILL.md` here). We seed it into the
+ * claude-config volume so `/agentbox-setup` is available *inside boxes only* —
+ * it is intentionally never written to the host's ~/.claude.
+ */
+const IN_BOX_SETUP_GUIDE_PATH = '/usr/local/share/agentbox/setup-guide.md';
+/** Destination skill file inside the claude-config volume (mounted at /dst). */
+const SETUP_SKILL_DST = '/dst/skills/agentbox-setup/SKILL.md';
 
 export interface ClaudeConfigSpec {
   /** Resolved Docker volume name mounted at /home/vscode/.claude. */
@@ -291,6 +300,48 @@ export async function ensureClaudeVolume(
   }
 
   return { created, synced: true, filteredHookCount, clearedInstallMethod, aliasedProjectKey };
+}
+
+/**
+ * Seed the `agentbox-setup` skill into the claude-config volume from the
+ * image-baked copy ({@link IN_BOX_SETUP_GUIDE_PATH}). This is the box-only
+ * install path: the skill is intentionally never written to the host's
+ * ~/.claude (so `agentbox claude` doesn't pollute the user's machine).
+ *
+ * Idempotent and independent of `ensureClaudeVolume`'s host rsync — it runs
+ * even when the host has no ~/.claude or `syncFromHost` was false. `[ ! -e ]`
+ * means a pre-existing skill always wins: a user-customized copy, or a legacy
+ * host-installed one carried in by the rsync, is never clobbered.
+ *
+ * Best-effort: a failure here must not fail box creation.
+ */
+export async function seedSetupSkillIntoVolume(
+  volume: string,
+  image: string,
+): Promise<{ seeded: boolean }> {
+  try {
+    const { stdout } = await execa('docker', [
+      'run',
+      '--rm',
+      '--user',
+      '0',
+      '-v',
+      `${volume}:/dst`,
+      image,
+      'sh',
+      '-c',
+      // Prints SEEDED only when it actually copies, so the caller can log
+      // accurately. The whole thing is `|| true` so an already-present skill
+      // (or missing image asset) is a clean no-op, never a non-zero exit.
+      `{ [ ! -e /dst/skills/agentbox-setup ] && [ -f ${IN_BOX_SETUP_GUIDE_PATH} ] && ` +
+        `mkdir -p /dst/skills/agentbox-setup && ` +
+        `cp -a ${IN_BOX_SETUP_GUIDE_PATH} ${SETUP_SKILL_DST} && ` +
+        `chown -R 1000:1000 /dst/skills/agentbox-setup && echo SEEDED; } || true`,
+    ]);
+    return { seeded: stdout.includes('SEEDED') };
+  } catch {
+    return { seeded: false };
+  }
 }
 
 /**

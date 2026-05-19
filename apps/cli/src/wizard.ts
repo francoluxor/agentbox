@@ -1,60 +1,19 @@
 import { confirm, isCancel, log } from '@clack/prompts';
 import { findProjectRoot } from '@agentbox/config';
-import { copyFile, mkdir, stat } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { basename } from 'node:path';
 
 /**
  * In-box absolute path to the setup guide markdown (baked into the box image
  * by Dockerfile.box). Stable so the wizard's initial-prompt can reference it.
+ *
+ * The `/agentbox-setup` skill is installed **box-only**: at create /
+ * `claude start` time `seedSetupSkillIntoVolume()`
+ * (packages/sandbox-docker/src/claude.ts) copies this same file into the
+ * claude-config volume's `skills/agentbox-setup/SKILL.md`. We deliberately
+ * never write it to the host's ~/.claude so `agentbox` doesn't pollute the
+ * user's machine.
  */
 export const IN_BOX_SETUP_GUIDE_PATH = '/usr/local/share/agentbox/setup-guide.md';
-
-const HOST_SKILLS_DIR = join(homedir(), '.claude', 'skills', 'agentbox-setup');
-const HOST_SKILL_FILE = join(HOST_SKILLS_DIR, 'SKILL.md');
-
-// `share/agentbox-setup/SKILL.md` sits next to `dist/` after tsup build and at
-// the package root after npm publish; both resolve via `../share/...` relative
-// to dist/index.js.
-function bundledSkillPath(): string {
-  return fileURLToPath(new URL('../share/agentbox-setup/SKILL.md', import.meta.url));
-}
-
-async function fileExists(p: string): Promise<boolean> {
-  try {
-    const st = await stat(p);
-    return st.isFile();
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Idempotently install the host-side `/agentbox-setup` claude skill so the
- * user can re-invoke it later from any claude session. Never overwrites: a
- * pre-existing SKILL.md is assumed to be intentional (user customized it).
- * The existing `ensureClaudeVolume` rsync (packages/sandbox-docker/src/claude.ts)
- * propagates ~/.claude/skills/ into every box automatically.
- *
- * `opts.targetFile` and `opts.sourceFile` exist for tests.
- */
-export async function installAgentboxSetupSkill(
-  opts: { targetFile?: string; sourceFile?: string } = {},
-): Promise<{ installed: boolean; targetFile: string }> {
-  const targetFile = opts.targetFile ?? HOST_SKILL_FILE;
-  const targetDir = join(targetFile, '..');
-  if (await fileExists(targetFile)) return { installed: false, targetFile };
-  const src = opts.sourceFile ?? bundledSkillPath();
-  if (!(await fileExists(src))) {
-    // Bundled asset missing — happens if the user built without copying share/.
-    // Don't crash the wizard, just skip the install silently.
-    return { installed: false, targetFile };
-  }
-  await mkdir(targetDir, { recursive: true, mode: 0o700 });
-  await copyFile(src, targetFile);
-  return { installed: true, targetFile };
-}
 
 export function buildSetupInitialPrompt(workspace: string): string {
   const name = basename(workspace);
@@ -98,8 +57,8 @@ interface WizardArgs {
 export const WIZARD_AUTOLAUNCH_ENV = 'AGENTBOX_WIZARD_AUTOLAUNCH';
 
 export async function maybeRunSetupWizard(args: WizardArgs): Promise<WizardOutcome> {
-  // Re-entry from agentbox create → claude: outer pass already prompted +
-  // installed the skill; just inject the initial prompt for claude.
+  // Re-entry from agentbox create → claude: outer pass already prompted;
+  // just inject the initial prompt for claude.
   if (process.env[WIZARD_AUTOLAUNCH_ENV] === '1') {
     if (args.command !== 'claude') return { action: 'proceed' };
     if (args.checkpointRef) return { action: 'proceed' };
@@ -131,16 +90,9 @@ export async function maybeRunSetupWizard(args: WizardArgs): Promise<WizardOutco
   });
   if (isCancel(go) || !go) return { action: 'proceed' };
 
-  // Install the skill once so the user can re-invoke /agentbox-setup later.
-  // Silent on subsequent runs.
-  try {
-    const r = await installAgentboxSetupSkill();
-    if (r.installed) {
-      log.success(`installed /agentbox-setup skill at ${r.targetFile}`);
-    }
-  } catch (err) {
-    log.warn(`could not install /agentbox-setup skill: ${(err as Error).message}`);
-  }
+  // The /agentbox-setup skill is seeded into the box's claude-config volume
+  // by seedSetupSkillIntoVolume() (sandbox-docker) — box-only, never written
+  // to the host's ~/.claude.
 
   // For `agentbox create`, the only sensible yes-path is to hand off to
   // `agentbox claude` (that's where the agent runs). No second prompt — the
@@ -184,6 +136,3 @@ export function passthroughFlags(opts: CreatePassthroughOptions): string[] {
   if (opts.sharedDockerCache === true) out.push('--shared-docker-cache');
   return out;
 }
-
-// Exposed for tests.
-export const _internals = { HOST_SKILL_FILE, HOST_SKILLS_DIR, bundledSkillPath };
