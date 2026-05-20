@@ -6,6 +6,7 @@ import { daemonCommand } from './commands/daemon.js';
 import { downloadCommand } from './commands/download.js';
 import { checkpointCommand } from './commands/checkpoint.js';
 import { gitCommand } from './commands/git.js';
+import { notifyCommand } from './commands/notify.js';
 import { statusCommand } from './commands/status.js';
 import { logsCommand } from './commands/logs.js';
 import { validateCommand } from './commands/validate.js';
@@ -41,6 +42,7 @@ program.addCommand(gitCommand);
 program.addCommand(checkpointCommand);
 program.addCommand(cpCommand);
 program.addCommand(downloadCommand);
+program.addCommand(notifyCommand);
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   const msg = err instanceof Error ? err.message : String(err);

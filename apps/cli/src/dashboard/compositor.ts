@@ -34,6 +34,11 @@ const SB_SELECTED = BAR_BG + '\x1b[38;5;255m\x1b[1m';
 // prompt — same palette index as the [!] tag in the wrapped-pty footer
 // (renderFooter URGENT). Reads as "this box needs your attention".
 const SB_PROMPT = BAR_BG + '\x1b[38;5;220m\x1b[1m';
+// Bright cyan + bold for the agent's own "awaiting input" state
+// (claudeActivity === 'waiting'). Distinct hue from yellow so the user can
+// triage at a glance: yellow ▲ = relay needs a decision NOW; cyan ◐ =
+// the agent is idle waiting for the user's direction (less urgent).
+const SB_AWAITING = BAR_BG + '\x1b[38;5;51m\x1b[1m';
 const SGR_RESET = '\x1b[0m';
 
 export type RightTarget =
@@ -856,16 +861,25 @@ export class Compositor {
       const owner = rowOwner[i] ?? null;
       const isSelected = owner === this.selectedId;
       const hasPrompt = owner !== null && this.activePrompts.has(owner);
-      // Priority: header > selected > pending prompt > body. Selected wins
-      // over prompt because the selected styling already pairs with the
-      // status-line being in [!] mode — the row doesn't need to also yell.
+      // Lookup the box's activity for `awaiting` styling. We already have
+      // `boxesWithPrompt` from the inject pass above (same list passed to
+      // sidebarLines), so just match on owner.
+      const ownerBox = owner !== null ? boxesWithPrompt.find((b) => b.id === owner) : undefined;
+      const isAwaiting = ownerBox?.claudeActivity === 'waiting';
+      // Priority: header > selected > pending prompt > awaiting input > body.
+      // Selected wins over both attention states because the status-line
+      // already shows what the selected box needs; double-yelling would
+      // just clutter. Pending prompt outranks awaiting because it's a
+      // hard block (the agent's RPC is paused) vs. a soft "I'm idle".
       const style = headerRows[i]
         ? SB_HEADER
         : isSelected
           ? SB_SELECTED
           : hasPrompt
             ? SB_PROMPT
-            : SB_BODY;
+            : isAwaiting
+              ? SB_AWAITING
+              : SB_BODY;
       s += cursorTo(0, i) + style + lines[i] + SGR_RESET;
     }
     // Rounded top-right corner connecting the sidebar's top border to the
