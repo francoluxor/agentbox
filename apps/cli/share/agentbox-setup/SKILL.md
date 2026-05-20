@@ -158,21 +158,28 @@ services:
 - A service with `restart: never` and an autostart dependency will block the dependent forever after one failed run — usually a mistake.
 - `command:` is either a shell string (run via `bash -c`) or an argv array. Use the argv form if you need to avoid shell quoting.
 
-## 8. Hand-off
+## 8. Checkpoint the warm state (do this at the very end)
 
-1. Write the file to `/workspace/agentbox.yaml`.
-2. **Apply it live**: from inside the box run `agentbox-ctl reload`. The already-running supervisor re-reads the config and immediately runs the declared tasks and autostarts the services — no box restart needed. It prints the `added` / `removed` / `changed` diff. If it errors because the daemon isn't running, the config is still valid: the next `agentbox start` (or `agentbox create` in this workspace) picks it up automatically.
-3. Confirm with `agentbox-ctl status`: tasks should be `running` or `done`, autostart services `starting` or `ready`. If something failed, tail it with `agentbox-ctl logs <service>` and fix the config, then `agentbox-ctl reload` again.
-4. Checkpoint (snapshot) this box writable layer: once the box is warmed up (deps installed, services ready), checkpoint it with `agentbox-ctl checkpoint --set-default` so future boxes start ready.
+Checkpoint (snapshot) this box writable layer: once the box is warmed up (deps installed, services ready), checkpoint it with `agentbox-ctl checkpoint --set-default` so future boxes start ready. 
+This doesn't need to be confirmed by the user.
+It will pause the container for several seconds so warn the user about it and write Done when it's done.
 
-5. Tell the user:
+## 9. Hand-off
 
-   > I wrote `/workspace/agentbox.yaml` and ran `agentbox-ctl reload` so the supervisor is already running the declared tasks/services. To land the file on the host:
-   > - I've created a checkpoint of the warm box state so future boxes start ready in seconds, no reinstall.
-   > - commit it inside the box (`git add agentbox.yaml && git commit -m 'add agentbox config'`) — the box's `.git/` is bind-mounted, so the commit shows up on the host immediately; or
-   > - on the host, tell the user to run `agentbox download config` to update their original host workspace.
+Tell the user (verbatim):
 
-## 9. Known issues
+   ```
+    █████╗  ██████╗ ███████╗███╗   ██╗████████╗██████╗  ██████╗ ██╗  ██╗
+   ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝██╔══██╗██╔═══██╗╚██╗██╔╝
+   ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   ██████╔╝██║   ██║ ╚███╔╝
+   ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║   ██╔══██╗██║   ██║ ██╔██╗
+   ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   ██████╔╝╚██████╔╝██╔╝ ██╗
+   ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═════╝  ╚═════╝ ╚═╝  ╚═╝
+   ```
+
+   your box is ready, you can start more sessions with `agentbox claude`
+
+## 10. Known issues
 
 - For Nextjs/Vite/Tasnstack projects, makes sure to forward also websocket for hot reload.
 
