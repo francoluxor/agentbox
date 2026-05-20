@@ -13,6 +13,11 @@ export interface SidebarBox {
   /** Absolute project root; used to group boxes under a project header.
    *  Undefined for pre-feature boxes and the synthetic "+ New box" entry. */
   project?: string;
+  /** This box has an unanswered relay `prompt-ask` event (e.g. agentbox-ctl
+   *  git push / cp / download waiting for user confirmation). The compositor
+   *  injects this flag from its in-memory map of active prompts. Overrides
+   *  the activity cell — `▲ prompt` reads more urgent than `● working`. */
+  pendingPrompt?: boolean;
 }
 
 /** Per-row ownership + styling map returned alongside the rendered lines so
@@ -45,6 +50,9 @@ function ellipsizeHead(s: string, max: number): string {
 }
 
 export function activityCell(b: SidebarBox): string {
+  // Pending relay prompt outranks every other state — the user needs to
+  // act before whatever the box is doing can continue.
+  if (b.pendingPrompt) return '▲ prompt';
   if (b.state !== 'running') return `[${b.state}]`;
   switch (b.claudeActivity) {
     case 'working':

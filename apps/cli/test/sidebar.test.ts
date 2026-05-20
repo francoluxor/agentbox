@@ -26,6 +26,22 @@ describe('activityCell', () => {
   it('shows container state when not running', () => {
     expect(activityCell({ id: '1', name: 'a', state: 'paused' })).toBe('[paused]');
   });
+  it('renders ▲ prompt when pendingPrompt is set (overrides activity)', () => {
+    expect(
+      activityCell({
+        id: '1',
+        name: 'a',
+        state: 'running',
+        claudeActivity: 'working',
+        pendingPrompt: true,
+      }),
+    ).toBe('▲ prompt');
+  });
+  it('▲ prompt also wins over [stopped] / [paused] container states', () => {
+    expect(
+      activityCell({ id: '1', name: 'a', state: 'paused', pendingPrompt: true }),
+    ).toBe('▲ prompt');
+  });
 });
 
 describe('sidebarLines', () => {

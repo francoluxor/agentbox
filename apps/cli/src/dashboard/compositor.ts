@@ -19,6 +19,9 @@ import {
   BAR_BG,
   type SidebarBox,
 } from './sidebar.js';
+import { renderFooter } from '../wrapped-pty/footer.js';
+import { postAnswer, subscribePrompts, type PromptStream } from '../wrapped-pty/prompt-client.js';
+import type { PromptAskEvent } from '@agentbox/relay';
 
 // Sidebar panel styling (256-color, portable). Each sidebar line is already
 // padded to the panel width, so wrapping it in a bg SGR tints the full column.
@@ -27,6 +30,10 @@ import {
 const SB_BODY = BAR_BG + '\x1b[38;5;250m';
 const SB_HEADER = BAR_BG + '\x1b[38;5;39m\x1b[1m';
 const SB_SELECTED = BAR_BG + '\x1b[38;5;255m\x1b[1m';
+// Bright yellow + bold for non-selected rows that have a pending relay
+// prompt — same palette index as the [!] tag in the wrapped-pty footer
+// (renderFooter URGENT). Reads as "this box needs your attention".
+const SB_PROMPT = BAR_BG + '\x1b[38;5;220m\x1b[1m';
 const SGR_RESET = '\x1b[0m';
 
 export type RightTarget =
@@ -39,6 +46,11 @@ export type RightTarget =
 export interface CompositorDeps {
   ptySpawn: PtySpawn;
   termCtor: TerminalCtor;
+  /** Relay base URL the per-box SSE subscriptions hit. Typically
+   *  `http://127.0.0.1:8787` (built from DEFAULT_RELAY_PORT). When absent
+   *  (legacy callers) the compositor skips prompt subscriptions entirely
+   *  — the dashboard still works, just without relay-prompt overlay. */
+  relayBaseUrl?: string;
   /** Scoped + sorted candidate boxes (same order the sidebar renders). */
   listCandidates: () => Promise<SidebarBox[]>;
   /** What the right pane should show for a box (attach argv / menu / message). */
@@ -106,6 +118,16 @@ export class Compositor {
   private leaderLingerTimer: ReturnType<typeof setTimeout> | null = null;
   /** Set while a destroy confirm is pending in the status bar. */
   private pendingConfirm: { boxId: string; name: string } | null = null;
+  /**
+   * Per-box relay-prompt state. Populated by SSE `prompt-ask` events,
+   * cleared by `prompt-resolved` events or by the local user answering.
+   * The sidebar reads it to mark rows; drawChrome's status-line picker
+   * reads it to swap to [!] mode when the SELECTED box is in this map.
+   * Subscriptions are tracked separately in {@link promptStreams} so
+   * we can dispose them when boxes disappear from the list.
+   */
+  private readonly activePrompts = new Map<string, PromptAskEvent>();
+  private readonly promptStreams = new Map<string, PromptStream>();
   private activeMode: 'claude' | 'shell' = 'claude';
   private flashMsg: string | null = null;
   private flashTimer: ReturnType<typeof setTimeout> | null = null;
@@ -167,6 +189,14 @@ export class Compositor {
           this.pendingConfirm = null;
           this.drawChrome();
         }
+        // Relay prompt for the selected box: intercept y/N/Esc/Ctrl-c
+        // single-byte keystrokes. Multi-byte chunks starting with ESC
+        // (CSI: mouse, arrows, Ctrl+Option+↑↓, focus events) fall through
+        // — they're not user "answer" intent. Same byte-classification as
+        // the wrapped-pty input-router so behavior matches.
+        if (e.type === 'forward' && this.activePrompts.has(this.selectedId)) {
+          if (this.handlePromptKey(e.bytes)) return;
+        }
         if (e.type === 'quit') this.onSig();
         else if (e.type === 'switch') this.switchBox(e.dir);
         else if (e.type === 'action') {
@@ -224,6 +254,58 @@ export class Compositor {
       this.boxes = await this.deps.listCandidates();
     } catch {
       /* keep last known list */
+    }
+    this.syncPromptSubscriptions();
+  }
+
+  /**
+   * Diff the current box list against {@link promptStreams}: subscribe to
+   * any newcomer (skipping the synthetic + New box entry and pre-relay
+   * boxes), dispose any departed subscription. Idempotent — safe to call
+   * after every poll. Disposed boxes also clear their {@link activePrompts}
+   * entry so the sidebar marker doesn't linger.
+   */
+  private syncPromptSubscriptions(): void {
+    if (this.tornDown) return;
+    const url = this.deps.relayBaseUrl;
+    if (!url) return; // legacy callers: skip the feature entirely.
+    const wanted = new Set<string>();
+    for (const b of this.boxes) {
+      if (b.id === NEW_BOX_ID) continue;
+      wanted.add(b.id);
+    }
+    // Drop subscriptions for boxes no longer in the list.
+    for (const [boxId, stream] of this.promptStreams) {
+      if (!wanted.has(boxId)) {
+        stream.close();
+        this.promptStreams.delete(boxId);
+        if (this.activePrompts.delete(boxId)) this.drawChrome();
+      }
+    }
+    // Open subscriptions for boxes we don't already track.
+    for (const boxId of wanted) {
+      if (this.promptStreams.has(boxId)) continue;
+      const stream = subscribePrompts({
+        relayBaseUrl: url,
+        boxId,
+        onPrompt: (ev) => {
+          if (this.tornDown) return;
+          this.activePrompts.set(boxId, ev);
+          this.drawChrome();
+        },
+        onResolved: (id) => {
+          if (this.tornDown) return;
+          const current = this.activePrompts.get(boxId);
+          if (current && current.id === id) {
+            this.activePrompts.delete(boxId);
+            this.drawChrome();
+          }
+        },
+        onError: () => {
+          /* subscribePrompts already reconnects with backoff; nothing to do */
+        },
+      });
+      this.promptStreams.set(boxId, stream);
     }
   }
 
@@ -525,6 +607,52 @@ export class Compositor {
     }
   }
 
+  /**
+   * Try to consume `bytes` as an answer to the selected box's active relay
+   * prompt. Returns true when the bytes were a recognized answer key (the
+   * caller stops further dispatch); false when the bytes should flow on to
+   * the pty / other handlers.
+   *
+   * Single-byte chunks only: y/Y/Enter accept, n/N deny, Esc/Ctrl-c deny
+   * with `cancelled: true`. Multi-byte chunks starting with ESC (mouse,
+   * arrows, focus events, etc.) are passed through — exact same rule the
+   * wrapped-pty input-router uses.
+   */
+  private handlePromptKey(bytes: Buffer): boolean {
+    if (bytes.length > 1 && bytes[0] === 0x1b) return false;
+    if (bytes.length === 0) return false;
+    const b = bytes[0];
+    let answer: 'y' | 'n' | null = null;
+    let cancelled = false;
+    if (b === 0x79 || b === 0x59) answer = 'y'; // 'y'/'Y'
+    else if (b === 0x6e || b === 0x4e) answer = 'n'; // 'n'/'N'
+    else if (b === 0x1b || b === 0x03) {
+      answer = 'n';
+      cancelled = true;
+    } else if (b === 0x0d || b === 0x0a) {
+      // Enter accepts the default; defaultAnswer falls back to 'n' so this
+      // matches the [y/N] hint.
+      const ev = this.activePrompts.get(this.selectedId);
+      answer = ev?.defaultAnswer ?? 'n';
+    }
+    if (answer === null) return false;
+    const ev = this.activePrompts.get(this.selectedId);
+    if (!ev) return false;
+    // Optimistic local clear so the footer/sidebar update immediately;
+    // the relay's prompt-resolved SSE event will arrive afterwards and
+    // hit a no-op (already cleared).
+    this.activePrompts.delete(this.selectedId);
+    this.drawChrome();
+    const url = this.deps.relayBaseUrl;
+    if (url) {
+      void postAnswer({
+        relayBaseUrl: url,
+        body: { id: ev.id, answer, ...(cancelled ? { cancelled: true } : {}) },
+      });
+    }
+    return true;
+  }
+
   private handleConfirmKey(bytes: Buffer): void {
     const c = this.pendingConfirm;
     if (!c) return;
@@ -707,19 +835,37 @@ export class Compositor {
   private drawChrome(): void {
     if (this.tornDown || this.layout.tooSmall) return;
     const { sidebar, sepX, statusY } = this.layout;
+    // Inject the per-box pendingPrompt flag at render time so sidebarLines'
+    // activityCell shows `▲ prompt` for boxes with an open relay prompt.
+    // We don't mutate this.boxes directly — keeps the polling diff in poll()
+    // simple (it compares state/activity/sessionTitle only).
+    const boxesWithPrompt: SidebarBox[] =
+      this.activePrompts.size === 0
+        ? this.boxes
+        : this.boxes.map((b) =>
+            this.activePrompts.has(b.id) ? { ...b, pendingPrompt: true } : b,
+          );
     const { lines, rowOwner, headerRows } = sidebarLines(
-      this.boxes,
+      boxesWithPrompt,
       this.selectedId,
       sidebar.w,
       sidebar.h,
     );
     let s = SYNC_BEGIN + '\x1b[0m';
     for (let i = 0; i < lines.length; i++) {
+      const owner = rowOwner[i] ?? null;
+      const isSelected = owner === this.selectedId;
+      const hasPrompt = owner !== null && this.activePrompts.has(owner);
+      // Priority: header > selected > pending prompt > body. Selected wins
+      // over prompt because the selected styling already pairs with the
+      // status-line being in [!] mode — the row doesn't need to also yell.
       const style = headerRows[i]
         ? SB_HEADER
-        : rowOwner[i] === this.selectedId
+        : isSelected
           ? SB_SELECTED
-          : SB_BODY;
+          : hasPrompt
+            ? SB_PROMPT
+            : SB_BODY;
       s += cursorTo(0, i) + style + lines[i] + SGR_RESET;
     }
     // Rounded top-right corner connecting the sidebar's top border to the
@@ -728,6 +874,7 @@ export class Compositor {
     for (let y = 0; y < sidebar.h; y++)
       s += cursorTo(sepX, y) + SB_HEADER + (y === 0 ? '╮' : '│') + SGR_RESET;
     let status: string;
+    const activePromptForSelected = this.activePrompts.get(this.selectedId);
     if (this.pendingConfirm) {
       const w = this.layout.cols;
       const txt = ` Destroy ${this.pendingConfirm.name}?  y = confirm  ·  any other key = cancel `
@@ -738,6 +885,15 @@ export class Compositor {
       const w = this.layout.cols;
       const txt = ` ${this.flashMsg} `.slice(0, w).padEnd(w);
       status = `\x1b[7m${txt}\x1b[0m`;
+    } else if (activePromptForSelected) {
+      // Selected box has a pending relay prompt — reuse the wrapped-pty's
+      // `[!] <message>  <detail>  [y/N]` renderer so the two surfaces look
+      // identical. y/Y/Enter/n/N/Esc/Ctrl-c are intercepted in onEvent's
+      // forward branch above.
+      status = renderFooter(
+        { kind: 'prompt', prompt: activePromptForSelected },
+        this.layout.cols,
+      );
     } else {
       const stateLabel =
         this.selectedId === NEW_BOX_ID
@@ -782,6 +938,9 @@ export class Compositor {
     if (this.resizeTimer) clearTimeout(this.resizeTimer);
     if (this.flashTimer) clearTimeout(this.flashTimer);
     if (this.leaderLingerTimer) clearTimeout(this.leaderLingerTimer);
+    for (const stream of this.promptStreams.values()) stream.close();
+    this.promptStreams.clear();
+    this.activePrompts.clear();
     this.parser.dispose();
     this.disposeSession();
     this.inp.off('data', this.onData);

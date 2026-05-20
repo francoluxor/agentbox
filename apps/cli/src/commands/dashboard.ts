@@ -7,6 +7,7 @@ import {
   buildShellArgv,
   claudeSessionInfo,
   createBox,
+  DEFAULT_RELAY_PORT,
   destroyBox,
   ensureBoxBrowser,
   listBoxes,
@@ -316,6 +317,10 @@ export const dashboardCommand = new Command('dashboard')
         {
           ptySpawn,
           termCtor,
+          // Host-side loopback URL the per-box SSE subscriptions connect to.
+          // The relay binds 0.0.0.0; loopback is the admin/* path's required
+          // source. Same constant the wrapped-pty wrappers use.
+          relayBaseUrl: `http://127.0.0.1:${String(DEFAULT_RELAY_PORT)}`,
           listCandidates,
           resolveTarget,
           startClaude,
