@@ -8,7 +8,7 @@ writes there stay in the container's writable layer and don't touch the host's w
 tree.
 
 You can save the current filesystem state to be reused by future boxes by 
-running `agentbox-ctl checkpoint --set-default`.
+running `agentbox-ctl checkpoint --set-default`. This doesn't need to be confirmed by the user.
 
 The main `.git/` is bind-mounted at the same absolute path as on
 the host, so local commits show up in the host's `git log` immediately.
