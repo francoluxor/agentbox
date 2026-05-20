@@ -7,6 +7,8 @@ description: Generate an agentbox.yaml for the current AgentBox workspace. Invok
 
 ## Box layout (what you're configuring against)
 
+Your user i `vscode` and you can use passwordless sudo to run commands as root.
+
 `/workspace` is the box's plain writable filesystem — a per-box git worktree on a fresh `agentbox/<box-name>` branch (or a tar-piped copy of the host workspace for non-git projects). Anything you install or build into `/workspace` (incl. `node_modules`, `.next`, `target`, `.venv`) lives in the **container's writable layer** and is captured wholesale by `agentbox checkpoint` (`docker commit`) — so a setup task that runs the install once becomes a warm-start asset for every future box in the project. Everything is wiped on `agentbox destroy`.
 
 Three bind mounts wire the box back to the host:
