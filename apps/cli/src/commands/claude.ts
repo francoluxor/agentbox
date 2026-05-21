@@ -20,6 +20,7 @@ import {
   startClaudeSession,
   syncClaudeCredentials,
   unpauseBox,
+  warmUpClaudeCredentials,
   type BoxRecord,
 } from '@agentbox/sandbox-docker';
 import { Command } from 'commander';
@@ -121,6 +122,16 @@ async function runClaudeLoginContainer(image: string, extraArgs: string[]): Prom
     buildClaudeLoginRunArgv({ volume: SHARED_CLAUDE_VOLUME, image, extraArgs }),
   );
   if (exitCode === 0) {
+    // Absorb the fresh-token first-request 400 in a throwaway container before
+    // any box uses these credentials (see warmUpClaudeCredentials). Runs before
+    // syncClaudeCredentials so the host backup captures any token the warm-up
+    // refreshes.
+    const s = spinner();
+    s.start('checking credentials');
+    const warm = await warmUpClaudeCredentials(SHARED_CLAUDE_VOLUME, image, {
+      onProgress: (line) => s.message(clampSpinnerLine(line)),
+    });
+    s.stop(warm.warmed ? 'credentials ready' : 'credentials check incomplete — continuing');
     await syncClaudeCredentials({ volume: SHARED_CLAUDE_VOLUME }, { image, isolate: false });
   }
   return exitCode;

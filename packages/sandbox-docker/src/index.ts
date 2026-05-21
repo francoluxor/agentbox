@@ -22,6 +22,7 @@ export {
   seedSetupSkillIntoVolume,
   SHARED_CLAUDE_VOLUME,
   startClaudeSession,
+  warmUpClaudeCredentials,
   type ClaudeConfigSpec,
   type ClaudeMountResult,
   type ClaudeSessionInfo,
@@ -31,6 +32,7 @@ export {
   type PullClaudeResult,
   type RebuildPluginNativeDepsResult,
   type StartClaudeSessionOptions,
+  type WarmUpClaudeResult,
 } from './claude.js';
 export {
   CREDENTIALS_BACKUP_FILE,

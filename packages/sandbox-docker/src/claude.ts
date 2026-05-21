@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { execa } from 'execa';
 import {
   addProjectAlias,
@@ -1162,6 +1163,70 @@ export function buildClaudeLoginRunArgv(opts: {
 export function runInteractiveClaudeLogin(dockerArgv: string[]): { exitCode: number } {
   const child = spawnSync('docker', dockerArgv, { stdio: 'inherit' });
   return { exitCode: child.status ?? 1 };
+}
+
+export interface WarmUpClaudeResult {
+  /** True once a headless `claude -p` request actually succeeded. */
+  warmed: boolean;
+  /** How many attempts were made (1 = warm on the first try). */
+  attempts: number;
+}
+
+/**
+ * After a fresh `claude auth login`, the *first* Claude Code inference request
+ * on the newly minted Claude.ai subscription token is rejected by the API with
+ * `400 role 'system' is not supported on this model` — the account/token needs
+ * one inference round-trip to be provisioned. A later process then works
+ * (confirmed empirically: the first in-box session 400s, every later
+ * box/session on the same credentials succeeds).
+ *
+ * Absorb that sacrificial request here: run a headless `claude -p` in a
+ * throwaway container against the shared volume the login just wrote to,
+ * retrying until one request actually succeeds — so the user's real box
+ * session is never the first request. `--dangerously-skip-permissions` keeps
+ * the headless run from stalling on a trust/permission prompt (this is a
+ * throwaway sandbox container; nothing it does is persisted beyond the volume).
+ *
+ * Best-effort and time-boxed: if it never succeeds we return `warmed: false`
+ * and the caller proceeds anyway — the box then behaves exactly as it did
+ * before this warm-up existed.
+ */
+export async function warmUpClaudeCredentials(
+  volume: string,
+  image: string,
+  opts: { onProgress?: (line: string) => void } = {},
+): Promise<WarmUpClaudeResult> {
+  const MAX_ATTEMPTS = 6;
+  const SLEEP_MS = 5000;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    opts.onProgress?.(`checking credentials... ${attempt}/${MAX_ATTEMPTS}`);
+    const res = await execa(
+      'docker',
+      [
+        'run',
+        '--rm',
+        '-v',
+        `${volume}:${CONTAINER_CLAUDE_DIR}`,
+        '--user',
+        CONTAINER_USER,
+        '-e',
+        'DISABLE_AUTOUPDATER=1',
+        image,
+        'claude',
+        '--dangerously-skip-permissions',
+        '-p',
+        'ok',
+      ],
+      { reject: false, timeout: 60_000 },
+    );
+    // `claude -p` can exit 0 while printing an API error as the turn's text,
+    // so success needs a clean exit AND no error signature in the output.
+    const out = `${res.stdout ?? ''}\n${res.stderr ?? ''}`;
+    const apiError = /API Error|is not supported on this model|"type":\s*"error"/i.test(out);
+    if (res.exitCode === 0 && !apiError) return { warmed: true, attempts: attempt };
+    if (attempt < MAX_ATTEMPTS) await delay(SLEEP_MS);
+  }
+  return { warmed: false, attempts: MAX_ATTEMPTS };
 }
 
 export function formatDetachNotice(ref: string): string {
