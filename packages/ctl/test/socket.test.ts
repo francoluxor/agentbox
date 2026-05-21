@@ -83,9 +83,18 @@ describe('socket protocol', () => {
   });
 
   it('returns initial log lines without follow', async () => {
-    // Give the service a moment to emit some lines.
-    await new Promise((r) => setTimeout(r, 100));
-    const result = await logs({ socketPath: sock }, { service: 'svc', tail: 50, follow: false });
+    // Poll until the service has emitted at least one line — a cold `node`
+    // spawn can take well over 100ms on a loaded CI runner, so a fixed sleep
+    // races the process startup.
+    const deadline = Date.now() + 2000;
+    let result = await logs({ socketPath: sock }, { service: 'svc', tail: 50, follow: false });
+    while (
+      !result.initial.some((e) => e.line === 'hi' || e.line === 'tick') &&
+      Date.now() < deadline
+    ) {
+      await new Promise((r) => setTimeout(r, 50));
+      result = await logs({ socketPath: sock }, { service: 'svc', tail: 50, follow: false });
+    }
     expect(result.initial.some((e) => e.line === 'hi' || e.line === 'tick')).toBe(true);
     expect(result.follow).toBeUndefined();
   });
