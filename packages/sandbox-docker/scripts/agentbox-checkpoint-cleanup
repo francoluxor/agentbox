@@ -37,9 +37,13 @@ find /var/log -type f \( -name '*.log' -o -name '*.gz' -o -name '*.1' \) \
   -exec truncate -s0 {} + 2>/dev/null
 find /var/log/agentbox -type f -exec truncate -s0 {} + 2>/dev/null
 
-# Bash history (root + vscode).
+# Bash history (root + vscode). Re-assert vscode ownership: `: >` run as root
+# (re)creates the file root-owned 0644 when it didn't exist, which the uid-1000
+# vscode user cannot append to, silently dropping all shell history.
 : > /root/.bash_history 2>/dev/null
 : > /home/vscode/.bash_history 2>/dev/null
+chown vscode:vscode /home/vscode/.bash_history 2>/dev/null
+chmod 600 /home/vscode/.bash_history 2>/dev/null
 
 # Anthropic's installer writes a transient marker; redundant once the binary
 # is in place. Safe to wipe.

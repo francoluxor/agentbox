@@ -52,6 +52,7 @@ import { createSnapshot, snapshotPathFor } from './snapshot.js';
 import { resolveCheckpoint } from './checkpoint.js';
 import { launchCtlDaemon } from './ctl.js';
 import { writeBoxEnvFile } from './box-env.js';
+import { ensureHomeOwnedByVscode } from './home-ownership.js';
 import {
   ensureRelay,
   generateRelayToken,
@@ -585,6 +586,12 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
   const boxEnv = await writeBoxEnvFile(containerName, boxEnvForFile);
   if (boxEnv.ok) log('wrote /etc/agentbox/box.env');
   else log(`writing /etc/agentbox/box.env failed: ${boxEnv.reason}`);
+
+  // Re-own /home/vscode to vscode. Root-run exec steps (checkpoint cleanup,
+  // dockerd setup) and boxes restored from a checkpoint can leave home-dir
+  // files root-owned; the shell + agent run as vscode and would silently
+  // fail to write them (e.g. dropped `.bash_history`). Best-effort.
+  await ensureHomeOwnedByVscode(containerName);
 
   // Seed /workspace.
   //   - Checkpoint restore: the image already has the source box's per-box

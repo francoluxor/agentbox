@@ -39,6 +39,7 @@ import {
 } from './docker.js';
 import { CHECKPOINT_IMAGE_PREFIX, listAllCheckpointImages } from './checkpoint.js';
 import { launchCtlDaemon } from './ctl.js';
+import { ensureHomeOwnedByVscode } from './home-ownership.js';
 import { launchDockerdDaemon, SHARED_DOCKER_CACHE_VOLUME } from './dockerd.js';
 import { launchVncDaemon, VNC_CONTAINER_PORT } from './vnc.js';
 import { WEB_CONTAINER_PORT } from './web.js';
@@ -189,6 +190,10 @@ export async function startBox(idOrName: string): Promise<StartedBox> {
       })),
     );
   }
+
+  // Re-own /home/vscode to vscode in case root-run steps left files behind
+  // (see ensureHomeOwnedByVscode). Best-effort; safe to repeat.
+  await ensureHomeOwnedByVscode(box.container);
 
   if (box.socketPath) {
     // The daemon died with the container; relaunch it. Best-effort, same as
