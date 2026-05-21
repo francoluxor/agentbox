@@ -1,9 +1,11 @@
 import type { PromptAnswerBody, PromptAskEvent } from '@agentbox/relay';
 
 /**
- * Steady-state input forwarder + active-prompt capture. The router has zero
- * intercept in steady state (every byte goes to the pty unmodified) — so
- * tmux's `Ctrl+a q`, vim, claude's TUI, etc. all work bit-for-bit as today.
+ * Steady-state input forwarder + active-prompt capture + Ctrl+a leader.
+ *
+ * In steady state every byte goes to the pty unmodified — *unless* a
+ * `leaderChords` map is supplied, in which case `Ctrl+a` (0x01) opens the
+ * actions menu (leader-only: a literal Ctrl+a needs a double-press).
  *
  * Only when `capture()` is awaiting does the router intercept the next
  * keystroke and resolve the prompt with a y/n/cancel answer. Anything else
@@ -31,6 +33,9 @@ interface ActivePrompt {
   reject: (e: Error) => void;
 }
 
+/** Actions reachable from the Ctrl+a leader menu. */
+export type LeaderAction = 'vnc' | 'code' | 'browser' | 'detach';
+
 const KEY_ENTER = 0x0d;
 const KEY_LF = 0x0a;
 const KEY_ESC = 0x1b;
@@ -39,16 +44,90 @@ const KEY_Y_LOW = 0x79;
 const KEY_Y_UP = 0x59;
 const KEY_N_LOW = 0x6e;
 const KEY_N_UP = 0x4e;
+const KEY_LEADER = 0x01; // Ctrl-a
+
+const DEFAULT_LEADER_TIMEOUT_MS = 2000;
 
 export interface InputRouterOptions {
   onForward: (b: Buffer) => void;
   /** Called when a prompt's capture is resolved — the run loop POSTs the answer. */
   onAnswer: (body: PromptAnswerBody) => void;
+  /** Ctrl+a leader chord map: a single lowercase character → action. When
+   *  omitted or empty the leader is disabled and `Ctrl+a` forwards verbatim. */
+  leaderChords?: Readonly<Record<string, LeaderAction>>;
+  /** Fired when the leader menu opens (true) / closes (false). */
+  onLeaderChange?: (active: boolean) => void;
+  /** Fired when a recognized chord key resolves the leader. */
+  onAction?: (name: LeaderAction) => void;
+  /** ms the leader menu stays open with no key before auto-closing (default 2000). */
+  leaderTimeoutMs?: number;
+  /** Injected for unit tests; defaults to global timers. */
+  setTimer?: (ms: number, fn: () => void) => unknown;
+  clearTimer?: (h: unknown) => void;
 }
 
 export function createInputRouter(opts: InputRouterOptions): InputRouter {
   let active: ActivePrompt | null = null;
   let disposed = false;
+
+  const leaderChords = opts.leaderChords ?? {};
+  const leaderEnabled = Object.keys(leaderChords).length > 0;
+  const leaderTimeoutMs = opts.leaderTimeoutMs ?? DEFAULT_LEADER_TIMEOUT_MS;
+  const setTimer = opts.setTimer ?? ((ms, fn) => setTimeout(fn, ms) as unknown);
+  const clearTimer =
+    opts.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
+  let leader = false;
+  let leaderTimer: unknown = null;
+
+  const disarmLeader = (): void => {
+    if (leaderTimer != null) {
+      clearTimer(leaderTimer);
+      leaderTimer = null;
+    }
+  };
+
+  const exitLeader = (): void => {
+    if (!leader) return;
+    leader = false;
+    disarmLeader();
+    opts.onLeaderChange?.(false);
+  };
+
+  const enterLeader = (): void => {
+    leader = true;
+    disarmLeader();
+    // Leader-only: a lone Ctrl+a just times the menu out — it is never
+    // auto-forwarded. A literal Ctrl+a is sent via a double-press.
+    leaderTimer = setTimer(leaderTimeoutMs, () => {
+      leaderTimer = null;
+      exitLeader();
+    });
+    opts.onLeaderChange?.(true);
+  };
+
+  // The leader is open and `b` is the chord byte that resolves it.
+  const resolveLeaderByte = (b: number): void => {
+    if (b === KEY_LEADER) {
+      // Double Ctrl+a → one literal Ctrl+a to the inner program.
+      exitLeader();
+      opts.onForward(Buffer.from([KEY_LEADER]));
+      return;
+    }
+    if (b === KEY_ESC) {
+      // Esc dismisses the menu; nothing forwarded.
+      exitLeader();
+      return;
+    }
+    const action = leaderChords[String.fromCharCode(b).toLowerCase()];
+    if (action) {
+      exitLeader();
+      opts.onAction?.(action);
+      return;
+    }
+    // Unrecognized chord: close the menu, forward the key so typing isn't lost.
+    exitLeader();
+    opts.onForward(Buffer.from([b]));
+  };
 
   const settle = (
     answer: PromptAnswerBody['answer'],
@@ -89,6 +168,31 @@ export function createInputRouter(opts: InputRouterOptions): InputRouter {
     // Anything else: ignored (not forwarded, not consumed).
   };
 
+  // Leader-aware steady-state forwarding: scan bytes, batching non-leader
+  // runs into a single onForward call, and intercept `Ctrl+a` chords.
+  const feedSteady = (buf: Buffer): void => {
+    let chunkStart = 0;
+    const flushChunk = (end: number): void => {
+      if (end > chunkStart) opts.onForward(buf.subarray(chunkStart, end));
+      chunkStart = end;
+    };
+    for (let i = 0; i < buf.length; i++) {
+      const byte = buf[i];
+      if (byte === undefined) continue;
+      if (leader) {
+        resolveLeaderByte(byte);
+        chunkStart = i + 1;
+        continue;
+      }
+      if (byte === KEY_LEADER) {
+        flushChunk(i); // forward everything typed before the Ctrl+a
+        chunkStart = i + 1;
+        enterLeader();
+      }
+    }
+    flushChunk(buf.length);
+  };
+
   return {
     get capturing(): boolean {
       return active !== null;
@@ -123,10 +227,16 @@ export function createInputRouter(opts: InputRouterOptions): InputRouter {
         }
         return;
       }
-      opts.onForward(buf);
+      if (!leaderEnabled) {
+        opts.onForward(buf);
+        return;
+      }
+      feedSteady(buf);
     },
     capture(ev: PromptAskEvent): Promise<PromptAnswerBody> {
       return new Promise<PromptAnswerBody>((resolve, reject) => {
+        // A relay prompt outranks the actions menu — close the leader first.
+        if (leader) exitLeader();
         if (active) {
           // A new prompt arrived before the old one was answered — abort
           // the old one (treated as cancelled) and switch to the new one.
@@ -147,6 +257,7 @@ export function createInputRouter(opts: InputRouterOptions): InputRouter {
     dispose(): void {
       if (disposed) return;
       disposed = true;
+      disarmLeader();
       if (active) {
         const p = active;
         active = null;

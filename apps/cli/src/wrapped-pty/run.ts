@@ -1,7 +1,11 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { readBoxStatus } from '@agentbox/sandbox-docker';
 import { loadPtyBackend } from '../pty/pty-backend.js';
-import { createInputRouter, type InputRouter } from './input-router.js';
+import {
+  createInputRouter,
+  type InputRouter,
+  type LeaderAction,
+} from './input-router.js';
 import {
   CURSOR_RESTORE,
   CURSOR_SAVE,
@@ -39,6 +43,26 @@ const FOOTER_ROWS = 1;
 const STATUS_POLL_INTERVAL_MS = 3000;
 /** Spinner advance cadence while a `notice` footer is active. */
 const SPINNER_INTERVAL_MS = 120;
+/** How long the post-action confirmation flash stays in the footer. */
+const FLASH_DURATION_MS = 2000;
+
+/** Per-action confirmation text shown in the footer flash. */
+const ACTION_FLASH: Record<Exclude<LeaderAction, 'detach'>, string> = {
+  vnc: 'Opening noVNC viewer…',
+  code: 'Launching VS Code / Cursor…',
+  browser: 'Opening box browser…',
+};
+
+/** Per-action `agentbox` subcommand: `<sub> <boxId> <...flags>`. */
+const ACTION_CMD: Record<
+  Exclude<LeaderAction, 'detach'>,
+  { sub: string; flags: string[] }
+> = {
+  vnc: { sub: 'screen', flags: [] },
+  // --no-wait: don't block on `wait-ready` — the box is already running.
+  code: { sub: 'code', flags: ['--no-wait'] },
+  browser: { sub: 'browser', flags: [] },
+};
 
 /**
  * Replace `spawnSync('docker', argv, { stdio: 'inherit' })` with a
@@ -75,25 +99,30 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
     env: process.env,
   });
 
-  // Idle footer = dashboard's statusLine() with a single hint (Ctrl+a q
-  // for claude; none for shell). Session title + claude activity come from
-  // the per-box status.json polled below.
+  // Idle footer = dashboard's statusLine() with a single hint (`Control+a:
+  // Actions`, expanding to the chord menu while the leader is open). Session
+  // title + claude activity come from the per-box status.json polled below.
+  let leaderActive = false;
   const buildIdle = (sessionTitle?: string, claudeActivity?: string): FooterState => ({
     kind: 'idle',
     boxName: opts.boxName,
     sessionTitle,
     claudeActivity,
     mode: opts.mode,
+    leaderActive,
   });
   let footerState: FooterState = buildIdle();
   let lastSessionTitle: string | undefined;
   let lastActivity: string | undefined;
-  // Prompt + notice are tracked independently of `footerState`;
-  // `recomputeFooter` derives the visible state (prompt > notice > idle).
+  // Prompt + notice + flash are tracked independently of `footerState`;
+  // `recomputeFooter` derives the visible state (prompt > notice > flash > idle).
   let capturingPrompt: PromptAskEvent | null = null;
   let activeNotice: BoxNoticeEvent | null = null;
   let noticeFrame = 0;
   let spinnerTimer: ReturnType<typeof setInterval> | null = null;
+  // Transient confirmation shown after a Ctrl+a action fires.
+  let flashMessage: string | null = null;
+  let flashTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Lazy SGR mirror: when the inner pty's most recent attribute is bright
   // bold, our footer paint won't reset it correctly via the inner program's
@@ -118,14 +147,17 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
     process.stdout.write(payload);
   };
 
-  // Derive `footerState` from the current prompt / notice / idle inputs. A
-  // pending prompt outranks a notice (it hard-blocks the box's RPC); a notice
-  // outranks idle. Called after any input changes.
+  // Derive `footerState` from the current prompt / notice / flash / idle
+  // inputs. A pending prompt outranks a notice (it hard-blocks the box's
+  // RPC); a notice outranks a flash; a flash outranks idle. Called after any
+  // input changes.
   const recomputeFooter = (): void => {
     if (capturingPrompt) {
       footerState = { kind: 'prompt', prompt: capturingPrompt };
     } else if (activeNotice) {
       footerState = { kind: 'notice', message: activeNotice.message, frame: noticeFrame };
+    } else if (flashMessage) {
+      footerState = { kind: 'flash', message: flashMessage };
     } else {
       footerState = buildIdle(lastSessionTitle, lastActivity);
     }
@@ -167,7 +199,50 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
     redrawFooter();
   });
 
-  // Wire stdin -> pty (through the router so prompts can intercept).
+  // Ctrl+a leader chord map. Claude also gets `q: detach`; a plain shell has
+  // nothing to detach from.
+  const leaderChords: Record<string, LeaderAction> =
+    opts.mode === 'claude'
+      ? { c: 'code', v: 'vnc', b: 'browser', q: 'detach' }
+      : { c: 'code', v: 'vnc', b: 'browser' };
+
+  // Run a Ctrl+a leader action. `detach` writes the tmux detach sequence to
+  // the pty (`\x02` = Ctrl+b, tmux's secondary prefix; `d` = detach-client) —
+  // the attach process then exits 0 and teardown runs normally. The other
+  // actions shell out to the real `agentbox` subcommand, detached, so the
+  // long-running open/launch never blocks (or corrupts) this terminal.
+  const runAction = (name: LeaderAction): void => {
+    if (name === 'detach') {
+      pty.write('\x02d');
+      return;
+    }
+    const cliEntry = process.argv[1];
+    if (typeof cliEntry === 'string' && cliEntry.length > 0) {
+      const cmd = ACTION_CMD[name];
+      try {
+        spawn(
+          process.execPath,
+          [cliEntry, cmd.sub, opts.boxId, ...cmd.flags],
+          { detached: true, stdio: 'ignore' },
+        ).unref();
+      } catch {
+        /* best-effort — the footer flash still shows */
+      }
+    }
+    flashMessage = ACTION_FLASH[name];
+    if (flashTimer) clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => {
+      flashTimer = null;
+      flashMessage = null;
+      recomputeFooter();
+      redrawFooter();
+    }, FLASH_DURATION_MS);
+    if (typeof flashTimer.unref === 'function') flashTimer.unref();
+    recomputeFooter();
+    redrawFooter();
+  };
+
+  // Wire stdin -> pty (through the router so prompts + the leader can intercept).
   const router: InputRouter = createInputRouter({
     onForward: (b) => {
       // node-pty wants utf8 strings; stdin is binary safe via Buffer.
@@ -180,6 +255,15 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
       capturingPrompt = null;
       recomputeFooter();
       redrawFooter();
+    },
+    leaderChords,
+    onLeaderChange: (open) => {
+      leaderActive = open;
+      recomputeFooter();
+      redrawFooter();
+    },
+    onAction: (name) => {
+      runAction(name);
     },
   });
 
@@ -307,6 +391,7 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
   process.stdout.off('resize', onResize);
   clearInterval(statusTimer);
   stopSpinner();
+  if (flashTimer) clearTimeout(flashTimer);
   if (process.stdin.isTTY) process.stdin.setRawMode(false);
   process.stdin.pause();
   stream.close();

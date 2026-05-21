@@ -146,26 +146,46 @@ export async function repairIdeOwnership(container: string): Promise<void> {
   }
 }
 
-/**
- * VS Code's `vscode-remote://attached-container+<hex>/...` URI takes the
- * *container name* hex-encoded. Cursor uses the same URI scheme (it's a fork)
- * — pass it to `cursor --folder-uri` the same way.
- */
-export function containerHex(containerName: string): string {
-  return Buffer.from(containerName, 'utf8').toString('hex');
+export interface AttachedContainerUriOptions {
+  /** Active Docker context (e.g. "desktop-linux" / "orbstack"). Embedded in
+   *  the URI's `settings.context` so the Dev Containers extension queries the
+   *  same daemon agentbox created the container in. Omitted → the extension
+   *  falls back to its own default context. */
+  dockerContext?: string;
+  /** Folder opened inside the container (default `/workspace`). */
+  workspacePath?: string;
 }
 
 /**
- * Resource URI for an attached container. Consumed by `code --folder-uri` /
- * `cursor --folder-uri`.
+ * Resource URI for an attached container, consumed by `code --folder-uri` /
+ * `cursor --folder-uri` (Cursor is a VS Code fork — same URI scheme).
+ *
+ * The modern Dev Containers extension expects the `attached-container+<hex>`
+ * authority to decode to a JSON payload, not a bare name:
+ *
+ *   attached-container+hex({"containerName":"/<name>","settings":{"context":"<ctx>"}})
+ *
+ * `containerName` keeps the leading slash docker's own `.Name` field carries.
+ * `settings.context` pins the Docker context — without it, after switching
+ * engines (OrbStack ⇄ Docker Desktop) the extension probes the wrong daemon
+ * and reports the container as non-existent ("…because it no longer exists").
  *
  * Note: the `vscode://vscode-remote/...` protocol-handler form looks similar
  * but goes through macOS `open`, which percent-encodes the `+` authority
- * separator into `%2B` and the Dev Containers extension then fails to
- * resolve it. Use `<cli> --folder-uri <this>` to bypass that.
+ * separator into `%2B` and the extension then fails to resolve it. Use
+ * `<cli> --folder-uri <this>` to bypass that.
  */
-export function attachedContainerUri(containerName: string, workspacePath = '/workspace'): string {
-  return `vscode-remote://attached-container+${containerHex(containerName)}${workspacePath}`;
+export function attachedContainerUri(
+  containerName: string,
+  opts: AttachedContainerUriOptions = {},
+): string {
+  const workspacePath = opts.workspacePath ?? '/workspace';
+  const payload: { containerName: string; settings?: { context: string } } = {
+    containerName: containerName.startsWith('/') ? containerName : `/${containerName}`,
+  };
+  if (opts.dockerContext) payload.settings = { context: opts.dockerContext };
+  const hex = Buffer.from(JSON.stringify(payload), 'utf8').toString('hex');
+  return `vscode-remote://attached-container+${hex}${workspacePath}`;
 }
 
 /**

@@ -19,17 +19,26 @@ describe('renderFooter — idle (claude mode)', () => {
     mode: 'claude',
   };
 
-  it('renders the dashboard-style brand chip + name + session title + detach hint', () => {
+  it('renders the brand chip + name + session title + collapsed hint with pinned detach', () => {
     const out = visible(renderFooter(idle, 100));
     expect(out).toContain('agentbox ▸');
     expect(out).toContain('smoke');
     expect(out).toContain('(working)');
     expect(out).toContain('Edit src/foo.ts');
-    expect(out).toContain('Control+a q');
-    expect(out).toContain('detach');
+    expect(out).toContain('Control+a: Actions');
+    // detach stays pinned on the right even while the menu is collapsed
+    expect(out).toContain('Control+a q: detach');
   });
 
-  it('drops the title when the bar is too narrow but keeps brand + hint', () => {
+  it('keeps the detach chord pinned, dropping `Actions` first, on a narrow bar', () => {
+    const out = visible(renderFooter(idle, 60));
+    expect(out).toContain('agentbox ▸');
+    expect(out).toContain('Control+a q: detach');
+    // the lower-priority `Actions` hint is dropped to make room
+    expect(out).not.toContain('Actions');
+  });
+
+  it('drops the title when the bar is too narrow but keeps brand + detach', () => {
     const out = visible(renderFooter(idle, 50));
     expect(out).toContain('agentbox ▸');
     expect(out).toContain('smoke');
@@ -43,9 +52,19 @@ describe('renderFooter — idle (claude mode)', () => {
       renderFooter({ kind: 'idle', boxName: 'b', mode: 'claude' }, 100),
     );
     expect(out).toContain('agentbox ▸');
-    expect(out).toContain('Control+a q');
+    expect(out).toContain('Control+a');
     // dashboard's statusLine falls back to `(unknown)` when activity is absent.
     expect(out).toContain('(unknown)');
+  });
+
+  it('expands to the chord menu while the leader is active', () => {
+    const out = visible(renderFooter({ ...idle, leaderActive: true }, 120));
+    expect(out).toContain('c: code');
+    expect(out).toContain('v: vnc');
+    expect(out).toContain('b: browser');
+    expect(out).toContain('q: detach');
+    // the collapsed `Actions` label is replaced by the chords
+    expect(out).not.toContain('Actions');
   });
 });
 
@@ -56,13 +75,43 @@ describe('renderFooter — idle (shell mode)', () => {
     mode: 'shell',
   };
 
-  it('renders the brand chip + name without a detach chord', () => {
+  it('renders the brand chip + name with the collapsed actions hint', () => {
     const out = visible(renderFooter(idle, 80));
     expect(out).toContain('agentbox ▸');
     expect(out).toContain('smoke');
     expect(out).toContain('(shell)');
-    expect(out).not.toContain('Control+a');
+    expect(out).toContain('Control+a');
+    expect(out).toContain('Actions');
+  });
+
+  it('expands to a chord menu without a detach entry while the leader is active', () => {
+    const out = visible(renderFooter({ ...idle, leaderActive: true }, 120));
+    expect(out).toContain('c: code');
+    expect(out).toContain('v: vnc');
+    expect(out).toContain('b: browser');
+    // shell has nothing to detach from
     expect(out).not.toContain('detach');
+  });
+});
+
+describe('renderFooter — flash', () => {
+  const flash: FooterState = { kind: 'flash', message: 'Opening noVNC viewer…' };
+
+  it('shows the message with a leading marker', () => {
+    const out = visible(renderFooter(flash, 80));
+    expect(out).toContain('▸');
+    expect(out).toContain('Opening noVNC viewer…');
+  });
+
+  it('truncates a long message with an ellipsis on a narrow bar', () => {
+    const out = visible(
+      renderFooter({ kind: 'flash', message: 'A'.repeat(120) }, 24),
+    );
+    expect(out).toContain('…');
+  });
+
+  it('ends with SGR reset', () => {
+    expect(renderFooter(flash, 60)).toMatch(/\x1b\[0m$/);
   });
 });
 

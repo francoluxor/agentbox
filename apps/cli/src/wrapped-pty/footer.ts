@@ -5,7 +5,8 @@ import type { PromptAskEvent } from '@agentbox/relay';
  * Footer rendering state. `idle` reuses the dashboard's `statusLine` shape
  * (brand chip + box name + optional session title + right-aligned hint);
  * `prompt` is shown while a `prompt-ask` event is being captured; `notice`
- * is an animated informational warning (e.g. checkpoint in progress).
+ * is an animated informational warning (e.g. checkpoint in progress);
+ * `flash` is a transient confirmation after a Ctrl+a action fires.
  */
 export type FooterState =
   | {
@@ -17,9 +18,12 @@ export type FooterState =
       /** Claude activity hint shown in `(<state>)` after the name. Same field
        *  the dashboard sidebar uses (`working` / `idle` / `waiting` / etc.). */
       claudeActivity?: string;
-      /** Mode drives the right-aligned hint: claude → `Control+a q: detach`;
-       *  shell → no hints (no leader chord in plain bash). */
+      /** Mode drives the expanded leader menu: claude includes `q: detach`,
+       *  shell does not. */
       mode: 'claude' | 'shell';
+      /** True while the Ctrl+a leader menu is open — swaps the collapsed
+       *  `Control+a: Actions` hint for the expanded chord list. */
+      leaderActive?: boolean;
     }
   | { kind: 'prompt'; prompt: PromptAskEvent }
   | {
@@ -28,6 +32,11 @@ export type FooterState =
       message: string;
       /** Monotonic counter; the spinner glyph is `SPINNER_FRAMES[frame % len]`. */
       frame: number;
+    }
+  | {
+      kind: 'flash';
+      /** Transient confirmation text, e.g. "Opening noVNC viewer…". */
+      message: string;
     };
 
 /**
@@ -47,14 +56,37 @@ const RESET = '\x1b[0m';
 // unmissable — deliberately louder than the dim-on-dark idle/prompt bars.
 const NOTICE_BG = '\x1b[48;5;220m'; // bright yellow background
 const NOTICE_FG = '\x1b[38;5;16m\x1b[1m'; // near-black + bold text
+// Flash footer = a calm one-line confirmation on the normal dark bar.
+const FLASH_FG = '\x1b[38;5;150m\x1b[1m'; // soft green + bold
 
-/** Hint groups passed to `statusLine`. Claude mode shows just the detach
- *  chord — no `code`/`vnc`/`web` shortcuts here (the wrapper isn't the
- *  dashboard; those wouldn't do anything). */
-const CLAUDE_IDLE_HINTS: ReadonlyArray<readonly [string, string]> = [
+/** Collapsed idle hint (shell) — the leader is hidden behind one chord. */
+const COLLAPSED_HINTS_SHELL: ReadonlyArray<readonly [string, string]> = [
+  ['Control+a', 'Actions'],
+];
+/** Collapsed idle hint (claude) — the detach chord stays pinned on the right
+ *  even while the actions menu is closed. */
+const COLLAPSED_HINTS_CLAUDE: ReadonlyArray<readonly [string, string]> = [
+  ['Control+a', 'Actions'],
   ['Control+a q', 'detach'],
 ];
-const SHELL_IDLE_HINTS: ReadonlyArray<readonly [string, string]> = [];
+/** Narrow-bar fallback for claude: drop the `Actions` hint first, but never
+ *  the detach chord. */
+const DETACH_PIN_HINTS: ReadonlyArray<readonly [string, string]> = [
+  ['Control+a q', 'detach'],
+];
+/** Expanded which-key menu shown while the Ctrl+a leader is open. Claude
+ *  also gets `q: detach`; shell has nothing to detach from. */
+const CLAUDE_LEADER_HINTS: ReadonlyArray<readonly [string, string]> = [
+  ['c', 'code'],
+  ['v', 'vnc'],
+  ['b', 'browser'],
+  ['q', 'detach'],
+];
+const SHELL_LEADER_HINTS: ReadonlyArray<readonly [string, string]> = [
+  ['c', 'code'],
+  ['v', 'vnc'],
+  ['b', 'browser'],
+];
 
 /**
  * Truncate `s` to exactly `width` visible columns, padding with spaces when
@@ -84,12 +116,27 @@ export function renderFooter(state: FooterState, cols: number): string {
       claudeActivity: state.claudeActivity,
       sessionTitle: state.sessionTitle,
     };
-    const hints = state.mode === 'claude' ? CLAUDE_IDLE_HINTS : SHELL_IDLE_HINTS;
+    const isClaude = state.mode === 'claude';
     // Shell mode has no claude activity to surface — passing `stateLabel`
     // overrides statusLine's default (which would otherwise show `(unknown)`
     // because `claudeActivity` is undefined and the container is running).
-    const stateLabel = state.mode === 'shell' ? 'shell' : undefined;
-    return statusLine(sidebarBox, cols, stateLabel, hints);
+    const stateLabel = isClaude ? undefined : 'shell';
+    if (state.leaderActive) {
+      const leaderHints = isClaude ? CLAUDE_LEADER_HINTS : SHELL_LEADER_HINTS;
+      return statusLine(sidebarBox, cols, stateLabel, leaderHints);
+    }
+    // Collapsed: claude keeps the detach chord pinned on the right (its
+    // narrow-bar fallback drops `Actions` first, never `detach`).
+    const collapsed = isClaude ? COLLAPSED_HINTS_CLAUDE : COLLAPSED_HINTS_SHELL;
+    const fallback = isClaude ? DETACH_PIN_HINTS : undefined;
+    return statusLine(sidebarBox, cols, stateLabel, collapsed, fallback);
+  }
+  if (state.kind === 'flash') {
+    // Flash state: a brief "<arrow> <message>" confirmation on the dark bar.
+    const prefix = ' ▸ '; // ▸
+    const inner = Math.max(0, cols - prefix.length);
+    const message = padTo(state.message, inner);
+    return `${BAR_BG}${FLASH_FG}${prefix}${TXT}${message}${RESET}`;
   }
   if (state.kind === 'notice') {
     // Notice state: "<spinner> <message>" rendered as a full-width

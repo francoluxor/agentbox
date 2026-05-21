@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { createInputRouter } from '../../src/wrapped-pty/input-router.js';
+import {
+  createInputRouter,
+  type LeaderAction,
+} from '../../src/wrapped-pty/input-router.js';
 import type { PromptAnswerBody } from '@agentbox/relay';
 
 interface Setup {
@@ -26,10 +29,141 @@ describe('input router (steady state)', () => {
     expect(s.answers).toHaveLength(0);
   });
 
-  it('forwards a binary control byte (Ctrl-a) unchanged', () => {
-    const s = setup();
-    s.router.feed(Buffer.from([0x01])); // Ctrl-a — used by tmux as a prefix; must reach pty intact
+  it('forwards a binary control byte (Ctrl-a) unchanged when the leader is disabled', () => {
+    const s = setup(); // no leaderChords → Ctrl-a is a plain byte
+    s.router.feed(Buffer.from([0x01]));
     expect(s.forwarded[0]).toEqual(Buffer.from([0x01]));
+  });
+});
+
+interface LeaderSetup {
+  forwarded: Buffer[];
+  leaderEvents: boolean[];
+  actions: LeaderAction[];
+  router: ReturnType<typeof createInputRouter>;
+  fire: () => void;
+}
+
+function leaderSetup(): LeaderSetup {
+  const forwarded: Buffer[] = [];
+  const leaderEvents: boolean[] = [];
+  const actions: LeaderAction[] = [];
+  const timers: Array<{ id: number; fn: () => void }> = [];
+  let seq = 0;
+  const router = createInputRouter({
+    onForward: (b) => forwarded.push(b),
+    onAnswer: () => {},
+    leaderChords: { c: 'code', v: 'vnc', b: 'browser', q: 'detach' },
+    onLeaderChange: (open) => leaderEvents.push(open),
+    onAction: (n) => actions.push(n),
+    setTimer: (_ms, fn) => {
+      const id = ++seq;
+      timers.push({ id, fn });
+      return id;
+    },
+    clearTimer: (h) => {
+      const i = timers.findIndex((t) => t.id === h);
+      if (i >= 0) timers.splice(i, 1);
+    },
+  });
+  const fire = (): void => {
+    const cur = timers.splice(0, timers.length);
+    for (const t of cur) t.fn();
+  };
+  return { forwarded, leaderEvents, actions, router, fire };
+}
+
+const fwd = (s: LeaderSetup): string => Buffer.concat(s.forwarded).toString('latin1');
+
+describe('input router (Ctrl+a leader)', () => {
+  it('Ctrl+a opens the menu without forwarding the byte', () => {
+    const s = leaderSetup();
+    s.router.feed(Buffer.from([0x01]));
+    expect(s.leaderEvents).toEqual([true]);
+    expect(fwd(s)).toBe('');
+    expect(s.actions).toHaveLength(0);
+  });
+
+  it('c / v / b / q dispatch their actions and close the menu', () => {
+    const s = leaderSetup();
+    s.router.feed(Buffer.from([0x01, 0x63])); // ^A c
+    s.router.feed(Buffer.from([0x01, 0x76])); // ^A v
+    s.router.feed(Buffer.from([0x01, 0x62])); // ^A b
+    s.router.feed(Buffer.from([0x01, 0x71])); // ^A q
+    expect(s.actions).toEqual(['code', 'vnc', 'browser', 'detach']);
+    expect(s.leaderEvents).toEqual([true, false, true, false, true, false, true, false]);
+    expect(fwd(s)).toBe('');
+  });
+
+  it('chord matching is case-insensitive', () => {
+    const s = leaderSetup();
+    s.router.feed(Buffer.from([0x01, 0x56])); // ^A V
+    expect(s.actions).toEqual(['vnc']);
+  });
+
+  it('double Ctrl+a sends one literal Ctrl+a and closes the menu', () => {
+    const s = leaderSetup();
+    s.router.feed(Buffer.from([0x01, 0x01]));
+    expect(fwd(s)).toBe('\x01');
+    expect(s.actions).toHaveLength(0);
+    expect(s.leaderEvents).toEqual([true, false]);
+  });
+
+  it('an unrecognized chord closes the menu and forwards the key', () => {
+    const s = leaderSetup();
+    s.router.feed(Buffer.from([0x01, 0x7a])); // ^A z
+    expect(fwd(s)).toBe('z');
+    expect(s.actions).toHaveLength(0);
+    expect(s.leaderEvents).toEqual([true, false]);
+  });
+
+  it('Esc dismisses the menu without forwarding anything', () => {
+    const s = leaderSetup();
+    s.router.feed(Buffer.from([0x01, 0x1b]));
+    expect(fwd(s)).toBe('');
+    expect(s.actions).toHaveLength(0);
+    expect(s.leaderEvents).toEqual([true, false]);
+  });
+
+  it('the menu auto-closes after the timeout (nothing forwarded)', () => {
+    const s = leaderSetup();
+    s.router.feed(Buffer.from([0x01]));
+    expect(s.leaderEvents).toEqual([true]);
+    s.fire();
+    expect(s.leaderEvents).toEqual([true, false]);
+    expect(fwd(s)).toBe('');
+  });
+
+  it('bytes typed before Ctrl+a are forwarded; the chord still fires', () => {
+    const s = leaderSetup();
+    s.router.feed(Buffer.from('hi\x01v', 'latin1'));
+    expect(fwd(s)).toBe('hi');
+    expect(s.actions).toEqual(['vnc']);
+  });
+
+  it('a chord split across two reads still resolves', () => {
+    const s = leaderSetup();
+    s.router.feed(Buffer.from([0x01]));
+    s.router.feed(Buffer.from([0x76])); // 'v'
+    expect(s.actions).toEqual(['vnc']);
+    expect(s.leaderEvents).toEqual([true, false]);
+  });
+
+  it('forwards plain input unchanged when no leader byte is present', () => {
+    const s = leaderSetup();
+    s.router.feed(Buffer.from('echo hi\r'));
+    expect(fwd(s)).toBe('echo hi\r');
+    expect(s.leaderEvents).toHaveLength(0);
+  });
+
+  it('a relay prompt cancels an open leader and still captures the answer', async () => {
+    const s = leaderSetup();
+    s.router.feed(Buffer.from([0x01]));
+    expect(s.leaderEvents).toEqual([true]);
+    const p = s.router.capture({ id: 'q', kind: 'confirm', message: 'go?' });
+    expect(s.leaderEvents).toEqual([true, false]);
+    s.router.feed(Buffer.from('y'));
+    await expect(p).resolves.toEqual({ id: 'q', answer: 'y' });
   });
 });
 

@@ -320,13 +320,16 @@ export const ADVANCED_HINT_GROUPS: ReadonlyArray<readonly [string, string]> = [
  * footer (dark bar, blue ` agentbox ▸ … ` brand block on the left, dim-grey
  * shortcut hints on the right). `stateLabel` overrides the box's activity text
  * (used for `shell` / `menu` panes where claudeActivity would otherwise show a
- * misleading `unknown`).
+ * misleading `unknown`). `fallbackGroups`, when given, is the narrow-bar tier
+ * tried before brand-core-only — used to keep one essential chord pinned
+ * (instead of the default dashboard `COLLAPSED_HINT_GROUPS`).
  */
 export function statusLine(
   box: SidebarBox | undefined,
   w: number,
   stateLabel?: string,
   groups: ReadonlyArray<readonly [string, string]> = HINT_GROUPS,
+  fallbackGroups?: ReadonlyArray<readonly [string, string]>,
 ): string {
   const state =
     stateLabel ?? (box ? (box.state === 'running' ? (box.claudeActivity ?? 'unknown') : box.state) : '');
@@ -348,11 +351,12 @@ export function statusLine(
   });
 
   // Hint tier: shortcuts beat the title. Try the requested groups; if the
-  // brand core + those hints overflow, fall back to the minimal leader hint;
+  // brand core + those hints overflow, fall back to the narrow-bar tier
+  // (`fallbackGroups` if supplied, else the dashboard's minimal leader hint);
   // if even that overflows, render brand-core-only (title can never push the
   // box name off-screen).
   let hints: { plain: string; styled: string } | null = null;
-  for (const g of [groups, COLLAPSED_HINT_GROUPS]) {
+  for (const g of [groups, fallbackGroups ?? COLLAPSED_HINT_GROUPS]) {
     const h = renderHints(g);
     if (corePlain.length + h.plain.length + 1 <= w) {
       hints = h;

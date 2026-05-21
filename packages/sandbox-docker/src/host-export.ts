@@ -55,6 +55,21 @@ export function __setEngineForTesting(engine: DockerEngine | null): void {
   cachedEngine = engine;
 }
 
+/**
+ * The active Docker context name — `docker context show` (which honors the
+ * `DOCKER_CONTEXT` / `DOCKER_HOST` overrides and `~/.docker/config.json`'s
+ * `currentContext`). Embedded in the VS Code attached-container URI so the
+ * Dev Containers extension talks to the same daemon agentbox used — without
+ * it, switching engines (OrbStack ⇄ Docker Desktop) makes the extension probe
+ * the wrong daemon. Best-effort: returns undefined if the probe fails.
+ */
+export async function getDockerContext(): Promise<string | undefined> {
+  const result = await execa('docker', ['context', 'show'], { reject: false });
+  if (result.exitCode !== 0) return undefined;
+  const ctx = (result.stdout ?? '').trim();
+  return ctx.length > 0 ? ctx : undefined;
+}
+
 export const BOXES_ROOT = join(homedir(), '.agentbox', 'boxes');
 
 /** Box-identity subset every dir helper accepts. Structurally compatible with

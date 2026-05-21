@@ -4,9 +4,10 @@ import { Command, InvalidArgumentError } from 'commander';
 import type { StatusReply, WaitReadyReply } from '@agentbox/ctl';
 import { loadEffectiveConfig, type IdeFlavor as ConfigIdeFlavor, type UserConfig } from '@agentbox/config';
 import {
-  containerHex,
+  attachedContainerUri,
   ensureAgentboxTasksFile,
   execInBox,
+  getDockerContext,
   ideProfile,
   inspectBox,
   startBox,
@@ -17,9 +18,11 @@ import { resolveBoxOrExit } from '../box-ref.js';
 import { handleLifecycleError } from './_errors.js';
 
 interface CodeOptions {
-  noWait?: boolean;
+  // commander stores `--no-wait` / `--no-auto-terminals` under the positive
+  // key (`wait` / `autoTerminals`), defaulting to true and flipping to false.
+  wait?: boolean;
   timeout?: string;
-  noAutoTerminals?: boolean;
+  autoTerminals?: boolean;
   regenTasks?: boolean;
   print?: boolean;
   ide?: IdeFlavor;
@@ -28,8 +31,8 @@ interface CodeOptions {
 function buildCodeCliOverrides(opts: CodeOptions): Partial<UserConfig> {
   const code: NonNullable<UserConfig['code']> = {};
   if (opts.ide !== undefined) code.ide = opts.ide as ConfigIdeFlavor;
-  if (opts.noWait === true) code.wait = false;
-  if (opts.noAutoTerminals === true) code.autoTerminals = false;
+  if (opts.wait === false) code.wait = false;
+  if (opts.autoTerminals === false) code.autoTerminals = false;
   if (opts.timeout !== undefined) {
     const n = Number(opts.timeout);
     if (Number.isFinite(n) && Number.isInteger(n)) code.timeoutMs = n;
@@ -124,7 +127,12 @@ export const codeCommand = new Command('code')
         }
       }
 
-      const folderUri = `vscode-remote://attached-container+${containerHex(box.container)}/workspace`;
+      // Embed the active Docker context so the Dev Containers extension
+      // attaches via the same daemon agentbox used — without it, switching
+      // engines (OrbStack ⇄ Docker Desktop) makes it probe the wrong daemon
+      // and report the container as non-existent.
+      const dockerContext = await getDockerContext();
+      const folderUri = attachedContainerUri(box.container, { dockerContext });
       if (opts.print) {
         process.stdout.write(folderUri + '\n');
         return;
