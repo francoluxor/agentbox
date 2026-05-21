@@ -38,6 +38,14 @@ function reattachRef(r: { projectIndex?: number; name: string }): string {
   return typeof r.projectIndex === 'number' ? String(r.projectIndex) : r.name;
 }
 
+/** Log how much the plugin-cache prune reclaimed, when it reclaimed anything. */
+function logPrune(rebuild: { pruned: string[]; prunedBytes: number }): void {
+  if (rebuild.prunedBytes <= 0) return;
+  const mb = Math.round(rebuild.prunedBytes / 1024 / 1024);
+  const n = rebuild.pruned.length;
+  log.info(`pruned ${String(n)} stale plugin cache${n === 1 ? '' : 's'} (${String(mb)} MB freed)`);
+}
+
 /** Host-side URL for the relay (always loopback for the wrapper's SSE subscription). */
 const RELAY_HOST_URL = `http://127.0.0.1:${String(DEFAULT_RELAY_PORT)}`;
 
@@ -307,6 +315,7 @@ export const claudeCommand = new Command('claude')
           ? `  ·  n ${String(result.record.projectIndex)}`
           : '';
       s.stop(`box ${result.record.container} ready${nSuffix}`);
+      logPrune(rebuild);
       for (const f of rebuild.failed) {
         log.warn(`plugin install failed for ${f.dir}; claude may still load it. stderr:\n${f.stderr.trim()}`);
       }
@@ -444,6 +453,7 @@ async function startOrAttachClaude(
   });
 
   s.stop(`box ${box.container} ready`);
+  logPrune(rebuild);
   for (const f of rebuild.failed) {
     log.warn(`plugin install failed for ${f.dir}; claude may still load it. stderr:\n${f.stderr.trim()}`);
   }

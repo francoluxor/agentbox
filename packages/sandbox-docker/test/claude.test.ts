@@ -241,20 +241,36 @@ describe('buildClaudeMounts', () => {
 });
 
 describe('scanPluginCacheForRebuild', () => {
-  let root: string;
-  const versionDir = (m: string, p: string, v: string) =>
-    join(root, m, p, v);
+  // Real layout: <pluginsDir>/cache/<m>/<p>/<v> + <pluginsDir>/installed_plugins.json.
+  let pluginsDir: string;
+  let root: string; // the cache dir passed to scanPluginCacheForRebuild
+  const versionDir = (m: string, p: string, v: string) => join(root, m, p, v);
   const seed = async (m: string, p: string, v: string, files: string[]) => {
     const d = versionDir(m, p, v);
     await mkdir(d, { recursive: true });
     for (const f of files) await writeFile(join(d, f), '{}');
   };
+  /** Write installed_plugins.json referencing the given `<m>/<p>/<v>` keys. */
+  const writeInstalledPlugins = async (keys: string[]) => {
+    const plugins: Record<string, Array<{ installPath: string }>> = {};
+    keys.forEach((key, i) => {
+      plugins[`p${String(i)}@mkt`] = [
+        { installPath: `/home/vscode/.claude/plugins/cache/${key}` },
+      ];
+    });
+    await writeFile(
+      join(pluginsDir, 'installed_plugins.json'),
+      JSON.stringify({ version: 2, plugins }),
+    );
+  };
 
   beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), 'agentbox-cache-'));
+    pluginsDir = await mkdtemp(join(tmpdir(), 'agentbox-plugins-'));
+    root = join(pluginsDir, 'cache');
+    await mkdir(root, { recursive: true });
   });
   afterEach(async () => {
-    await rm(root, { recursive: true, force: true });
+    await rm(pluginsDir, { recursive: true, force: true });
   });
 
   it('returns false when the cache root does not exist', async () => {
@@ -286,6 +302,26 @@ describe('scanPluginCacheForRebuild', () => {
     await seed('mkt', 'flaky', '1.0.0', ['package.json', '.agentbox-install-failed']);
     const stale = new Date(Date.now() - 7 * 60 * 60 * 1000); // > 6h backoff
     await utimes(versionDir('mkt', 'flaky', '1.0.0') + '/.agentbox-install-failed', stale, stale);
+    expect(await scanPluginCacheForRebuild(root)).toBe(true);
+  });
+
+  it('does not count an unreferenced un-marked plugin version as rebuild work', async () => {
+    await seed('mkt', 'a', '2.0.0', ['package.json', '.agentbox-installed']); // current
+    await seed('mkt', 'a', '1.0.0', ['package.json']); // stale leftover, un-marked
+    await writeInstalledPlugins(['mkt/a/2.0.0']);
+    expect(await scanPluginCacheForRebuild(root)).toBe(false);
+  });
+
+  it('still counts a referenced un-marked plugin version as rebuild work', async () => {
+    await seed('mkt', 'a', '2.0.0', ['package.json']); // referenced, un-marked
+    await seed('mkt', 'a', '1.0.0', ['package.json']); // stale leftover
+    await writeInstalledPlugins(['mkt/a/2.0.0']);
+    expect(await scanPluginCacheForRebuild(root)).toBe(true);
+  });
+
+  it('falls back to counting all un-marked plugins when installed_plugins.json is absent', async () => {
+    await seed('mkt', 'a', '1.0.0', ['package.json']);
+    await seed('mkt', 'a', '2.0.0', ['package.json']);
     expect(await scanPluginCacheForRebuild(root)).toBe(true);
   });
 });

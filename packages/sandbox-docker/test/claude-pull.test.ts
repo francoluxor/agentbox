@@ -3,6 +3,7 @@ import {
   mergeInstalledPlugins,
   mergeKnownMarketplaces,
   pickNewItems,
+  referencedPluginVersionKeys,
   SKILL_EXCLUDE_PREFIXES,
 } from '../src/claude-pull.js';
 
@@ -112,5 +113,64 @@ describe('mergeInstalledPlugins', () => {
     const box = { version: 2, plugins: { 'a@mkt': [{ installPath: '/home/vscode/.claude/plugins/cache/mkt/a/unknown' }] } };
     const r = mergeInstalledPlugins(host, box, { hostHome });
     expect(r.changed).toBe(false);
+  });
+});
+
+describe('referencedPluginVersionKeys', () => {
+  it('reduces each installPath to its <m>/<p>/<v> key (container paths)', () => {
+    const json = {
+      version: 2,
+      plugins: {
+        'vercel@cpo': [
+          { scope: 'user', installPath: '/home/vscode/.claude/plugins/cache/cpo/vercel/0.42.1' },
+        ],
+        'figma@cpo': [
+          { scope: 'user', installPath: '/home/vscode/.claude/plugins/cache/cpo/figma/2.2.12' },
+        ],
+      },
+    };
+    expect(referencedPluginVersionKeys(json)).toEqual(
+      new Set(['cpo/vercel/0.42.1', 'cpo/figma/2.2.12']),
+    );
+  });
+
+  it('works on host-rooted installPaths and an "unknown" version segment', () => {
+    const json = {
+      plugins: {
+        'a@mkt': [{ installPath: '/Users/marco/.claude/plugins/cache/mkt/a/unknown' }],
+      },
+    };
+    expect(referencedPluginVersionKeys(json)).toEqual(new Set(['mkt/a/unknown']));
+  });
+
+  it('keeps every version when one plugin is referenced under two scopes', () => {
+    const json = {
+      plugins: {
+        'a@mkt': [
+          { scope: 'user', installPath: '/home/vscode/.claude/plugins/cache/mkt/a/2.0.0' },
+          { scope: 'project', installPath: '/home/vscode/.claude/plugins/cache/mkt/a/1.0.0' },
+        ],
+      },
+    };
+    expect(referencedPluginVersionKeys(json)).toEqual(
+      new Set(['mkt/a/2.0.0', 'mkt/a/1.0.0']),
+    );
+  });
+
+  it('skips entries with no usable installPath', () => {
+    const json = {
+      plugins: {
+        'a@mkt': [{ scope: 'user' }, { installPath: 42 }, { installPath: 'too/short' }],
+        'b@mkt': [{ installPath: '/home/vscode/.claude/plugins/cache/mkt/b/1.0.0' }],
+      },
+    };
+    expect(referencedPluginVersionKeys(json)).toEqual(new Set(['mkt/b/1.0.0']));
+  });
+
+  it('returns an empty set for missing / non-object / structureless input', () => {
+    expect(referencedPluginVersionKeys(undefined)).toEqual(new Set());
+    expect(referencedPluginVersionKeys('garbage')).toEqual(new Set());
+    expect(referencedPluginVersionKeys({})).toEqual(new Set());
+    expect(referencedPluginVersionKeys({ plugins: [] })).toEqual(new Set());
   });
 });

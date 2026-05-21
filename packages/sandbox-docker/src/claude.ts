@@ -13,6 +13,7 @@ import {
   mergeInstalledPlugins,
   mergeKnownMarketplaces,
   pickNewItems,
+  referencedPluginVersionKeys,
   SKILL_EXCLUDE_PREFIXES,
 } from './claude-pull.js';
 import { ensureVolume, volumeExists } from './docker.js';
@@ -504,6 +505,13 @@ export interface RebuildPluginNativeDepsResult {
   /** Plugin cache directories where install failed; non-fatal, claude often still loads. */
   failed: Array<{ dir: string; stderr: string }>;
   /**
+   * Stale plugin-version cache dirs (`<m>/<p>/<v>`, not referenced by
+   * `installed_plugins.json`) whose `node_modules` was pruned during this call.
+   */
+  pruned: string[];
+  /** Total bytes freed by {@link RebuildPluginNativeDepsResult.pruned}. */
+  prunedBytes: number;
+  /**
    * True when the in-box exec was skipped entirely because a host-side scan
    * proved every package.json-bearing plugin already carries its install
    * marker. Only possible when the volume is host-visible (OrbStack).
@@ -566,14 +574,36 @@ async function isDir(p: string): Promise<boolean> {
 }
 
 /**
+ * Read `installed_plugins.json` next to a plugin cache dir and reduce it to the
+ * set of `<m>/<p>/<v>` version keys it actively references. Missing/unparseable
+ * file -> empty set ("can't determine"), which callers treat as "apply no
+ * reference-based filtering".
+ */
+async function readReferencedPluginKeys(installedPluginsJsonPath: string): Promise<Set<string>> {
+  try {
+    const raw = await readFile(installedPluginsJsonPath, 'utf8');
+    return referencedPluginVersionKeys(JSON.parse(raw) as unknown);
+  } catch {
+    return new Set<string>();
+  }
+}
+
+/**
  * Pure host-side scan of a plugin `cache/<m>/<p>/<v>/` tree. Returns true iff
  * at least one version dir has a `package.json`, no install marker, and no
  * *recent* failure marker — i.e. the in-box rebuild would actually do npm
  * work. A missing/empty cache root means nothing to do (false). Mirrors the
  * in-box script's accept/skip rules (`packages/sandbox-docker/src/claude.ts`
  * rebuild script) so the host pre-check and the container never disagree.
+ *
+ * When the sibling `installed_plugins.json` yields a non-empty referenced set,
+ * unreferenced version dirs are ignored here exactly as the in-box loop skips
+ * installing them (prevention) — a stale dir is never "rebuild work".
  */
 export async function scanPluginCacheForRebuild(cacheRoot: string): Promise<boolean> {
+  const referenced = await readReferencedPluginKeys(
+    join(cacheRoot, '..', 'installed_plugins.json'),
+  );
   let marketplaces;
   try {
     marketplaces = await readdir(cacheRoot, { withFileTypes: true });
@@ -600,6 +630,7 @@ export async function scanPluginCacheForRebuild(cacheRoot: string): Promise<bool
       }
       for (const v of versions) {
         if (!v.isDirectory()) continue;
+        if (referenced.size > 0 && !referenced.has(`${m.name}/${p.name}/${v.name}`)) continue;
         const vPath = join(pPath, v.name);
         if (!(await isFile(join(vPath, 'package.json')))) continue;
         if (await isFile(join(vPath, PLUGIN_INSTALLED_MARKER))) continue;
@@ -645,7 +676,36 @@ async function resolveClaudeCacheLiveOnHost(volume: string): Promise<string | nu
  * Failures on individual plugins are reported but don't throw — most
  * plugins still load with a partial dependency graph, and we prefer
  * launching claude over blocking on a third-party plugin's install hiccup.
+ *
+ * When this pass runs at all (i.e. a plugin difference was detected, so a
+ * rebuild is warranted) it also **prunes** stale plugin-version dirs: when
+ * Claude updates a plugin it leaves the old `cache/<m>/<p>/<v>/` dir on disk,
+ * and its ~hundreds-of-MB `node_modules` would otherwise live forever in the
+ * shared claude-config volume. Any version dir not referenced by
+ * `installed_plugins.json` has its `node_modules` (and our markers) removed,
+ * and the install loop never (re)installs into an unreferenced dir.
  */
+async function readBoxReferencedPluginKeys(container: string): Promise<Set<string>> {
+  const res = await execa(
+    'docker',
+    [
+      'exec',
+      '--user',
+      CONTAINER_USER,
+      container,
+      'cat',
+      `${CONTAINER_CLAUDE_DIR}/plugins/installed_plugins.json`,
+    ],
+    { reject: false },
+  );
+  if (res.exitCode !== 0 || !res.stdout) return new Set<string>();
+  try {
+    return referencedPluginVersionKeys(JSON.parse(res.stdout) as unknown);
+  } catch {
+    return new Set<string>();
+  }
+}
+
 export async function rebuildPluginNativeDeps(
   container: string,
   opts: {
@@ -662,12 +722,21 @@ export async function rebuildPluginNativeDeps(
   if (opts.volume) {
     const cacheRoot = await resolveClaudeCacheLiveOnHost(opts.volume);
     if (cacheRoot && !(await scanPluginCacheForRebuild(cacheRoot))) {
-      return { rebuilt: [], failed: [], skipped: true };
+      return { rebuilt: [], failed: [], pruned: [], prunedBytes: 0, skipped: true };
     }
   }
+  // Reference set from the box's installed_plugins.json: version dirs Claude no
+  // longer points at are stale. An empty set (file missing / unparseable)
+  // disables both prevention and the prune pass — the script then behaves
+  // exactly as it did before this feature.
+  const referenced = await readBoxReferencedPluginKeys(container);
+  const refSetup =
+    referenced.size > 0
+      ? `cat <<'AGENTBOX_REF_EOF' > "$WORK/referenced"\n${[...referenced].sort().join('\n')}\nAGENTBOX_REF_EOF\n`
+      : '';
   // The host parser below expects the REBUILD_START / REBUILD_OK /
-  // REBUILD_FAIL..REBUILD_FAIL_END protocol; parallel jobs write per-dir
-  // result+stderr files and we replay them in that protocol after `wait`.
+  // REBUILD_FAIL..REBUILD_FAIL_END protocol (plus PRUNE_OK lines); parallel
+  // jobs write per-dir result+stderr files and we replay them after `wait`.
   const script = `set -u
 PLUGINS_DIR=/home/vscode/.claude/plugins/cache
 MARKER=${PLUGIN_INSTALLED_MARKER}
@@ -678,7 +747,12 @@ MAX=4
 [ -d "$PLUGINS_DIR" ] || exit 0
 mkdir -p "$NPM_CACHE"
 WORK=\$(mktemp -d)
-relkey() { printf '%s' "\${1#$PLUGINS_DIR/}" | tr '/' '_'; }
+${refSetup}relkey() { printf '%s' "\${1#$PLUGINS_DIR/}" | tr '/' '_'; }
+# True when refs are unknown (no file) or $1 (<m>/<p>/<v>) is referenced.
+is_referenced() {
+  [ -s "$WORK/referenced" ] || return 0
+  grep -Fxq "$1" "$WORK/referenced"
+}
 # Run one plugin's install. $1 is frozen by value at call time, so it's safe
 # to read from the backgrounded subshell; the rest are set-once constants.
 do_one() {
@@ -698,10 +772,29 @@ do_one() {
     printf 'FAIL\\n' > "$WORK/$key.res"
   fi
 }
+# Prune pass: every unreferenced (stale) version dir loses its node_modules and
+# our markers. Only runs when installed_plugins.json gave us a reference set.
+if [ -s "$WORK/referenced" ]; then
+  for dir in "$PLUGINS_DIR"/*/*/*/; do
+    [ -d "$dir" ] || continue
+    rel=\${dir%/}; rel=\${rel#$PLUGINS_DIR/}
+    grep -Fxq "$rel" "$WORK/referenced" && continue
+    if [ -d "$dir/node_modules" ]; then
+      bytes=\$(du -sb "$dir/node_modules" 2>/dev/null | cut -f1)
+      [ -n "$bytes" ] || bytes=0
+      rm -rf "$dir/node_modules" "$dir/$MARKER" "$dir/$FAILMARKER"
+      echo "PRUNE_OK $rel $bytes"
+    else
+      rm -f "$dir/$MARKER" "$dir/$FAILMARKER"
+    fi
+  done
+fi
 n=0
 for dir in "$PLUGINS_DIR"/*/*/*/; do
   [ -d "$dir" ] || continue
   [ -f "$dir/package.json" ] || continue
+  rel=\${dir%/}; rel=\${rel#$PLUGINS_DIR/}
+  is_referenced "$rel" || continue
   [ -f "$dir/$MARKER" ] && continue
   [ -n "\$(find "$dir" -maxdepth 1 -name "$FAILMARKER" -mmin -\$BACKOFF_MIN 2>/dev/null)" ] && continue
   echo "REBUILD_START \${dir#$PLUGINS_DIR/}"
@@ -738,6 +831,8 @@ rm -rf "$WORK"
   );
   const rebuilt: string[] = [];
   const failed: Array<{ dir: string; stderr: string }> = [];
+  const pruned: string[] = [];
+  let prunedBytes = 0;
   const lines = (result.stdout ?? '').split('\n');
   let collectingFail: { dir: string; stderr: string[] } | null = null;
   for (const line of lines) {
@@ -756,9 +851,20 @@ rm -rf "$WORK"
       rebuilt.push(line.slice('REBUILD_OK '.length));
     } else if (line.startsWith('REBUILD_FAIL ')) {
       collectingFail = { dir: line.slice('REBUILD_FAIL '.length), stderr: [] };
+    } else if (line.startsWith('PRUNE_OK ')) {
+      // `PRUNE_OK <m>/<p>/<v> <bytes>` — bytes is the last space-delimited token.
+      const rest = line.slice('PRUNE_OK '.length);
+      const sp = rest.lastIndexOf(' ');
+      if (sp > 0) {
+        const dir = rest.slice(0, sp);
+        const bytes = Number(rest.slice(sp + 1));
+        pruned.push(dir);
+        if (Number.isFinite(bytes)) prunedBytes += bytes;
+        opts.onProgress?.(`pruning stale plugin cache ${dir}`);
+      }
     }
   }
-  return { rebuilt, failed, skipped: false };
+  return { rebuilt, failed, pruned, prunedBytes, skipped: false };
 }
 
 export class ClaudeSessionError extends Error {

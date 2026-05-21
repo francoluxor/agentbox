@@ -164,3 +164,36 @@ export function mergeInstalledPlugins(
     (host, merged) => ({ ...(host as Record<string, unknown>), plugins: merged }),
   );
 }
+
+/**
+ * Collect the set of `<marketplace>/<plugin>/<version>` cache keys that
+ * `installed_plugins.json` actively references — every entry's `installPath`
+ * reduced to its last three path segments. The plugin cache is a fixed
+ * three-level tree (`cache/<m>/<p>/<v>/`), so the last three segments uniquely
+ * identify the version dir regardless of whether the path is host-rooted
+ * (`/Users/...`) or container-rooted (`/home/vscode/...`).
+ *
+ * Used to tell stale plugin-version dirs (an old version Claude left behind
+ * after an update) apart from live ones, so a rebuild pass can prune the stale
+ * ones' `node_modules` and never reinstall them. Returns an empty set for
+ * missing / non-object input or entries without a usable `installPath` — the
+ * caller treats "empty" as "can't determine, do nothing".
+ */
+export function referencedPluginVersionKeys(installedPluginsJson: unknown): Set<string> {
+  const keys = new Set<string>();
+  if (!isPlainObject(installedPluginsJson)) return keys;
+  const plugins = installedPluginsJson['plugins'];
+  if (!isPlainObject(plugins)) return keys;
+  for (const entries of Object.values(plugins)) {
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (!isPlainObject(entry)) continue;
+      const installPath = entry['installPath'];
+      if (typeof installPath !== 'string') continue;
+      const segments = installPath.split('/').filter((s) => s.length > 0);
+      if (segments.length < 3) continue;
+      keys.add(segments.slice(-3).join('/'));
+    }
+  }
+  return keys;
+}
