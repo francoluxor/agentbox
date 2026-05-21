@@ -42,7 +42,12 @@ export async function startServer(opts: ServerOptions): Promise<Server> {
       resolve();
     });
   });
-  await chmod(opts.socketPath, 0o660);
+  // Tightening to 0660 is defence-in-depth — only the owner + group should
+  // connect. fuse-overlayfs (the box's writable-layer driver) returns EINVAL
+  // when chmod targets a unix-socket inode; crashing the daemon over that is
+  // worse than the slightly looser 0755 the bind(2) default gives us. The
+  // container FS is host-isolated and /run/agentbox/ is already vscode-only.
+  await chmod(opts.socketPath, 0o660).catch(() => {});
   return server;
 }
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   addProjectAlias,
-  clearInstallMethod,
+  setInstallMethodNative,
   filterHostHooks,
   isHostPathHookCommand,
 } from '../src/claude-hooks-filter.js';
@@ -121,29 +121,47 @@ describe('filterHostHooks', () => {
   });
 });
 
-describe('clearInstallMethod', () => {
-  it('removes the field when present and reports cleared=true', () => {
-    const r = clearInstallMethod({ installMethod: 'native', other: 1 });
-    expect(r.cleared).toBe(true);
-    expect(r.data).toEqual({ other: 1 });
+describe('setInstallMethodNative', () => {
+  const NATIVE = {
+    installMethod: 'native',
+    autoUpdates: false,
+    autoUpdatesProtectedForNative: true,
+  };
+
+  it('sets all three fields when none are present and reports applied=true', () => {
+    const r = setInstallMethodNative({ other: 1 });
+    expect(r.applied).toBe(true);
+    expect(r.data).toEqual({ other: 1, ...NATIVE });
   });
 
-  it('reports cleared=false when the field is absent', () => {
-    const r = clearInstallMethod({ other: 1 });
-    expect(r.cleared).toBe(false);
-    expect(r.data).toEqual({ other: 1 });
+  it('overwrites a mismatching installMethod (e.g. npm-global on host)', () => {
+    const r = setInstallMethodNative({ installMethod: 'npm-global', other: 1 });
+    expect(r.applied).toBe(true);
+    expect(r.data).toEqual({ other: 1, ...NATIVE });
+  });
+
+  it('reports applied=false when all three fields already match', () => {
+    const r = setInstallMethodNative({ other: 1, ...NATIVE });
+    expect(r.applied).toBe(false);
+    expect(r.data).toEqual({ other: 1, ...NATIVE });
+  });
+
+  it('reports applied=true when only one of the three companion fields drifts', () => {
+    const r = setInstallMethodNative({ ...NATIVE, autoUpdates: true });
+    expect(r.applied).toBe(true);
+    expect(r.data).toEqual(NATIVE);
   });
 
   it('does not mutate the input', () => {
-    const input = { installMethod: 'native' };
-    clearInstallMethod(input);
-    expect(input).toEqual({ installMethod: 'native' });
+    const input = { installMethod: 'npm-global' };
+    setInstallMethodNative(input);
+    expect(input).toEqual({ installMethod: 'npm-global' });
   });
 
   it('handles non-object inputs gracefully', () => {
-    expect(clearInstallMethod(null)).toEqual({ data: null, cleared: false });
-    expect(clearInstallMethod(42)).toEqual({ data: 42, cleared: false });
-    expect(clearInstallMethod([1, 2, 3])).toEqual({ data: [1, 2, 3], cleared: false });
+    expect(setInstallMethodNative(null)).toEqual({ data: null, applied: false });
+    expect(setInstallMethodNative(42)).toEqual({ data: 42, applied: false });
+    expect(setInstallMethodNative([1, 2, 3])).toEqual({ data: [1, 2, 3], applied: false });
   });
 });
 

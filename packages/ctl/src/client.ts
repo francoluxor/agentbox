@@ -1,3 +1,5 @@
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { createConnection, type Socket } from 'node:net';
 import type {
   ClaudeActivityState,
@@ -19,7 +21,42 @@ export interface ConnectOptions {
   timeoutMs?: number;
 }
 
-async function connect(opts: ConnectOptions): Promise<Socket> {
+interface NodeErrno extends Error {
+  code?: string;
+}
+
+/**
+ * Best-effort daemon respawn when the unix socket is dead. `docker exec -d`
+ * leaves no log when the daemon crashes on startup and Node doesn't unlink
+ * unix sockets on exit, so an orphaned file is the symptom we see most often.
+ * Spawning the bin detached and polling for a fresh listener recovers without
+ * needing host involvement — mirrors `ensureRelay()` on the host side.
+ *
+ * Gated on `AGENTBOX=1` (set on every box at `docker run`) so unit tests on
+ * the host — which start an ephemeral server with no `agentbox-ctl` bin
+ * anywhere on PATH — don't accidentally spawn anything.
+ */
+async function tryReviveDaemon(socketPath: string): Promise<boolean> {
+  if (process.env.AGENTBOX !== '1') return false;
+  try {
+    const child = spawn('agentbox-ctl', ['daemon'], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+  } catch {
+    return false;
+  }
+  // The daemon `unlink`s any stale socket file before `listen()`, so once the
+  // file reappears it's bound to a live listener.
+  for (let i = 0; i < 50; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    if (existsSync(socketPath)) return true;
+  }
+  return false;
+}
+
+async function connectOnce(opts: ConnectOptions): Promise<Socket> {
   const sock = createConnection(opts.socketPath);
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -36,6 +73,21 @@ async function connect(opts: ConnectOptions): Promise<Socket> {
     });
   });
   return sock;
+}
+
+async function connect(opts: ConnectOptions): Promise<Socket> {
+  try {
+    return await connectOnce(opts);
+  } catch (err) {
+    // Only ECONNREFUSED (stale socket file, no listener) and ENOENT (no file
+    // at all) suggest a missing daemon. Anything else (EACCES, ETIMEDOUT, …)
+    // is a real failure we shouldn't try to paper over.
+    const code = (err as NodeErrno).code;
+    if (code !== 'ECONNREFUSED' && code !== 'ENOENT') throw err;
+    const revived = await tryReviveDaemon(opts.socketPath);
+    if (!revived) throw err;
+    return await connectOnce(opts);
+  }
 }
 
 async function sendOneShot<T>(opts: ConnectOptions, req: CtlRequest): Promise<T> {

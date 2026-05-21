@@ -7,6 +7,16 @@ export interface CtlLaunchResult {
 }
 
 /**
+ * In-box path the daemon's stdout/stderr are redirected to. `docker exec -d`
+ * discards stdio, so without this redirect a crash on startup leaves no trace
+ * — the unix socket file lingers (Node doesn't auto-unlink on exit) and any
+ * later `agentbox-ctl <op>` connect gets ECONNREFUSED with no log to explain
+ * why. The file lives in the container's writable layer; it survives
+ * stop/start and is wiped on destroy.
+ */
+const CTL_DAEMON_LOG = '/var/log/agentbox/ctl-daemon.log';
+
+/**
  * Spawn `agentbox-ctl daemon` detached inside the container and wait briefly
  * for the unix socket to appear on the host-mounted path. Best-effort —
  * failure is logged but doesn't fail box creation, since a missing or empty
@@ -17,7 +27,12 @@ export async function launchCtlDaemon(
   hostSocketPath: string,
   timeoutMs = 3000,
 ): Promise<CtlLaunchResult> {
-  const result = await execInBox(container, ['agentbox-ctl', 'daemon'], {
+  // Wrap in `sh -c` so the daemon's stdio lands in a log file we can read
+  // after a crash. The log dir is pre-created in the image (Dockerfile.box
+  // mkdir+chown vscode); `mkdir -p` is a cheap belt-and-braces. `exec` lets
+  // the shell replace itself with the daemon for a clean process tree.
+  const wrapped = `mkdir -p ${CTL_DAEMON_LOG.replace(/\/[^/]*$/, '')} && exec agentbox-ctl daemon >>${CTL_DAEMON_LOG} 2>&1`;
+  const result = await execInBox(container, ['sh', '-c', wrapped], {
     user: 'vscode',
     detach: true,
   });

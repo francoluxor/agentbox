@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/
 import { homedir, tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { execa } from 'execa';
-import { addProjectAlias, clearInstallMethod, filterHostHooks } from './claude-hooks-filter.js';
+import { addProjectAlias, filterHostHooks, setInstallMethodNative } from './claude-hooks-filter.js';
 import {
   mergeInstalledPlugins,
   mergeKnownMarketplaces,
@@ -72,10 +72,11 @@ export interface EnsureClaudeVolumeResult {
    */
   filteredHookCount?: number;
   /**
-   * True when the synced `_claude.json` had its top-level `installMethod`
-   * field scrubbed (host had it set; we let in-box claude redetect).
+   * True when the synced `_claude.json` had its install-method fields
+   * (installMethod / autoUpdates / autoUpdatesProtectedForNative) coerced
+   * to match the box's native install. False when they already matched.
    */
-  clearedInstallMethod?: boolean;
+  installMethodFixed?: boolean;
   /**
    * True when `projects[<hostWorkspace>]` was duplicated to
    * `projects['/workspace']` in the synced `_claude.json` so the in-box claude
@@ -211,7 +212,7 @@ export async function ensureClaudeVolume(
   // touched.
   const filterDir = await mkdtemp(join(tmpdir(), 'agentbox-claude-filter-'));
   let filteredHookCount = 0;
-  let clearedInstallMethod = false;
+  let installMethodFixed = false;
   let aliasedProjectKey = false;
   try {
     const settingsResult = await maybeFilterTo(
@@ -226,17 +227,32 @@ export async function ensureClaudeVolume(
         join(filterDir, '_claude.json'),
         hostHome,
         {
-          clearInstallMethod: true,
+          setInstallMethodNative: true,
           aliasProject: opts.hostWorkspace
             ? { from: opts.hostWorkspace, to: CONTAINER_WORKSPACE }
             : undefined,
         },
       );
       filteredHookCount += jsonResult.removedHooks;
-      clearedInstallMethod = jsonResult.clearedInstallMethod;
+      installMethodFixed = jsonResult.installMethodFixed;
       aliasedProjectKey = jsonResult.aliasedProjectKey;
+    } else {
+      // Host has no ~/.claude.json. Write a minimal _claude.json directly to
+      // the filter dir so the in-box claude still gets installMethod=native
+      // and skips the integrity warning. Claude will fill in the rest on
+      // first run; the three install-method fields stick because they
+      // satisfy claude's native-install validation.
+      await writeFile(
+        join(filterDir, '_claude.json'),
+        JSON.stringify(
+          { installMethod: 'native', autoUpdates: false, autoUpdatesProtectedForNative: true },
+          null,
+          2,
+        ),
+      );
+      installMethodFixed = true;
     }
-    if (filteredHookCount > 0 || clearedInstallMethod || aliasedProjectKey) {
+    if (filteredHookCount > 0 || installMethodFixed || aliasedProjectKey) {
       args.push('-v', `${filterDir}:/src-filter:ro`);
     }
     // Pre-scan for broken symlinks. With --copy-unsafe-links rsync errors out
@@ -299,7 +315,7 @@ export async function ensureClaudeVolume(
     await rm(filterDir, { recursive: true, force: true });
   }
 
-  return { created, synced: true, filteredHookCount, clearedInstallMethod, aliasedProjectKey };
+  return { created, synced: true, filteredHookCount, installMethodFixed, aliasedProjectKey };
 }
 
 /**
@@ -346,7 +362,7 @@ export async function seedSetupSkillIntoVolume(
 
 /**
  * Read a JSON file, run it through {@link filterHostHooks}, (when opted in)
- * {@link clearInstallMethod}, and (when opted in) {@link addProjectAlias},
+ * {@link setInstallMethodNative}, and (when opted in) {@link addProjectAlias},
  * and write the result to `dest` ONLY when at least one change was made.
  * Tolerant of missing or garbage JSON — silently returns zero changes in
  * those cases (sync proceeds with the raw rsync'd file).
@@ -356,27 +372,27 @@ async function maybeFilterTo(
   dest: string,
   hostHome: string,
   opts: {
-    clearInstallMethod?: boolean;
+    setInstallMethodNative?: boolean;
     aliasProject?: { from: string; to: string };
   } = {},
 ): Promise<{
   removedHooks: number;
-  clearedInstallMethod: boolean;
+  installMethodFixed: boolean;
   aliasedProjectKey: boolean;
 }> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(await readFile(src, 'utf8'));
   } catch {
-    return { removedHooks: 0, clearedInstallMethod: false, aliasedProjectKey: false };
+    return { removedHooks: 0, installMethodFixed: false, aliasedProjectKey: false };
   }
   const filtered = filterHostHooks(parsed, hostHome);
   let working: unknown = filtered.data;
-  let cleared = false;
-  if (opts.clearInstallMethod) {
-    const r = clearInstallMethod(working);
+  let installFixed = false;
+  if (opts.setInstallMethodNative) {
+    const r = setInstallMethodNative(working);
     working = r.data;
-    cleared = r.cleared;
+    installFixed = r.applied;
   }
   let aliased = false;
   if (opts.aliasProject) {
@@ -384,13 +400,13 @@ async function maybeFilterTo(
     working = r.data;
     aliased = r.aliased;
   }
-  if (filtered.removedCommands.length === 0 && !cleared && !aliased) {
-    return { removedHooks: 0, clearedInstallMethod: false, aliasedProjectKey: false };
+  if (filtered.removedCommands.length === 0 && !installFixed && !aliased) {
+    return { removedHooks: 0, installMethodFixed: false, aliasedProjectKey: false };
   }
   await writeFile(dest, JSON.stringify(working, null, 2));
   return {
     removedHooks: filtered.removedCommands.length,
-    clearedInstallMethod: cleared,
+    installMethodFixed: installFixed,
     aliasedProjectKey: aliased,
   };
 }

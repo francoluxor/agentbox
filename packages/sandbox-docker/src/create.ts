@@ -406,8 +406,8 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
         `filtered ${String(claudeEnsured.filteredHookCount)} host-path hook(s) (paths under ~/)`,
       );
     }
-    if (claudeEnsured.clearedInstallMethod) {
-      log("cleared host's installMethod from synced .claude.json (box uses the native installer)");
+    if (claudeEnsured.installMethodFixed) {
+      log('set installMethod=native in synced .claude.json (matches box native install)');
     }
     if (claudeEnsured.aliasedProjectKey) {
       log(`aliased project state for ${workspace} -> /workspace in synced .claude.json`);

@@ -85,9 +85,9 @@ export function filterHostHooks<T = unknown>(data: T, hostHome: string): HookFil
   return { data: clone as T, removedCommands };
 }
 
-export interface ClearInstallMethodResult<T = unknown> {
+export interface SetInstallMethodNativeResult<T = unknown> {
   data: T;
-  cleared: boolean;
+  applied: boolean;
 }
 
 export interface AddProjectAliasResult<T = unknown> {
@@ -147,27 +147,33 @@ export function addProjectAlias<T = unknown>(
 }
 
 /**
- * Drop the top-level `installMethod` field from a parsed `~/.claude.json`.
+ * Force the install-method fields in a parsed `~/.claude.json` to match the
+ * box's native install. Sets exactly what `claude install` writes:
+ *   installMethod: "native"
+ *   autoUpdates: false
+ *   autoUpdatesProtectedForNative: true
  *
- * The host records how *the host* was installed (e.g. `"native"` on macOS,
- * `"npm-global"` for npm users). The box now uses the native installer, so
- * the field usually matches; but if a user's host recorded a different
- * value, it would clash with the box's binary location and trigger an
- * `installMethod is X, but <dir> does not exist` integrity warning.
- * Stripping the field defensively lets claude inside the box redetect.
+ * Without this, the in-box claude reports
+ * `Running native installation but config install method is 'not set'` in
+ * /status — the host's value (often `npm-global` on Mac, or absent) doesn't
+ * match the box's `~/.local/bin/claude` install location, and merely
+ * clearing the field leaves it unset rather than fixing it.
  *
- * Returns a deep-cloned, scrubbed copy plus a flag indicating whether the
- * field was actually present. Input is not mutated.
+ * Returns a deep-cloned, fixed copy plus a flag indicating whether any of
+ * the three fields actually changed. Input is not mutated.
  */
-export function clearInstallMethod<T = unknown>(data: T): ClearInstallMethodResult<T> {
+export function setInstallMethodNative<T = unknown>(data: T): SetInstallMethodNativeResult<T> {
   const clone = structuredClone(data) as unknown;
   if (clone === null || typeof clone !== 'object' || Array.isArray(clone)) {
-    return { data: clone as T, cleared: false };
+    return { data: clone as T, applied: false };
   }
   const obj = clone as Record<string, unknown>;
-  if (Object.prototype.hasOwnProperty.call(obj, 'installMethod')) {
-    delete obj.installMethod;
-    return { data: clone as T, cleared: true };
-  }
-  return { data: clone as T, cleared: false };
+  const changed =
+    obj.installMethod !== 'native' ||
+    obj.autoUpdates !== false ||
+    obj.autoUpdatesProtectedForNative !== true;
+  obj.installMethod = 'native';
+  obj.autoUpdates = false;
+  obj.autoUpdatesProtectedForNative = true;
+  return { data: clone as T, applied: changed };
 }
