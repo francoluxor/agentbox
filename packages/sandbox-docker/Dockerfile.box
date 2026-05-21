@@ -285,6 +285,17 @@ RUN chmod +x /usr/local/bin/agentbox-dockerd-start
 COPY packages/sandbox-docker/scripts/agentbox-checkpoint-cleanup /usr/local/bin/agentbox-checkpoint-cleanup
 RUN chmod +x /usr/local/bin/agentbox-checkpoint-cleanup
 
+# Host-routed link opener. The box has no real browser; this wrapper forwards
+# http(s) URLs to the host's default browser via the relay (`agentbox-ctl
+# open`). It shadows xdg-utils' /usr/bin/xdg-open (the symlink lands earlier
+# in PATH) and is set as $BROWSER so any tool that opens a link — Claude
+# Code's OAuth flow, `gh`, `git web--browse`, python's webbrowser — routes
+# to the host.
+COPY packages/sandbox-docker/scripts/agentbox-open /usr/local/bin/agentbox-open
+RUN chmod +x /usr/local/bin/agentbox-open \
+    && ln -sf /usr/local/bin/agentbox-open /usr/local/bin/xdg-open
+ENV BROWSER=/usr/local/bin/agentbox-open
+
 # tmux config so Claude's true-color output and OSC 8 hyperlinks survive the
 # in-container tmux. `terminal-features` is a no-op on tmux < 3.4. Without
 # this, claude renders without 24-bit color (logo invisible) and hyperlinks

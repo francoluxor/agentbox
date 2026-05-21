@@ -9,6 +9,7 @@ export type {
   BoxNoticeEvent,
   BoxRegistration,
   BoxWorktree,
+  BrowserOpenRpcParams,
   CheckpointRpcParams,
   ClearNoticeBody,
   CpRpcParams,

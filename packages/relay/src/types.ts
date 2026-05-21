@@ -207,6 +207,11 @@ export interface CpRpcParams {
   recursive?: boolean;
 }
 
+export interface BrowserOpenRpcParams {
+  /** Absolute http(s) URL to open in the host's default browser. */
+  url: string;
+}
+
 export type DownloadKind = 'workspace' | 'env' | 'config' | 'claude';
 
 export interface DownloadRpcParams {

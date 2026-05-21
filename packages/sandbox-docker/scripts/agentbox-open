@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Routes in-box URL opens to the *host's* default browser via the agentbox
+# relay. The box has no real browser of its own. This script is installed at
+# /usr/local/bin (earlier in PATH than xdg-utils' /usr/bin/xdg-open, which it
+# is also symlinked over) and is the box's $BROWSER, so `xdg-open`, Claude
+# Code's OAuth flow, `gh`, `git web--browse`, python's webbrowser, etc. all
+# land here.
+#
+# Only http(s) URLs are forwarded to the host. Anything else (a file path,
+# another scheme) falls through to the real xdg-open, which resolves it
+# locally inside the box.
+
+set -uo pipefail
+
+target="${1:-}"
+
+case "$target" in
+  http://* | https://*)
+    exec agentbox-ctl open "$target"
+    ;;
+  *)
+    if [[ -x /usr/bin/xdg-open ]]; then
+      exec /usr/bin/xdg-open "$@"
+    fi
+    echo "agentbox-open: not an http(s) URL: $target" >&2
+    exit 1
+    ;;
+esac

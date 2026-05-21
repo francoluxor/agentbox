@@ -7,6 +7,7 @@ import { BoxStatusStore, isValidBoxStatus } from './status-store.js';
 import type {
   BoxRegistration,
   BoxWorktree,
+  BrowserOpenRpcParams,
   CheckpointRpcParams,
   ClearNoticeBody,
   CpRpcParams,
@@ -49,6 +50,7 @@ const GIT_RPC_TIMEOUT_MS = 120_000; // git push/pull can be slow on big repos.
 const CHECKPOINT_RPC_TIMEOUT_MS = 600_000; // capturing node_modules/build trees can be slow.
 const DOWNLOAD_RPC_TIMEOUT_MS = 600_000; // claude/workspace pulls over rsync can take minutes.
 const CP_RPC_TIMEOUT_MS = 300_000; // single-file/dir cp; tar pipe through docker exec.
+const BROWSER_OPEN_RPC_TIMEOUT_MS = 15_000; // `open` hands off to the browser and returns at once.
 const SSE_HEARTBEAT_MS = 15_000; // every 15s; wrapper reconnects if it sees no traffic for ~30s.
 
 function send(
@@ -295,6 +297,25 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
           reg,
           body.params as CheckpointRpcParams | undefined,
         );
+        const status = result.exitCode === 0 ? 200 : 500;
+        send(res, status, result);
+        return;
+      }
+      if (body.method === 'browser.open') {
+        const params = body.params as BrowserOpenRpcParams | undefined;
+        const url = typeof params?.url === 'string' ? params.url.trim() : '';
+        if (!isOpenableUrl(url)) {
+          // Un-gated by design, but the scheme guard keeps a box from
+          // handing the host's `open` a file path or app instead of a URL.
+          send(res, 400, {
+            exitCode: 64,
+            stdout: '',
+            stderr: 'browser.open: only http/https URLs are allowed\n',
+          });
+          return;
+        }
+        events.append({ boxId: reg.boxId, type: 'browser-open', payload: { url } });
+        const result = await runHostCommand(['open', url], BROWSER_OPEN_RPC_TIMEOUT_MS);
         const status = result.exitCode === 0 ? 200 : 500;
         send(res, status, result);
         return;
@@ -712,6 +733,22 @@ async function handleCheckpointRpc(
   if (params?.setDefault === true) argv.push('--set-default');
   if (params?.replace === true) argv.push('--replace');
   return runHostCommand(argv, CHECKPOINT_RPC_TIMEOUT_MS);
+}
+
+/**
+ * Guard for the `browser.open` RPC: only absolute http/https URLs may be
+ * handed to the host's `open`. Rejecting every other scheme (`file:`,
+ * `javascript:`, bare paths) keeps an in-box agent from opening host files
+ * or apps under the guise of "opening a link".
+ */
+export function isOpenableUrl(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return url.protocol === 'http:' || url.protocol === 'https:';
 }
 
 function runHostCommand(
