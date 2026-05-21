@@ -414,6 +414,9 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     if (claudeEnsured.aliasedProjectKey) {
       log(`aliased project state for ${workspace} -> /workspace in synced .claude.json`);
     }
+    if (claudeEnsured.workspaceTrusted) {
+      log('pre-trusted /workspace in synced .claude.json (skips the trust dialog)');
+    }
   } else if (claudeEnsured.created) {
     log(`created empty volume ${claudeSpec.volume} (no host ~/.claude to sync)`);
   } else {

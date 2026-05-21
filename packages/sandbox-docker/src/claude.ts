@@ -3,7 +3,12 @@ import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/
 import { homedir, tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { execa } from 'execa';
-import { addProjectAlias, filterHostHooks, setInstallMethodNative } from './claude-hooks-filter.js';
+import {
+  addProjectAlias,
+  filterHostHooks,
+  setInstallMethodNative,
+  trustWorkspace,
+} from './claude-hooks-filter.js';
 import {
   mergeInstalledPlugins,
   mergeKnownMarketplaces,
@@ -83,6 +88,13 @@ export interface EnsureClaudeVolumeResult {
    * sees the host's project-scoped state (mcpServers, history, …).
    */
   aliasedProjectKey?: boolean;
+  /**
+   * True when `projects['/workspace'].hasTrustDialogAccepted` was set to `true`
+   * in the synced `_claude.json` (it wasn't already). Pre-trusting the box's
+   * workspace skips the trust dialog and avoids the Claude Code untrusted-
+   * workspace `400 role 'system'` bug.
+   */
+  workspaceTrusted?: boolean;
 }
 
 async function pathExists(p: string): Promise<boolean> {
@@ -214,6 +226,7 @@ export async function ensureClaudeVolume(
   let filteredHookCount = 0;
   let installMethodFixed = false;
   let aliasedProjectKey = false;
+  let workspaceTrusted = false;
   try {
     const settingsResult = await maybeFilterTo(
       join(hostClaude, 'settings.json'),
@@ -231,28 +244,36 @@ export async function ensureClaudeVolume(
           aliasProject: opts.hostWorkspace
             ? { from: opts.hostWorkspace, to: CONTAINER_WORKSPACE }
             : undefined,
+          trustWorkspacePath: CONTAINER_WORKSPACE,
         },
       );
       filteredHookCount += jsonResult.removedHooks;
       installMethodFixed = jsonResult.installMethodFixed;
       aliasedProjectKey = jsonResult.aliasedProjectKey;
+      workspaceTrusted = jsonResult.workspaceTrusted;
     } else {
       // Host has no ~/.claude.json. Write a minimal _claude.json directly to
       // the filter dir so the in-box claude still gets installMethod=native
-      // and skips the integrity warning. Claude will fill in the rest on
-      // first run; the three install-method fields stick because they
-      // satisfy claude's native-install validation.
+      // (skips the integrity warning) and a pre-trusted /workspace (skips the
+      // trust dialog — and avoids the Claude Code bug where an untrusted
+      // workspace yields `400 role 'system' is not supported on this model`).
       await writeFile(
         join(filterDir, '_claude.json'),
         JSON.stringify(
-          { installMethod: 'native', autoUpdates: false, autoUpdatesProtectedForNative: true },
+          {
+            installMethod: 'native',
+            autoUpdates: false,
+            autoUpdatesProtectedForNative: true,
+            projects: { [CONTAINER_WORKSPACE]: { hasTrustDialogAccepted: true } },
+          },
           null,
           2,
         ),
       );
       installMethodFixed = true;
+      workspaceTrusted = true;
     }
-    if (filteredHookCount > 0 || installMethodFixed || aliasedProjectKey) {
+    if (filteredHookCount > 0 || installMethodFixed || aliasedProjectKey || workspaceTrusted) {
       args.push('-v', `${filterDir}:/src-filter:ro`);
     }
     // Pre-scan for broken symlinks. With --copy-unsafe-links rsync errors out
@@ -315,7 +336,14 @@ export async function ensureClaudeVolume(
     await rm(filterDir, { recursive: true, force: true });
   }
 
-  return { created, synced: true, filteredHookCount, installMethodFixed, aliasedProjectKey };
+  return {
+    created,
+    synced: true,
+    filteredHookCount,
+    installMethodFixed,
+    aliasedProjectKey,
+    workspaceTrusted,
+  };
 }
 
 /**
@@ -364,10 +392,10 @@ export async function seedSetupSkillIntoVolume(
 
 /**
  * Read a JSON file, run it through {@link filterHostHooks}, (when opted in)
- * {@link setInstallMethodNative}, and (when opted in) {@link addProjectAlias},
- * and write the result to `dest` ONLY when at least one change was made.
- * Tolerant of missing or garbage JSON — silently returns zero changes in
- * those cases (sync proceeds with the raw rsync'd file).
+ * {@link setInstallMethodNative}, {@link addProjectAlias}, and
+ * {@link trustWorkspace}, and write the result to `dest` ONLY when at least
+ * one change was made. Tolerant of missing or garbage JSON — silently returns
+ * zero changes in those cases (sync proceeds with the raw rsync'd file).
  */
 async function maybeFilterTo(
   src: string,
@@ -376,17 +404,25 @@ async function maybeFilterTo(
   opts: {
     setInstallMethodNative?: boolean;
     aliasProject?: { from: string; to: string };
+    trustWorkspacePath?: string;
   } = {},
 ): Promise<{
   removedHooks: number;
   installMethodFixed: boolean;
   aliasedProjectKey: boolean;
+  workspaceTrusted: boolean;
 }> {
+  const zero = {
+    removedHooks: 0,
+    installMethodFixed: false,
+    aliasedProjectKey: false,
+    workspaceTrusted: false,
+  };
   let parsed: unknown;
   try {
     parsed = JSON.parse(await readFile(src, 'utf8'));
   } catch {
-    return { removedHooks: 0, installMethodFixed: false, aliasedProjectKey: false };
+    return zero;
   }
   const filtered = filterHostHooks(parsed, hostHome);
   let working: unknown = filtered.data;
@@ -402,14 +438,21 @@ async function maybeFilterTo(
     working = r.data;
     aliased = r.aliased;
   }
-  if (filtered.removedCommands.length === 0 && !installFixed && !aliased) {
-    return { removedHooks: 0, installMethodFixed: false, aliasedProjectKey: false };
+  let trusted = false;
+  if (opts.trustWorkspacePath) {
+    const r = trustWorkspace(working, opts.trustWorkspacePath);
+    working = r.data;
+    trusted = r.trusted;
+  }
+  if (filtered.removedCommands.length === 0 && !installFixed && !aliased && !trusted) {
+    return zero;
   }
   await writeFile(dest, JSON.stringify(working, null, 2));
   return {
     removedHooks: filtered.removedCommands.length,
     installMethodFixed: installFixed,
     aliasedProjectKey: aliased,
+    workspaceTrusted: trusted,
   };
 }
 
@@ -764,6 +807,8 @@ export async function startClaudeSession(opts: StartClaudeSessionOptions): Promi
   const cmd = ['claude', ...opts.claudeArgs].map(shQuote).join(' ');
   const term = process.env['TERM'] ?? 'xterm-256color';
   const envFlags: string[] = ['-e', `TERM=${term}`];
+  // TEMP DEBUG (remove): capture the in-box claude's API requests.
+  envFlags.push('-e', 'ANTHROPIC_BASE_URL=http://host.docker.internal:8799');
   for (const k of FORWARDED_ENV_KEYS) {
     const v = process.env[k];
     if (typeof v === 'string' && v.length > 0) envFlags.push('-e', `${k}=${v}`);

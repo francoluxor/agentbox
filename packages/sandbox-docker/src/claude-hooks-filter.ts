@@ -95,6 +95,55 @@ export interface AddProjectAliasResult<T = unknown> {
   aliased: boolean;
 }
 
+export interface TrustWorkspaceResult<T = unknown> {
+  data: T;
+  trusted: boolean;
+}
+
+/**
+ * Force `projects[workspacePath].hasTrustDialogAccepted = true` in a parsed
+ * `~/.claude.json`, creating the `projects` map and the project entry if
+ * absent.
+ *
+ * The box is a sandbox: the agent is created explicitly to work in
+ * `/workspace`, and the box is isolated from the host — so the folder-trust
+ * dialog is pointless there. More importantly, Claude Code, when it opens an
+ * *untrusted* folder, sends a malformed first API request that Anthropic
+ * rejects with `400 role 'system' is not supported on this model`. Pre-trusting
+ * the box's workspace skips the dialog *and* dodges that bug.
+ *
+ * Returns a deep-cloned, modified copy plus a flag for whether anything
+ * changed (`false` when it was already trusted). Input is not mutated; no-op
+ * for non-object data or an empty path.
+ */
+export function trustWorkspace<T = unknown>(
+  data: T,
+  workspacePath: string,
+): TrustWorkspaceResult<T> {
+  const clone = structuredClone(data) as unknown;
+  if (clone === null || typeof clone !== 'object' || Array.isArray(clone)) {
+    return { data: clone as T, trusted: false };
+  }
+  if (workspacePath.length === 0) return { data: clone as T, trusted: false };
+  const obj = clone as { projects?: unknown };
+  if (obj.projects === null || typeof obj.projects !== 'object' || Array.isArray(obj.projects)) {
+    obj.projects = {};
+  }
+  const projects = obj.projects as Record<string, unknown>;
+  const existing = projects[workspacePath];
+  const entry =
+    existing !== null && typeof existing === 'object' && !Array.isArray(existing)
+      ? (existing as Record<string, unknown>)
+      : {};
+  if (entry.hasTrustDialogAccepted === true) {
+    projects[workspacePath] = entry;
+    return { data: clone as T, trusted: false };
+  }
+  entry.hasTrustDialogAccepted = true;
+  projects[workspacePath] = entry;
+  return { data: clone as T, trusted: true };
+}
+
 /**
  * Claude Code keys project-scoped state (history, mcpServers, enabledPlugins,
  * trust prompts) under `projects[<absolute-workspace-path>]` in

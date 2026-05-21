@@ -4,6 +4,7 @@ import {
   setInstallMethodNative,
   filterHostHooks,
   isHostPathHookCommand,
+  trustWorkspace,
 } from '../src/claude-hooks-filter.js';
 
 describe('isHostPathHookCommand', () => {
@@ -266,5 +267,63 @@ describe('filterHostHooks — unexpected shapes', () => {
     };
     const { removedCommands } = filterHostHooks(weird, home);
     expect(removedCommands).toEqual([]);
+  });
+});
+
+describe('trustWorkspace', () => {
+  const WS = '/workspace';
+
+  it('creates the projects map + entry when absent, reports trusted=true', () => {
+    const r = trustWorkspace({ other: 1 }, WS);
+    expect(r.trusted).toBe(true);
+    expect(r.data).toEqual({ other: 1, projects: { '/workspace': { hasTrustDialogAccepted: true } } });
+  });
+
+  it('adds the entry when projects exists without /workspace', () => {
+    const r = trustWorkspace({ projects: { '/other': { x: 1 } } }, WS);
+    expect(r.trusted).toBe(true);
+    expect(r.data).toEqual({
+      projects: { '/other': { x: 1 }, '/workspace': { hasTrustDialogAccepted: true } },
+    });
+  });
+
+  it('merges into an existing /workspace entry, preserving other keys', () => {
+    const r = trustWorkspace({ projects: { '/workspace': { mcpServers: { a: 1 } } } }, WS);
+    expect(r.trusted).toBe(true);
+    expect(r.data).toEqual({
+      projects: { '/workspace': { mcpServers: { a: 1 }, hasTrustDialogAccepted: true } },
+    });
+  });
+
+  it('reports trusted=false when /workspace is already trusted', () => {
+    const r = trustWorkspace(
+      { projects: { '/workspace': { hasTrustDialogAccepted: true, x: 1 } } },
+      WS,
+    );
+    expect(r.trusted).toBe(false);
+    expect(r.data).toEqual({
+      projects: { '/workspace': { hasTrustDialogAccepted: true, x: 1 } },
+    });
+  });
+
+  it('overwrites a non-object projects value with a fresh map', () => {
+    const r = trustWorkspace({ projects: 'garbage' }, WS);
+    expect(r.trusted).toBe(true);
+    expect(r.data).toEqual({ projects: { '/workspace': { hasTrustDialogAccepted: true } } });
+  });
+
+  it('does not mutate the input', () => {
+    const input = { projects: { '/workspace': {} } };
+    trustWorkspace(input, WS);
+    expect(input).toEqual({ projects: { '/workspace': {} } });
+  });
+
+  it('handles non-object input and empty path gracefully', () => {
+    expect(trustWorkspace(null, WS)).toEqual({ data: null, trusted: false });
+    expect(trustWorkspace(42, WS)).toEqual({ data: 42, trusted: false });
+    expect(trustWorkspace({ projects: {} }, '')).toEqual({
+      data: { projects: {} },
+      trusted: false,
+    });
   });
 });
