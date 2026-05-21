@@ -1,12 +1,14 @@
 import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import type { PromptAnswerBody, PromptAskEvent } from '@agentbox/relay';
+import type { BoxNoticeEvent, PromptAnswerBody, PromptAskEvent } from '@agentbox/relay';
 
 /**
  * SSE subscription back to the relay's `GET /admin/prompts/stream`. The
  * relay pushes:
  *   - `event: prompt-ask`      data: PromptAskEvent (with id)
  *   - `event: prompt-resolved` data: { id }
+ *   - `event: notice-set`      data: BoxNoticeEvent (with id)
+ *   - `event: notice-clear`    data: { id }
  *   - `event: ping`            data: { ts }
  *
  * We reconnect with exponential backoff on any error or close — the only
@@ -25,6 +27,10 @@ export interface SubscribeOptions {
   /** Server-driven: a sibling wrapper (or this one) answered; the run loop
    *  clears the footer for stale ids it didn't originate. */
   onResolved: (id: string) => void;
+  /** A box-level informational notice was set (e.g. checkpoint in progress). */
+  onNotice?: (ev: BoxNoticeEvent) => void;
+  /** A previously-set notice was cleared (explicitly or via its TTL). */
+  onNoticeCleared?: (id: string) => void;
   onError?: (err: Error) => void;
 }
 
@@ -91,6 +97,20 @@ export function subscribePrompts(opts: SubscribeOptions): PromptStream {
         try {
           const payload = JSON.parse(dataLine) as { id?: string };
           if (payload && typeof payload.id === 'string') opts.onResolved(payload.id);
+        } catch {
+          /* malformed; ignore */
+        }
+      } else if (event === 'notice-set' && dataLine.length > 0) {
+        try {
+          const ev = JSON.parse(dataLine) as BoxNoticeEvent;
+          if (ev && typeof ev.id === 'string') opts.onNotice?.(ev);
+        } catch {
+          /* malformed; ignore */
+        }
+      } else if (event === 'notice-clear' && dataLine.length > 0) {
+        try {
+          const payload = JSON.parse(dataLine) as { id?: string };
+          if (payload && typeof payload.id === 'string') opts.onNoticeCleared?.(payload.id);
         } catch {
           /* malformed; ignore */
         }

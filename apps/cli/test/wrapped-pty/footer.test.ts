@@ -109,6 +109,33 @@ describe('renderFooter — prompt', () => {
   });
 });
 
+describe('renderFooter — notice', () => {
+  const notice: FooterState = {
+    kind: 'notice',
+    message: 'Checkpoint in progress — the box will be unresponsive for a moment',
+    frame: 2,
+  };
+
+  it('shows the message and a spinner glyph', () => {
+    const out = visible(renderFooter(notice, 100));
+    expect(out).toContain('Checkpoint in progress');
+    // frame 2 → SPINNER_FRAMES[2] === '◑'
+    expect(out).toContain('◑');
+  });
+
+  it('advances the spinner glyph with the frame counter', () => {
+    expect(visible(renderFooter({ ...notice, frame: 0 }, 100))).toContain('◐');
+    expect(visible(renderFooter({ ...notice, frame: 1 }, 100))).toContain('◓');
+    // frame wraps around the 4-glyph cycle.
+    expect(visible(renderFooter({ ...notice, frame: 4 }, 100))).toContain('◐');
+  });
+
+  it('truncates a long message with an ellipsis on a narrow bar', () => {
+    const out = visible(renderFooter({ ...notice, frame: 0 }, 24));
+    expect(out).toContain('…');
+  });
+});
+
 describe('renderFooter — edge cases', () => {
   it('returns empty string when cols <= 0', () => {
     const idle: FooterState = { kind: 'idle', boxName: 'x', mode: 'claude' };
@@ -125,5 +152,8 @@ describe('renderFooter — edge cases', () => {
         80,
       ),
     ).toMatch(/\x1b\[0m$/);
+    expect(renderFooter({ kind: 'notice', message: 'm', frame: 0 }, 80)).toMatch(
+      /\x1b\[0m$/,
+    );
   });
 });

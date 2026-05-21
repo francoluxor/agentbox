@@ -18,6 +18,10 @@ export interface SidebarBox {
    *  injects this flag from its in-memory map of active prompts. Overrides
    *  the activity cell — `▲ prompt` reads more urgent than `● working`. */
   pendingPrompt?: boolean;
+  /** This box has an active relay notice (currently: a checkpoint is being
+   *  captured, freezing the box). Injected by the compositor; shown as
+   *  `◆ checkpoint` in the activity cell. Outranked by `pendingPrompt`. */
+  checkpointing?: boolean;
 }
 
 /** Per-row ownership + styling map returned alongside the rendered lines so
@@ -53,6 +57,8 @@ export function activityCell(b: SidebarBox): string {
   // Pending relay prompt outranks every other state — the user needs to
   // act before whatever the box is doing can continue.
   if (b.pendingPrompt) return '▲ prompt';
+  // A checkpoint freezes the box; surface it over the activity state.
+  if (b.checkpointing) return '◆ checkpoint';
   if (b.state !== 'running') return `[${b.state}]`;
   switch (b.claudeActivity) {
     case 'working':

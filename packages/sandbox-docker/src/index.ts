@@ -71,6 +71,7 @@ export {
 } from './in-box-git.js';
 export { DEFAULT_BOX_IMAGE, ensureImage } from './image.js';
 export {
+  clearRelayNotice,
   DEFAULT_RELAY_PORT,
   ensureRelay,
   forgetBoxFromRelay,
@@ -81,6 +82,7 @@ export {
   RELAY_CONTAINER_NAME,
   RELAY_IMAGE_REF,
   RELAY_NETWORK_NAME,
+  setRelayNotice,
   stopRelay,
   type EnsureRelayOptions,
   type RegisterBoxArgs,

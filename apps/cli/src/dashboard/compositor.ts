@@ -21,7 +21,7 @@ import {
 } from './sidebar.js';
 import { renderFooter } from '../wrapped-pty/footer.js';
 import { postAnswer, subscribePrompts, type PromptStream } from '../wrapped-pty/prompt-client.js';
-import type { PromptAskEvent } from '@agentbox/relay';
+import type { BoxNoticeEvent, PromptAskEvent } from '@agentbox/relay';
 
 // Sidebar panel styling (256-color, portable). Each sidebar line is already
 // padded to the panel width, so wrapping it in a bg SGR tints the full column.
@@ -90,6 +90,8 @@ const RESIZE_DEBOUNCE_MS = 120;
 /** Keep the expanded chord footer visible this long after the Ctrl-a leader
  *  resolves, so it's actually readable instead of flashing by. */
 const LEADER_LINGER_MS = 1500;
+/** Spinner advance cadence while a box has an active relay notice. */
+const NOTICE_SPINNER_MS = 120;
 
 // Synchronized Output (DECSET 2026): the terminal buffers everything between
 // begin/end and presents it in one go — no partial-frame flicker/tearing.
@@ -132,6 +134,16 @@ export class Compositor {
    * we can dispose them when boxes disappear from the list.
    */
   private readonly activePrompts = new Map<string, PromptAskEvent>();
+  /**
+   * Per-box active relay notice (currently: a checkpoint freezing the box).
+   * Drives the `◆ checkpoint` sidebar cell and the animated status-bar
+   * warning. Shares the SSE subscriptions in {@link promptStreams}.
+   */
+  private readonly activeNotices = new Map<string, BoxNoticeEvent>();
+  /** Monotonic spinner counter for the notice status bar. */
+  private noticeFrame = 0;
+  /** Drives the spinner animation while {@link activeNotices} is non-empty. */
+  private noticeTimer: ReturnType<typeof setInterval> | null = null;
   private readonly promptStreams = new Map<string, PromptStream>();
   private activeMode: 'claude' | 'shell' = 'claude';
   private flashMsg: string | null = null;
@@ -284,7 +296,10 @@ export class Compositor {
       if (!wanted.has(boxId)) {
         stream.close();
         this.promptStreams.delete(boxId);
-        if (this.activePrompts.delete(boxId)) this.drawChrome();
+        let changed = this.activePrompts.delete(boxId);
+        if (this.activeNotices.delete(boxId)) changed = true;
+        if (this.activeNotices.size === 0) this.stopNoticeSpinner();
+        if (changed) this.drawChrome();
       }
     }
     // Open subscriptions for boxes we don't already track.
@@ -306,11 +321,42 @@ export class Compositor {
             this.drawChrome();
           }
         },
+        onNotice: (ev) => {
+          if (this.tornDown) return;
+          this.activeNotices.set(boxId, ev);
+          this.startNoticeSpinner();
+          this.drawChrome();
+        },
+        onNoticeCleared: (id) => {
+          if (this.tornDown) return;
+          const current = this.activeNotices.get(boxId);
+          if (current && current.id === id) {
+            this.activeNotices.delete(boxId);
+            if (this.activeNotices.size === 0) this.stopNoticeSpinner();
+            this.drawChrome();
+          }
+        },
         onError: () => {
           /* subscribePrompts already reconnects with backoff; nothing to do */
         },
       });
       this.promptStreams.set(boxId, stream);
+    }
+  }
+
+  private startNoticeSpinner(): void {
+    if (this.noticeTimer) return;
+    this.noticeTimer = setInterval(() => {
+      this.noticeFrame++;
+      this.drawChrome();
+    }, NOTICE_SPINNER_MS);
+    if (typeof this.noticeTimer.unref === 'function') this.noticeTimer.unref();
+  }
+
+  private stopNoticeSpinner(): void {
+    if (this.noticeTimer) {
+      clearInterval(this.noticeTimer);
+      this.noticeTimer = null;
     }
   }
 
@@ -840,16 +886,20 @@ export class Compositor {
   private drawChrome(): void {
     if (this.tornDown || this.layout.tooSmall) return;
     const { sidebar, sepX, statusY } = this.layout;
-    // Inject the per-box pendingPrompt flag at render time so sidebarLines'
-    // activityCell shows `▲ prompt` for boxes with an open relay prompt.
-    // We don't mutate this.boxes directly — keeps the polling diff in poll()
+    // Inject the per-box pendingPrompt / checkpointing flags at render time
+    // so sidebarLines' activityCell shows `▲ prompt` / `◆ checkpoint`. We
+    // don't mutate this.boxes directly — keeps the polling diff in poll()
     // simple (it compares state/activity/sessionTitle only).
-    const boxesWithPrompt: SidebarBox[] =
-      this.activePrompts.size === 0
-        ? this.boxes
-        : this.boxes.map((b) =>
-            this.activePrompts.has(b.id) ? { ...b, pendingPrompt: true } : b,
-          );
+    const decorate = this.activePrompts.size > 0 || this.activeNotices.size > 0;
+    const boxesWithPrompt: SidebarBox[] = decorate
+      ? this.boxes.map((b) => {
+          const pendingPrompt = this.activePrompts.has(b.id);
+          const checkpointing = this.activeNotices.has(b.id);
+          return pendingPrompt || checkpointing
+            ? { ...b, pendingPrompt, checkpointing }
+            : b;
+        })
+      : this.boxes;
     const { lines, rowOwner, headerRows } = sidebarLines(
       boxesWithPrompt,
       this.selectedId,
@@ -908,6 +958,15 @@ export class Compositor {
         { kind: 'prompt', prompt: activePromptForSelected },
         this.layout.cols,
       );
+    } else if (this.activeNotices.has(this.selectedId)) {
+      // Selected box is busy with a relay notice (e.g. checkpoint) — reuse
+      // the wrapped-pty's animated notice renderer. Informational, so it
+      // sits below a pending prompt in the priority chain.
+      const notice = this.activeNotices.get(this.selectedId)!;
+      status = renderFooter(
+        { kind: 'notice', message: notice.message, frame: this.noticeFrame },
+        this.layout.cols,
+      );
     } else {
       const stateLabel =
         this.selectedId === NEW_BOX_ID
@@ -952,9 +1011,11 @@ export class Compositor {
     if (this.resizeTimer) clearTimeout(this.resizeTimer);
     if (this.flashTimer) clearTimeout(this.flashTimer);
     if (this.leaderLingerTimer) clearTimeout(this.leaderLingerTimer);
+    if (this.noticeTimer) clearInterval(this.noticeTimer);
     for (const stream of this.promptStreams.values()) stream.close();
     this.promptStreams.clear();
     this.activePrompts.clear();
+    this.activeNotices.clear();
     this.parser.dispose();
     this.disposeSession();
     this.inp.off('data', this.onData);

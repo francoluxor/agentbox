@@ -7,15 +7,26 @@ import {
   unsetConfigValue,
 } from '@agentbox/config';
 import {
+  clearRelayNotice,
   createCheckpoint,
   inspectBox,
   listCheckpoints,
   removeCheckpoint,
+  setRelayNotice,
   startBox,
   unpauseBox,
 } from '@agentbox/sandbox-docker';
 import { resolveBoxOrExit } from '../box-ref.js';
 import { handleLifecycleError } from './_errors.js';
+
+/** Footer warning shown in attached sessions while a checkpoint runs. */
+const CHECKPOINT_NOTICE = 'Checkpoint in progress — the box will be unresponsive for a moment';
+/**
+ * Notice TTL backstop: longer than the relay's checkpoint RPC timeout
+ * (600s) so a stale notice self-clears even if this CLI is SIGKILLed
+ * before its `finally` runs.
+ */
+const CHECKPOINT_NOTICE_TTL_MS = 660_000;
 
 interface CreateOpts {
   name?: string;
@@ -59,23 +70,56 @@ const createSub = new Command('create')
       const projectRoot = await projectRootFor(box.workspacePath, box.projectRoot);
       const cfg = await loadEffectiveConfig(projectRoot);
 
-      const info = await createCheckpoint({
-        box,
-        projectRoot,
-        name: opts.name,
-        merged: opts.merged === true,
-        setDefault: opts.setDefault === true,
-        replace: opts.replace === true,
-        maxLayers: cfg.effective.checkpoint.maxLayers,
-        onLog: (line) => log.info(line),
-      });
-
-      log.success(
-        `checkpoint ${info.name} (${info.manifest.type}) -> ${info.dir}` +
-          (opts.setDefault ? '  [project default]' : ''),
+      // Warn attached sessions (agentbox claude footer / dashboard) that the
+      // box is about to freeze — `docker commit` pauses the container. Best-
+      // effort: a null id means the relay is down and there's nothing to clear.
+      const noticeId = await setRelayNotice(
+        box.id,
+        'checkpoint',
+        CHECKPOINT_NOTICE,
+        CHECKPOINT_NOTICE_TTL_MS,
       );
-      if (!opts.setDefault) {
-        log.info(`make it the default for new boxes: agentbox checkpoint set-default ${info.name}`);
+      let signalled = false;
+      const onSignal = (): void => {
+        if (signalled) return;
+        signalled = true;
+        void (async () => {
+          if (noticeId) await clearRelayNotice(box.id, noticeId);
+          process.exit(130);
+        })();
+      };
+      if (noticeId) {
+        process.once('SIGINT', onSignal);
+        process.once('SIGTERM', onSignal);
+      }
+
+      try {
+        const info = await createCheckpoint({
+          box,
+          projectRoot,
+          name: opts.name,
+          merged: opts.merged === true,
+          setDefault: opts.setDefault === true,
+          replace: opts.replace === true,
+          maxLayers: cfg.effective.checkpoint.maxLayers,
+          onLog: (line) => log.info(line),
+        });
+
+        log.success(
+          `checkpoint ${info.name} (${info.manifest.type}) -> ${info.dir}` +
+            (opts.setDefault ? '  [project default]' : ''),
+        );
+        if (!opts.setDefault) {
+          log.info(
+            `make it the default for new boxes: agentbox checkpoint set-default ${info.name}`,
+          );
+        }
+      } finally {
+        if (noticeId) {
+          await clearRelayNotice(box.id, noticeId);
+          process.removeListener('SIGINT', onSignal);
+          process.removeListener('SIGTERM', onSignal);
+        }
       }
     } catch (err) {
       handleLifecycleError(err);

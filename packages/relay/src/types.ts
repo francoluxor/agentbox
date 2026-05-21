@@ -160,6 +160,44 @@ export interface PromptAnswerBody {
   cancelled?: boolean;
 }
 
+/**
+ * Notice kinds. `checkpoint` is the first — a box is transiently frozen
+ * while a checkpoint is captured (`docker commit` pauses the container).
+ * Kept open-ended like {@link PromptKind} so an older wrapper degrades
+ * gracefully (renders the message) when a newer relay sends a new kind.
+ */
+export type NoticeKind = 'checkpoint';
+
+/**
+ * The shape pushed over SSE on `event: notice-set`. Unlike a prompt, a
+ * notice is purely informational — there is no answer and the box's RPC
+ * is not blocked on it. The host wrapper renders it as an animated footer
+ * line so the user knows the box is busy, not stuck. Cleared by a
+ * `notice-clear` event carrying `{ id }`.
+ */
+export interface BoxNoticeEvent {
+  /** Relay-generated UUIDv4. */
+  id: string;
+  kind: NoticeKind;
+  /** Warning text; the wrapper truncates to footer width. */
+  message: string;
+}
+
+/** Body of `POST /admin/notices/set`; the response is `{ id }`. */
+export interface SetNoticeBody {
+  boxId: string;
+  kind: NoticeKind;
+  message: string;
+  /** Auto-expiry backstop in ms; defaults relay-side. */
+  ttlMs?: number;
+}
+
+/** Body of `POST /admin/notices/clear`. */
+export interface ClearNoticeBody {
+  boxId: string;
+  id: string;
+}
+
 export interface CpRpcParams {
   /** Container-side path. */
   boxPath: string;

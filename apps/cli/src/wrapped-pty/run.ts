@@ -12,7 +12,7 @@ import {
   type FooterState,
 } from './footer.js';
 import { postAnswer, subscribePrompts, type PromptStream } from './prompt-client.js';
-import type { PromptAskEvent } from '@agentbox/relay';
+import type { BoxNoticeEvent, PromptAskEvent } from '@agentbox/relay';
 
 export interface WrappedAttachOptions {
   /** Docker container name (only used for log lines). */
@@ -37,6 +37,8 @@ export interface WrappedAttachOptions {
 
 const FOOTER_ROWS = 1;
 const STATUS_POLL_INTERVAL_MS = 3000;
+/** Spinner advance cadence while a `notice` footer is active. */
+const SPINNER_INTERVAL_MS = 120;
 
 /**
  * Replace `spawnSync('docker', argv, { stdio: 'inherit' })` with a
@@ -86,6 +88,12 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
   let footerState: FooterState = buildIdle();
   let lastSessionTitle: string | undefined;
   let lastActivity: string | undefined;
+  // Prompt + notice are tracked independently of `footerState`;
+  // `recomputeFooter` derives the visible state (prompt > notice > idle).
+  let capturingPrompt: PromptAskEvent | null = null;
+  let activeNotice: BoxNoticeEvent | null = null;
+  let noticeFrame = 0;
+  let spinnerTimer: ReturnType<typeof setInterval> | null = null;
 
   // Lazy SGR mirror: when the inner pty's most recent attribute is bright
   // bold, our footer paint won't reset it correctly via the inner program's
@@ -108,6 +116,39 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
       CURSOR_RESTORE +
       SYNC_END;
     process.stdout.write(payload);
+  };
+
+  // Derive `footerState` from the current prompt / notice / idle inputs. A
+  // pending prompt outranks a notice (it hard-blocks the box's RPC); a notice
+  // outranks idle. Called after any input changes.
+  const recomputeFooter = (): void => {
+    if (capturingPrompt) {
+      footerState = { kind: 'prompt', prompt: capturingPrompt };
+    } else if (activeNotice) {
+      footerState = { kind: 'notice', message: activeNotice.message, frame: noticeFrame };
+    } else {
+      footerState = buildIdle(lastSessionTitle, lastActivity);
+    }
+  };
+
+  const startSpinner = (): void => {
+    if (spinnerTimer) return;
+    spinnerTimer = setInterval(() => {
+      noticeFrame++;
+      // Only repaint while the notice is the visible state — if a prompt is
+      // covering it the frame still advances so it resumes mid-animation.
+      if (footerState.kind === 'notice') {
+        recomputeFooter();
+        redrawFooter();
+      }
+    }, SPINNER_INTERVAL_MS);
+    if (typeof spinnerTimer.unref === 'function') spinnerTimer.unref();
+  };
+  const stopSpinner = (): void => {
+    if (spinnerTimer) {
+      clearInterval(spinnerTimer);
+      spinnerTimer = null;
+    }
   };
 
   // Wire pty -> stdout. The inner program writes raw bytes; we forward as-is.
@@ -136,7 +177,8 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
       // Fire-and-forget; the relay-side route is idempotent. We don't
       // block the input flow on the network roundtrip.
       void postAnswer({ relayBaseUrl: opts.relayBaseUrl, body });
-      footerState = buildIdle(lastSessionTitle, lastActivity);
+      capturingPrompt = null;
+      recomputeFooter();
       redrawFooter();
     },
   });
@@ -166,7 +208,8 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
     relayBaseUrl: opts.relayBaseUrl,
     boxId: opts.boxId,
     onPrompt: (ev: PromptAskEvent) => {
-      footerState = { kind: 'prompt', prompt: ev };
+      capturingPrompt = ev;
+      recomputeFooter();
       redrawFooter();
       // capture() returns a Promise that resolves with the answer body; the
       // input-router's onAnswer callback already POSTs and resets the footer.
@@ -178,9 +221,24 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
     },
     onResolved: (id: string) => {
       // Clear footer if it's still showing this id (sibling wrapper won).
-      if (footerState.kind === 'prompt' && footerState.prompt.id === id) {
+      if (capturingPrompt && capturingPrompt.id === id) {
+        capturingPrompt = null;
         router.abort('resolved-elsewhere');
-        footerState = buildIdle(lastSessionTitle, lastActivity);
+        recomputeFooter();
+        redrawFooter();
+      }
+    },
+    onNotice: (ev: BoxNoticeEvent) => {
+      activeNotice = ev;
+      startSpinner();
+      recomputeFooter();
+      redrawFooter();
+    },
+    onNoticeCleared: (id: string) => {
+      if (activeNotice && activeNotice.id === id) {
+        activeNotice = null;
+        stopSpinner();
+        recomputeFooter();
         redrawFooter();
       }
     },
@@ -204,7 +262,7 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
       lastSessionTitle = nextTitle;
       lastActivity = nextActivity;
       if (footerState.kind === 'idle') {
-        footerState = buildIdle(lastSessionTitle, lastActivity);
+        recomputeFooter();
         redrawFooter();
       }
     } catch {
@@ -248,6 +306,7 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
   process.stdin.off('data', onStdinData);
   process.stdout.off('resize', onResize);
   clearInterval(statusTimer);
+  stopSpinner();
   if (process.stdin.isTTY) process.stdin.setRawMode(false);
   process.stdin.pause();
   stream.close();

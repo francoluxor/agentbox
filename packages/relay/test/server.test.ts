@@ -184,6 +184,59 @@ describe('relay server', () => {
     expect(entry?.projectIndex).toBe(7);
   });
 
+  it('/admin/notices/set returns an id and /clear removes it', async () => {
+    const set = await fetchJson(handle, 'POST', '/admin/notices/set', {
+      body: { boxId: 'nb', kind: 'checkpoint', message: 'frozen' },
+    });
+    expect(set.status).toBe(200);
+    const id = (set.body as { id: string }).id;
+    expect(typeof id).toBe('string');
+    expect(handle.notices.forBox('nb').map((n) => n.id)).toEqual([id]);
+
+    const clear = await fetchJson(handle, 'POST', '/admin/notices/clear', {
+      body: { boxId: 'nb', id },
+    });
+    expect(clear.status).toBe(204);
+    expect(handle.notices.forBox('nb')).toHaveLength(0);
+  });
+
+  it('/admin/notices/set rejects a body missing message', async () => {
+    const r = await fetchJson(handle, 'POST', '/admin/notices/set', {
+      body: { boxId: 'nb', kind: 'checkpoint' },
+    });
+    expect(r.status).toBe(400);
+  });
+
+  it('/admin/prompts/stream replays an active notice on connect', async () => {
+    const set = await fetchJson(handle, 'POST', '/admin/notices/set', {
+      body: { boxId: 'sse-box', kind: 'checkpoint', message: 'frozen' },
+    });
+    const id = (set.body as { id: string }).id;
+
+    const port = (handle.server.address() as AddressInfo).port;
+    const ctrl = new AbortController();
+    try {
+      const res = await fetch(
+        `http://127.0.0.1:${String(port)}/admin/prompts/stream?boxId=sse-box`,
+        { signal: ctrl.signal },
+      );
+      expect(res.status).toBe(200);
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      let sawNotice = false;
+      for (let i = 0; i < 20 && !sawNotice; i++) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value);
+        if (buf.includes('event: notice-set') && buf.includes(id)) sawNotice = true;
+      }
+      expect(sawNotice).toBe(true);
+    } finally {
+      ctrl.abort();
+    }
+  });
+
   it('writes box-status into <id>-<n>-<mnemonic>/status.json when projectIndex is set', async () => {
     // Re-home $HOME so the status-store writes under a tmp dir and doesn't
     // pollute the user's ~/.agentbox during tests.

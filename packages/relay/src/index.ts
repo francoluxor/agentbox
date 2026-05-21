@@ -6,14 +6,17 @@ export {
   RELAY_EVENT_RING_SIZE,
 } from './types.js';
 export type {
+  BoxNoticeEvent,
   BoxRegistration,
   BoxWorktree,
   CheckpointRpcParams,
+  ClearNoticeBody,
   CpRpcParams,
   DownloadKind,
   DownloadRpcParams,
   GitRpcParams,
   GitRpcResult,
+  NoticeKind,
   PostEventBody,
   PostRpcBody,
   PromptAnswerBody,
@@ -22,6 +25,7 @@ export type {
   PromptKind,
   RegisterBoxBody,
   RelayEvent,
+  SetNoticeBody,
 } from './types.js';
 export { BoxRegistry, EventBuffer } from './registry.js';
 export {
@@ -31,6 +35,7 @@ export {
   PromptSubscribers,
   type PromptResolution,
 } from './prompts.js';
+export { BoxNotices } from './notices.js';
 export { BoxStatusStore, isValidBoxStatus, type BoxStatusSnapshot } from './status-store.js';
 export {
   createRelayServer,

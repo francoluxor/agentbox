@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { BoxNotices } from './notices.js';
 import { askPrompt, isPromptAnswerBody, PendingPrompts, PromptSubscribers } from './prompts.js';
 import { BoxRegistry, EventBuffer } from './registry.js';
 import { BoxStatusStore, isValidBoxStatus } from './status-store.js';
@@ -7,6 +8,7 @@ import type {
   BoxRegistration,
   BoxWorktree,
   CheckpointRpcParams,
+  ClearNoticeBody,
   CpRpcParams,
   DownloadKind,
   DownloadRpcParams,
@@ -17,6 +19,7 @@ import type {
   PromptAnswerBody,
   RegisterBoxBody,
   RelayEvent,
+  SetNoticeBody,
 } from './types.js';
 
 export interface RelayServerOptions {
@@ -33,6 +36,7 @@ export interface RelayServerHandle {
   statusStore: BoxStatusStore;
   prompts: PendingPrompts;
   subscribers: PromptSubscribers;
+  notices: BoxNotices;
   url: string;
   close: () => Promise<void>;
 }
@@ -119,8 +123,10 @@ function isLoopbackAddress(addr: string | undefined): boolean {
  *   GET  /admin/box-status      — loopback only; query `box`; latest snapshot.
  *   GET  /admin/events          — loopback only; query `box`, `since`.
  *   GET  /admin/registry        — loopback only; list registered boxes (token redacted).
- *   GET  /admin/prompts/stream  — loopback only; SSE; pushes prompt-ask/prompt-resolved/ping events.
+ *   GET  /admin/prompts/stream  — loopback only; SSE; pushes prompt-ask/prompt-resolved/notice-set/notice-clear/ping events.
  *   POST /admin/prompts/answer  — loopback only; resolves a pending prompt by id.
+ *   POST /admin/notices/set     — loopback only; sets an informational box notice (returns {id}).
+ *   POST /admin/notices/clear   — loopback only; clears a box notice by id.
  *   GET  /healthz               — liveness probe (no auth).
  */
 export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
@@ -130,6 +136,7 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
   const statusStore = new BoxStatusStore();
   const prompts = new PendingPrompts();
   const subscribers = new PromptSubscribers();
+  const notices = new BoxNotices(subscribers);
   const host = opts.host ?? '0.0.0.0';
 
   const server = createServer((req, res) => {
@@ -425,6 +432,11 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
       for (const ev of prompts.forBox(boxId)) {
         res.write(`event: prompt-ask\ndata: ${JSON.stringify(ev)}\n\n`);
       }
+      // Then any active notices, so a wrapper attaching mid-checkpoint still
+      // sees the in-progress warning (prompts first — they outrank notices).
+      for (const ev of notices.forBox(boxId)) {
+        res.write(`event: notice-set\ndata: ${JSON.stringify(ev)}\n\n`);
+      }
       const heartbeat = setInterval(() => {
         try {
           res.write(`event: ping\ndata: {"ts":"${new Date().toISOString()}"}\n\n`);
@@ -463,6 +475,42 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
       return;
     }
 
+    if (route === 'POST /admin/notices/set') {
+      const body = await readJsonBody<SetNoticeBody>(req);
+      if (
+        !body ||
+        typeof body.boxId !== 'string' ||
+        body.boxId.length === 0 ||
+        typeof body.kind !== 'string' ||
+        body.kind.length === 0 ||
+        typeof body.message !== 'string' ||
+        body.message.length === 0
+      ) {
+        send(res, 400, { error: 'expected {boxId, kind, message}' });
+        return;
+      }
+      const ttlMs =
+        typeof body.ttlMs === 'number' && Number.isFinite(body.ttlMs) && body.ttlMs > 0
+          ? body.ttlMs
+          : undefined;
+      const id = notices.set(body.boxId, body.kind, body.message, ttlMs);
+      log(`notice-set box=${body.boxId} kind=${body.kind} id=${id}`);
+      send(res, 200, { id });
+      return;
+    }
+
+    if (route === 'POST /admin/notices/clear') {
+      const body = await readJsonBody<ClearNoticeBody>(req);
+      if (!body || typeof body.id !== 'string' || body.id.length === 0) {
+        send(res, 400, { error: 'expected {boxId, id}' });
+        return;
+      }
+      notices.clear(body.id);
+      log(`notice-clear id=${body.id}`);
+      send(res, 204, null);
+      return;
+    }
+
     send(res, 404, { error: 'not found', route });
   }
 
@@ -491,6 +539,7 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
     statusStore,
     prompts,
     subscribers,
+    notices,
     url: `http://${host}:${String(opts.port)}`,
     close: () =>
       new Promise<void>((resolve, reject) => {

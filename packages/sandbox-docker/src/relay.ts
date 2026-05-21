@@ -397,6 +397,43 @@ export async function forgetBoxFromRelay(boxId: string): Promise<void> {
   }
 }
 
+/**
+ * Best-effort: register an informational notice for a box so attached
+ * `agentbox claude` footers / the dashboard show it (e.g. a spinner while a
+ * checkpoint freezes the box). Returns the notice id, or null when the relay
+ * is unreachable / too old to know the route — the caller treats a null id
+ * as "nothing to clear later". Never throws: a missing notice must not fail
+ * the operation it was decorating.
+ */
+export async function setRelayNotice(
+  boxId: string,
+  kind: string,
+  message: string,
+  ttlMs?: number,
+): Promise<string | null> {
+  try {
+    const body = await adminPostForJson('/admin/notices/set', {
+      boxId,
+      kind,
+      message,
+      ...(typeof ttlMs === 'number' ? { ttlMs } : {}),
+    });
+    const id = (body as { id?: unknown } | null)?.id;
+    return typeof id === 'string' && id.length > 0 ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Best-effort: clear a notice previously set via {@link setRelayNotice}. */
+export async function clearRelayNotice(boxId: string, id: string): Promise<void> {
+  try {
+    await adminPost('/admin/notices/clear', { boxId, id });
+  } catch {
+    // best-effort
+  }
+}
+
 async function adminPost(path: string, body: unknown): Promise<void> {
   const json = JSON.stringify(body);
   await new Promise<void>((resolveP, rejectP) => {
@@ -424,6 +461,51 @@ async function adminPost(path: string, body: unknown): Promise<void> {
             rejectP(new Error(`relay ${path} → ${String(status)}: ${text}`));
           }
         });
+      },
+    );
+    req.on('error', rejectP);
+    req.on('timeout', () => {
+      req.destroy();
+      rejectP(new Error(`relay ${path} timeout`));
+    });
+    req.write(json);
+    req.end();
+  });
+}
+
+/** Like {@link adminPost} but resolves with the parsed JSON response body. */
+async function adminPostForJson(path: string, body: unknown): Promise<unknown> {
+  const json = JSON.stringify(body);
+  return new Promise<unknown>((resolveP, rejectP) => {
+    const req = httpRequest(
+      {
+        host: '127.0.0.1',
+        port: PORT,
+        method: 'POST',
+        path,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(json).toString(),
+        },
+        timeout: 3000,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => {
+          const status = res.statusCode ?? 0;
+          if (status < 200 || status >= 300) {
+            rejectP(new Error(`relay ${path} → ${String(status)}`));
+            return;
+          }
+          const text = Buffer.concat(chunks).toString('utf8');
+          try {
+            resolveP(text.length > 0 ? JSON.parse(text) : {});
+          } catch (err) {
+            rejectP(err instanceof Error ? err : new Error(String(err)));
+          }
+        });
+        res.on('error', rejectP);
       },
     );
     req.on('error', rejectP);

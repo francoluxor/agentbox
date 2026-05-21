@@ -4,7 +4,8 @@ import type { PromptAskEvent } from '@agentbox/relay';
 /**
  * Footer rendering state. `idle` reuses the dashboard's `statusLine` shape
  * (brand chip + box name + optional session title + right-aligned hint);
- * `prompt` is shown while a `prompt-ask` event is being captured.
+ * `prompt` is shown while a `prompt-ask` event is being captured; `notice`
+ * is an animated informational warning (e.g. checkpoint in progress).
  */
 export type FooterState =
   | {
@@ -20,12 +21,32 @@ export type FooterState =
        *  shell → no hints (no leader chord in plain bash). */
       mode: 'claude' | 'shell';
     }
-  | { kind: 'prompt'; prompt: PromptAskEvent };
+  | { kind: 'prompt'; prompt: PromptAskEvent }
+  | {
+      kind: 'notice';
+      /** Warning text, e.g. "Checkpoint in progress — …". */
+      message: string;
+      /** Monotonic counter; the spinner glyph is `SPINNER_FRAMES[frame % len]`. */
+      frame: number;
+    };
+
+/**
+ * Spinner cycle for the `notice` footer. Solid half-filled circles, not
+ * braille: braille glyphs read as a faint dot cluster on the yellow banner
+ * (set vs unset dots are hard to tell apart), so the motion gets lost. The
+ * rotating black half of these is unambiguous.
+ */
+export const SPINNER_FRAMES = ['◐', '◓', '◑', '◒'] as const;
 
 const URGENT = '\x1b[38;5;220m\x1b[1m'; // bright yellow + bold (active prompt)
 const TXT = '\x1b[38;5;250m'; // dim gray body text
 const SUBTLE = '\x1b[38;5;245m'; // very dim (Y/N hint)
 const RESET = '\x1b[0m';
+// Notice footer = a full-width warning banner: bright yellow background with
+// near-black bold text. High contrast so the "box is frozen" state is
+// unmissable — deliberately louder than the dim-on-dark idle/prompt bars.
+const NOTICE_BG = '\x1b[48;5;220m'; // bright yellow background
+const NOTICE_FG = '\x1b[38;5;16m\x1b[1m'; // near-black + bold text
 
 /** Hint groups passed to `statusLine`. Claude mode shows just the detach
  *  chord — no `code`/`vnc`/`web` shortcuts here (the wrapper isn't the
@@ -69,6 +90,16 @@ export function renderFooter(state: FooterState, cols: number): string {
     // because `claudeActivity` is undefined and the container is running).
     const stateLabel = state.mode === 'shell' ? 'shell' : undefined;
     return statusLine(sidebarBox, cols, stateLabel, hints);
+  }
+  if (state.kind === 'notice') {
+    // Notice state: "<spinner> <message>" rendered as a full-width
+    // high-contrast yellow warning banner. The spinner reassures the user
+    // the box is busy, not stuck.
+    const spinner = SPINNER_FRAMES[state.frame % SPINNER_FRAMES.length]!;
+    const prefix = ` ${spinner} `;
+    const inner = Math.max(0, cols - prefix.length);
+    const message = padTo(state.message, inner);
+    return `${NOTICE_BG}${NOTICE_FG}${prefix}${message}${RESET}`;
   }
   // Prompt state: "[!] <message> [detail]  [y/N]"
   // The y/N hint is suffixed; we squeeze the message+detail into the space
