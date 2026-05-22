@@ -3,7 +3,7 @@ import { chmod, mkdir, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { readLogFile, type Supervisor } from './supervisor.js';
 import { collectPorts, type StatusReporter } from './status-reporter.js';
-import { probeClaudeSession } from './tmux.js';
+import { probeAgentSession } from './tmux.js';
 import {
   CLAUDE_ACTIVITY_STATES,
   DEFAULT_CLAUDE_SESSION_NAME,
@@ -150,7 +150,7 @@ async function handleConnection(sock: Socket, opts: ServerOptions): Promise<void
       return;
     }
     case 'claude-session': {
-      const data = await probeClaudeSession(req.sessionName ?? DEFAULT_CLAUDE_SESSION_NAME);
+      const data = await probeAgentSession(req.sessionName ?? DEFAULT_CLAUDE_SESSION_NAME);
       writeLine(sock, { ok: true, data });
       sock.end();
       return;
@@ -160,6 +160,16 @@ async function handleConnection(sock: Socket, opts: ServerOptions): Promise<void
         writeLine(sock, { ok: false, error: `invalid claude state: ${String(req.state)}` });
       } else {
         opts.reporter?.setClaudeState(req.state);
+        writeLine(sock, { ok: true, data: 'ok' });
+      }
+      sock.end();
+      return;
+    }
+    case 'codex-state': {
+      if (!CLAUDE_ACTIVITY_STATES.includes(req.state)) {
+        writeLine(sock, { ok: false, error: `invalid codex state: ${String(req.state)}` });
+      } else {
+        opts.reporter?.setCodexState(req.state);
         writeLine(sock, { ok: true, data: 'ok' });
       }
       sock.end();

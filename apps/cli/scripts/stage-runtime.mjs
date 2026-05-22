@@ -47,6 +47,7 @@ const contextFiles = [
   'packages/sandbox-docker/scripts/agentbox-open',
   'packages/sandbox-docker/scripts/custom-system-CLAUDE.md',
   'packages/sandbox-docker/scripts/claude-managed-settings.json',
+  'packages/sandbox-docker/scripts/agentbox-codex-hooks.json',
 ];
 
 let missing = 0;

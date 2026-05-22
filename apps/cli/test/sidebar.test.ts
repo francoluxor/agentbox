@@ -15,10 +15,10 @@ import {
 
 describe('activityCell', () => {
   it('maps claude activity for running boxes', () => {
-    expect(activityCell({ id: '1', name: 'a', state: 'running', claudeActivity: 'working' })).toBe(
+    expect(activityCell({ id: '1', name: 'a', state: 'running', activity: 'working' })).toBe(
       '● working',
     );
-    expect(activityCell({ id: '1', name: 'a', state: 'running', claudeActivity: 'waiting' })).toBe(
+    expect(activityCell({ id: '1', name: 'a', state: 'running', activity: 'waiting' })).toBe(
       '◐ waiting',
     );
     expect(activityCell({ id: '1', name: 'a', state: 'running' })).toBe('? unknown');
@@ -32,7 +32,7 @@ describe('activityCell', () => {
         id: '1',
         name: 'a',
         state: 'running',
-        claudeActivity: 'working',
+        activity: 'working',
         pendingPrompt: true,
       }),
     ).toBe('▲ prompt');
@@ -46,7 +46,7 @@ describe('activityCell', () => {
 
 describe('sidebarLines', () => {
   const boxes = [
-    { id: 'aaa', name: 'api', state: 'running', claudeActivity: 'idle', project: '/p/proj' },
+    { id: 'aaa', name: 'api', state: 'running', activity: 'idle', project: '/p/proj' },
     { id: 'bbb', name: 'web', state: 'stopped', project: '/p/proj' },
   ];
 
@@ -67,8 +67,8 @@ describe('sidebarLines', () => {
 
   it('groups boxes under a centered project header', () => {
     const multi = [
-      { id: 'a', name: 'api', state: 'running', claudeActivity: 'idle', project: '/work/alpha' },
-      { id: 'b', name: 'web', state: 'running', claudeActivity: 'idle', project: '/work/beta' },
+      { id: 'a', name: 'api', state: 'running', activity: 'idle', project: '/work/alpha' },
+      { id: 'b', name: 'web', state: 'running', activity: 'idle', project: '/work/beta' },
     ];
     const { lines, rowOwner, headerRows } = sidebarLines(multi, 'a', 30, 10);
     const hA = lines.findIndex((l) => l.includes('alpha'));
@@ -104,12 +104,12 @@ describe('sidebarLines', () => {
     expect(unsel.lines[ui]!).toContain(NEW_BOX_LABEL);
   });
 
-  it('renders a rounded top border (top+right only) as the header, reserves 2 lines', () => {
+  it('renders a top border (top+right only) as the header, reserves 2 lines', () => {
     expect(SIDEBAR_HEADER_LINES).toBe(2);
     const { lines, headerRows, rowOwner } = sidebarLines(boxes, 'aaa', 24, 8);
     const h = lines[0]!;
     expect(h).toHaveLength(24);
-    expect(h.startsWith('╭─── AgentBox ')).toBe(true); // rounded corner, left-anchored
+    expect(h.startsWith('──── AgentBox ')).toBe(true); // straight line, left-anchored
     expect(h.endsWith('─')).toBe(true); // border runs to the right edge (no padding)
     expect(h).not.toContain('═'); // old style gone
     expect(headerRows[0]).toBe(true);
@@ -123,7 +123,7 @@ describe('statusLine', () => {
   const stripAnsi = (s: string): string => s.replace(ANSI, '');
 
   it('matches the tmux footer palette with white keys + gray labels', () => {
-    const s = statusLine({ id: '1', name: 'api', state: 'running', claudeActivity: 'working' }, 200);
+    const s = statusLine({ id: '1', name: 'api', state: 'running', activity: 'working' }, 200);
     // dark bar (truecolor #303030), blue brand (39), gray labels (245), white keys (255)
     expect(s).toContain('48;2;48;48;48');
     expect(s).toContain('48;5;39');
@@ -144,7 +144,7 @@ describe('statusLine', () => {
   };
 
   it('collapsed tier keeps the switch hint + the leader when full hints do not fit', () => {
-    const s = statusLine({ id: '1', name: 'api', state: 'running', claudeActivity: 'idle' }, 100);
+    const s = statusLine({ id: '1', name: 'api', state: 'running', activity: 'idle' }, 100);
     const p = stripAnsi(s);
     expect(s).toContain('48;5;39');
     expect(p).toHaveLength(100);
@@ -155,7 +155,7 @@ describe('statusLine', () => {
   });
 
   it('brand-core-only when even the collapsed hint cannot fit', () => {
-    const s = statusLine({ id: '1', name: 'api', state: 'running', claudeActivity: 'idle' }, 16);
+    const s = statusLine({ id: '1', name: 'api', state: 'running', activity: 'idle' }, 16);
     const p = stripAnsi(s);
     expect(p).toHaveLength(16);
     expect(p).not.toContain('more');
@@ -166,7 +166,7 @@ describe('statusLine', () => {
       id: '1',
       name: 'api',
       state: 'running',
-      claudeActivity: 'working',
+      activity: 'working',
       sessionTitle: 'A reasonably long Claude session title here',
     };
     // Full hints (~152 cols) + leftover for a shrunk title.
@@ -188,7 +188,7 @@ describe('statusLine', () => {
       id: '1',
       name: 'api',
       state: 'running',
-      claudeActivity: 'working',
+      activity: 'working',
       sessionTitle: 'Some session title',
     };
     const p = stripAnsi(statusLine(box, 120));
@@ -198,7 +198,7 @@ describe('statusLine', () => {
   });
 
   it('spells keys by name (no ⌥/^ glyphs) as "KEYS: label"', () => {
-    const s = statusLine({ id: '1', name: 'api', state: 'running', claudeActivity: 'idle' }, 200);
+    const s = statusLine({ id: '1', name: 'api', state: 'running', activity: 'idle' }, 200);
     const printable = stripAnsi(s);
     expect(printable).toHaveLength(200);
     expect(printable).toContain('Control+a c: code');
@@ -209,7 +209,7 @@ describe('statusLine', () => {
   });
 
   it('default hints stay code/vnc/web; advanced groups add stop/pause/destroy', () => {
-    const box = { id: '1', name: 'api', state: 'running', claudeActivity: 'idle' };
+    const box = { id: '1', name: 'api', state: 'running', activity: 'idle' };
     const normal = stripAnsi(statusLine(box, 200));
     expect(normal).toContain('code');
     expect(normal).not.toContain('stop');
@@ -222,8 +222,8 @@ describe('statusLine', () => {
     expect(advanced).toHaveLength(200);
   });
 
-  it('uses the stateLabel override (shell/menu) instead of claudeActivity', () => {
-    const box = { id: '1', name: 'api', state: 'running', claudeActivity: 'unknown' };
+  it('uses the stateLabel override (shell/menu) instead of activity', () => {
+    const box = { id: '1', name: 'api', state: 'running', activity: 'unknown' };
     expect(statusLine(box, 60, 'shell')).toContain('api (shell)');
     expect(statusLine(box, 60, 'menu')).toContain('api (menu)');
     expect(statusLine(box, 60)).toContain('api (unknown)');
@@ -231,13 +231,15 @@ describe('statusLine', () => {
 });
 
 describe('menuLines', () => {
-  it('is exactly h lines × w cols and offers the c/s actions', () => {
-    const lines = menuLines('web-2', 40, 20);
+  it('is exactly h lines × w cols and offers the claude/codex/opencode/shell actions', () => {
+    const lines = menuLines('web-2', 44, 20);
     expect(lines).toHaveLength(20);
-    for (const l of lines) expect(l).toHaveLength(40);
+    for (const l of lines) expect(l).toHaveLength(44);
     const joined = lines.join('\n');
-    expect(joined).toContain('No Claude session in web-2.');
-    expect(joined).toContain('[c]  Start Claude here');
+    expect(joined).toContain('No agent session in web-2.');
+    expect(joined).toContain('[c]  Start Claude');
+    expect(joined).toContain('[x]  Start Codex');
+    expect(joined).toContain('[o]  Start OpenCode');
     expect(joined).toContain('[s]  Open a shell');
   });
 
@@ -286,13 +288,15 @@ describe('lifecycleMenuLines', () => {
 });
 
 describe('createMenuLines', () => {
-  it('is exactly h lines × w cols and offers create-with/without-claude', () => {
+  it('is exactly h lines × w cols and offers a claude/codex/opencode/create-only picker', () => {
     const lines = createMenuLines('/home/me/proj', 50, 20);
     expect(lines).toHaveLength(20);
     for (const l of lines) expect(l).toHaveLength(50);
     const joined = lines.join('\n');
     expect(joined).toContain('Create a new box');
     expect(joined).toContain('[c]  Create + launch Claude');
+    expect(joined).toContain('[x]  Create + launch Codex');
+    expect(joined).toContain('[o]  Create + launch OpenCode');
     expect(joined).toContain('[n]  Create only');
     expect(joined).toContain('/home/me/proj');
   });
@@ -319,7 +323,7 @@ describe('session title', () => {
         id: 'a',
         name: 'express-server-78b94c78',
         state: 'running',
-        claudeActivity: 'working',
+        activity: 'working',
         sessionTitle: '✳ Fix login bug',
         index: 1,
         project: '/p',
@@ -334,13 +338,31 @@ describe('session title', () => {
     expect(row).not.toContain('express-server'); // name hidden when title exists
   });
 
+  it('leaves a 1-char right margin so the status does not touch the border', () => {
+    const boxes = [
+      {
+        id: 'a',
+        name: 'api',
+        state: 'running',
+        activity: 'working',
+        sessionTitle: 'Fix login bug',
+        index: 1,
+        project: '/p',
+      },
+    ];
+    const row = boxRowOf(boxes, 'a', 60);
+    expect(row).toHaveLength(60);
+    expect(row.endsWith('working ')).toBe(true); // status + trailing margin
+    expect(row[59]).toBe(' '); // last column is the blank margin
+  });
+
   it('ellipsizes the title (tail-cut) but keeps the status fully visible', () => {
     const boxes = [
       {
         id: 'a',
         name: 'api',
         state: 'running',
-        claudeActivity: 'idle',
+        activity: 'idle',
         sessionTitle: 'A very long session title that will not fit at all here',
         index: 2,
         project: '/p',
@@ -358,7 +380,7 @@ describe('session title', () => {
         id: 'a',
         name: 'express-server-78b94c78',
         state: 'running',
-        claudeActivity: 'idle',
+        activity: 'idle',
         index: 3,
         project: '/p',
       },
@@ -385,7 +407,7 @@ describe('session title', () => {
   });
 
   it('omits the [N] prefix for pre-feature boxes with no index', () => {
-    const boxes = [{ id: 'a', name: 'api', state: 'running', claudeActivity: 'idle' }];
+    const boxes = [{ id: 'a', name: 'api', state: 'running', activity: 'idle' }];
     const row = boxRowOf(boxes, 'a', 40);
     expect(row).toContain('▸api');
     expect(row).not.toContain('>'); // no number → no "N > " segment
@@ -393,7 +415,7 @@ describe('session title', () => {
 
   it('status bar appends "— <title>" to the brand block', () => {
     const s = statusLine(
-      { id: '1', name: 'api', state: 'running', claudeActivity: 'working', sessionTitle: 'Refactor auth' },
+      { id: '1', name: 'api', state: 'running', activity: 'working', sessionTitle: 'Refactor auth' },
       200,
     );
     expect(stripAnsi(s)).toContain('api (working) — Refactor auth');
@@ -402,7 +424,7 @@ describe('session title', () => {
   it('status bar ellipsizes a long title to 40 chars', () => {
     const long = 'x'.repeat(80);
     const s = statusLine(
-      { id: '1', name: 'api', state: 'running', claudeActivity: 'idle', sessionTitle: long },
+      { id: '1', name: 'api', state: 'running', activity: 'idle', sessionTitle: long },
       300,
     );
     const p = stripAnsi(s);
@@ -412,7 +434,7 @@ describe('session title', () => {
   });
 
   it('status bar unchanged when no title is set', () => {
-    const s = statusLine({ id: '1', name: 'api', state: 'running', claudeActivity: 'idle' }, 200);
+    const s = statusLine({ id: '1', name: 'api', state: 'running', activity: 'idle' }, 200);
     expect(stripAnsi(s)).toContain('api (idle) ');
     expect(stripAnsi(s)).not.toContain('—');
   });

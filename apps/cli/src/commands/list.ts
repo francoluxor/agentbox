@@ -102,7 +102,14 @@ function agentSummary(b: ListedBox): string {
   if (b.claudeActivity && b.claudeActivity !== 'unknown') {
     agents.push(`claude:${b.claudeActivity}`);
   }
-  if (b.codexSession?.running) agents.push('codex');
+  // Codex: show its activity when a hook has reported one; otherwise fall back
+  // to a plain `codex` so a running codex box stays visible before the first
+  // hook fires (or on boxes whose image predates the codex hooks).
+  if (b.codexActivity && b.codexActivity !== 'unknown') {
+    agents.push(`codex:${b.codexActivity}`);
+  } else if (b.codexSession?.running) {
+    agents.push('codex');
+  }
   if (b.opencodeSession?.running) agents.push('opencode');
   return agents.length > 0 ? agents.join(', ') : '-';
 }

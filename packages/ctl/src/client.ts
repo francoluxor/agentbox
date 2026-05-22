@@ -178,6 +178,13 @@ export async function claudeState(
   return sendOneShot<'ok'>(opts, { op: 'claude-state', state });
 }
 
+export async function codexState(
+  opts: ConnectOptions,
+  state: ClaudeActivityState,
+): Promise<'ok'> {
+  return sendOneShot<'ok'>(opts, { op: 'codex-state', state });
+}
+
 export interface LogsResult {
   initial: LogEvent[];
   /**

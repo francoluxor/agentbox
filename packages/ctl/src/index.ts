@@ -1,6 +1,9 @@
 export type {
+  AgentActivityState,
   BoxStatus,
   BoxStatusClaude,
+  BoxStatusCodex,
+  BoxStatusOpencode,
   BoxStatusPort,
   BoxStatusServiceEntry,
   BoxStatusTaskEntry,

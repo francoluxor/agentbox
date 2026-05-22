@@ -367,6 +367,13 @@ RUN chmod 0644 /etc/claude-code/CLAUDE.md
 COPY packages/sandbox-docker/scripts/claude-managed-settings.json /etc/claude-code/managed-settings.json
 RUN chmod 0644 /etc/claude-code/managed-settings.json
 
+# Codex activity-reporting hooks. Unlike Claude's managed-settings (an /etc
+# enterprise path), Codex discovers hooks at ~/.codex/hooks.json — so this is
+# staged in the image and seeded into the codex-config volume by
+# seedCodexHooks() at create/start time. See packages/sandbox-docker/src/codex.ts.
+COPY packages/sandbox-docker/scripts/agentbox-codex-hooks.json /usr/local/share/agentbox/codex-hooks.json
+RUN chmod 0644 /usr/local/share/agentbox/codex-hooks.json
+
 # /etc/agentbox/ holds runtime-injected box.env (written by `agentbox create`
 # via docker exec). Pre-created here so the writable layer starts with the
 # right perms; the file itself appears at create time.

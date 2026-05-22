@@ -3,9 +3,11 @@ export interface SidebarBox {
   name: string;
   /** Container state: 'running' | 'paused' | 'stopped' | 'missing' | … */
   state: string;
-  /** 'working' | 'idle' | 'waiting' | 'unknown' | undefined */
-  claudeActivity?: string;
-  /** The in-box terminal title Claude set, or undefined when none. */
+  /** Activity of the agent this box runs (claude / codex) — 'working' | 'idle'
+   *  | 'waiting' | 'unknown' | undefined. Resolved from whichever agent is
+   *  active (see `resolveAgent` in commands/dashboard.ts). */
+  activity?: string;
+  /** The in-box terminal/session title the active agent set, or undefined. */
   sessionTitle?: string;
   /** 1-based per-project box number, shown as `[N]`; undefined for
    *  pre-feature boxes and the synthetic "+ New box" entry. */
@@ -60,7 +62,7 @@ export function activityCell(b: SidebarBox): string {
   // A checkpoint freezes the box; surface it over the activity state.
   if (b.checkpointing) return '◆ checkpoint';
   if (b.state !== 'running') return `[${b.state}]`;
-  switch (b.claudeActivity) {
+  switch (b.activity) {
     case 'working':
       return '● working';
     case 'idle':
@@ -78,15 +80,16 @@ export function activityCell(b: SidebarBox): string {
 export const NEW_BOX_ID = '__agentbox_new__';
 export const NEW_BOX_LABEL = '+ New box';
 
-/** Sidebar banner label (rendered into the rounded top border). */
+/** Sidebar banner label (rendered into the top border). */
 export const SIDEBAR_HEADER = 'AgentBox';
 
-/** Top border that simulates a rounded frame on the top + right only (no
- *  left/bottom, to save space): `╭─── AgentBox ─────…` filling exactly `w`.
- *  The matching rounded top-right corner (`╮`) is drawn by the compositor at
- *  the sidebar separator column. */
+/** Top border: a flat line on the top + a rounded corner into the right edge
+ *  only (no left/bottom, to save space): `──── AgentBox ─────…` filling
+ *  exactly `w`. The left end is a straight line; the matching rounded
+ *  top-right corner (`╮`) is drawn by the compositor at the sidebar separator
+ *  column. */
 function topBorder(label: string, w: number): string {
-  const lead = `╭─── ${label} `;
+  const lead = `──── ${label} `;
   if (lead.length >= w) return lead.slice(0, w);
   return lead + '─'.repeat(w - lead.length);
 }
@@ -134,14 +137,17 @@ function boxRow(b: SidebarBox, marker: string, w: number): string {
   const numStr = b.index != null ? `${b.index} ` : '';
   const status = activityCell(b);
   const left = `${marker}${numStr}`;
-  const room = w - left.length - status.length - 1; // 1 = gap before status
+  // -2: 1 gap before status, 1 margin after so the label doesn't touch the
+  // sidebar's right border.
+  const room = w - left.length - status.length - 2;
   if (room <= 0) return fit(`${left}${status}`, w);
   const middle =
     b.state === 'running' && b.sessionTitle
       ? ellipsize(stripTitleGlyph(b.sessionTitle), room)
       : ellipsizeHead(b.name, room);
-  // Left segment padded so the status sits flush right within `w`.
-  return fit(`${left}${middle}`, w - status.length) + status;
+  // Left segment padded so the status sits one column in from the right edge,
+  // with a trailing space as the right margin.
+  return fit(`${left}${middle}`, w - status.length - 1) + status + ' ';
 }
 
 /**
@@ -196,9 +202,11 @@ export function sidebarLines(
 export function menuLines(boxName: string, w: number, h: number): string[] {
   const body = [
     '',
-    `  No Claude session in ${boxName}.`,
+    `  No agent session in ${boxName}.`,
     '',
-    '   [c]  Start Claude here',
+    '   [c]  Start Claude',
+    '   [x]  Start Codex',
+    '   [o]  Start OpenCode',
     '   [s]  Open a shell',
     '',
     '  Ctrl+Option+↑/↓ switch · Ctrl-a then v/c/w/q (vnc/code/web/quit)',
@@ -255,6 +263,8 @@ export function createMenuLines(where: string, w: number, h: number): string[] {
     '  Create a new box',
     '',
     '   [c]  Create + launch Claude',
+    '   [x]  Create + launch Codex',
+    '   [o]  Create + launch OpenCode',
     '   [n]  Create only',
     '',
     `  in ${where}`,
@@ -319,8 +329,8 @@ export const ADVANCED_HINT_GROUPS: ReadonlyArray<readonly [string, string]> = [
  * Status line, exactly `w` printable columns, colored to match the in-box tmux
  * footer (dark bar, blue ` agentbox ▸ … ` brand block on the left, dim-grey
  * shortcut hints on the right). `stateLabel` overrides the box's activity text
- * (used for `shell` / `menu` panes where claudeActivity would otherwise show a
- * misleading `unknown`). `fallbackGroups`, when given, is the narrow-bar tier
+ * (used for `shell` / `menu` panes where the box `activity` would otherwise
+ * show a misleading `unknown`). `fallbackGroups`, when given, is the narrow-bar tier
  * tried before brand-core-only — used to keep one essential chord pinned
  * (instead of the default dashboard `COLLAPSED_HINT_GROUPS`).
  */
@@ -332,7 +342,7 @@ export function statusLine(
   fallbackGroups?: ReadonlyArray<readonly [string, string]>,
 ): string {
   const state =
-    stateLabel ?? (box ? (box.state === 'running' ? (box.claudeActivity ?? 'unknown') : box.state) : '');
+    stateLabel ?? (box ? (box.state === 'running' ? (box.activity ?? 'unknown') : box.state) : '');
   // "agentbox ▸ " stays normal weight; only the box name + state are bold.
   const brandPrefix = box ? ' agentbox ▸ ' : ' agentbox ';
   // Brand *core* (no title) — the width-protected segment. The title is the

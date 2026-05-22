@@ -76,6 +76,13 @@ export const CLAUDE_ACTIVITY_STATES: readonly ClaudeActivityState[] = [
   'unknown',
 ];
 
+/**
+ * Same coarse activity union, reused for any agent. Codex feeds it via
+ * `agentbox-ctl codex-state <state>` (Codex lifecycle hooks); the value space
+ * is identical to {@link ClaudeActivityState}.
+ */
+export type AgentActivityState = ClaudeActivityState;
+
 export interface BoxStatusServiceEntry {
   name: string;
   state: ServiceState;
@@ -115,6 +122,31 @@ export interface BoxStatusClaude {
 }
 
 /**
+ * Codex session status — parallel to {@link BoxStatusClaude}. `state` is fed by
+ * Codex lifecycle hooks via `agentbox-ctl codex-state <state>`.
+ */
+export interface BoxStatusCodex {
+  state: AgentActivityState;
+  /** ISO-8601 time the last codex-state hook fired, or null if none yet. */
+  updatedAt: string | null;
+  /** Whether the codex tmux session was present at snapshot time. */
+  sessionRunning: boolean;
+  /** Sanitized in-box tmux pane title, when the Codex TUI set one. */
+  sessionTitle?: string;
+}
+
+/**
+ * OpenCode session status. OpenCode has no activity-hook integration yet, so
+ * only the tmux session presence + title are reported (no `state`).
+ */
+export interface BoxStatusOpencode {
+  /** Whether the opencode tmux session was present at snapshot time. */
+  sessionRunning: boolean;
+  /** Sanitized in-box tmux pane title, when the OpenCode TUI set one. */
+  sessionTitle?: string;
+}
+
+/**
  * Durable snapshot of a box's runtime status. The in-box daemon builds it and
  * pushes it to the host relay, which persists it to
  * `~/.agentbox/boxes/<id>/status.json` so `agentbox status` / `list` /
@@ -131,6 +163,13 @@ export interface BoxStatus {
   /** Live-discovered listening TCP ports inside the box. */
   ports: BoxStatusPort[];
   claude: BoxStatusClaude;
+  /**
+   * Codex / OpenCode session status. Additive + optional — present only when
+   * that agent's tmux session is running (or, for codex, a hook has fired);
+   * a claude-only box's snapshot simply omits them (schema stays 1).
+   */
+  codex?: BoxStatusCodex;
+  opencode?: BoxStatusOpencode;
 }
 
 export const BOX_STATUS_SCHEMA = 1 as const;
@@ -150,7 +189,8 @@ export type CtlRequest =
   | { op: 'reload' }
   | { op: 'ping' }
   | { op: 'claude-session'; sessionName?: string }
-  | { op: 'claude-state'; state: ClaudeActivityState };
+  | { op: 'claude-state'; state: ClaudeActivityState }
+  | { op: 'codex-state'; state: AgentActivityState };
 
 export type CtlResponse = { ok: true; data: unknown } | { ok: false; error: string };
 
@@ -176,3 +216,5 @@ export const DEFAULT_SOCKET_PATH = '/run/agentbox/ctl.sock';
 export const DEFAULT_CONFIG_PATH = '/workspace/agentbox.yaml';
 export const DEFAULT_LOG_DIR = '/var/log/agentbox';
 export const DEFAULT_CLAUDE_SESSION_NAME = 'claude';
+export const DEFAULT_CODEX_SESSION_NAME = 'codex';
+export const DEFAULT_OPENCODE_SESSION_NAME = 'opencode';

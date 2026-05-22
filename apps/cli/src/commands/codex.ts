@@ -17,6 +17,7 @@ import {
   formatDetachNotice,
   inspectBox,
   runInteractiveCodexLogin,
+  seedCodexHooks,
   SHARED_CODEX_VOLUME,
   startBox,
   startCodexSession,
@@ -368,6 +369,11 @@ async function startOrAttachCodex(
       { volume: box.codexConfigVolume },
       { syncFromHost: true, image: box.image },
     );
+  }
+  // Re-seed the Codex activity hooks (box-only, image-versioned — runs even
+  // with --no-sync-config so an image upgrade still propagates).
+  if (box.codexConfigVolume) {
+    await seedCodexHooks(box.codexConfigVolume, box.image);
   }
 
   // Install codex if the box image lacks it (checkpoint predating Codex).

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  buildClaudeDashboardAttachArgv,
+  buildDashboardAttachArgv,
   buildClaudeLoginRunArgv,
   buildClaudeMounts,
   buildTmuxSessionArgs,
@@ -28,9 +28,9 @@ describe('resolveClaudeVolume', () => {
   });
 });
 
-describe('buildClaudeDashboardAttachArgv', () => {
+describe('buildDashboardAttachArgv', () => {
   it('attaches via a grouped sibling session with the inner status bar off', () => {
-    const argv = buildClaudeDashboardAttachArgv('agentbox-box1');
+    const argv = buildDashboardAttachArgv('agentbox-box1');
     const dash = `${DEFAULT_CLAUDE_SESSION}-dash`;
     // grouped session created (or no-op) before status is changed, attach last
     expect(argv).toEqual([
@@ -63,7 +63,7 @@ describe('buildClaudeDashboardAttachArgv', () => {
   });
 
   it('derives the grouped session from a custom session name', () => {
-    const argv = buildClaudeDashboardAttachArgv('agentbox-box1', 'codex');
+    const argv = buildDashboardAttachArgv('agentbox-box1', 'codex');
     expect(argv).toContain('codex');
     expect(argv).toContain('codex-dash');
     // never attaches directly to the original session (would show its footer)

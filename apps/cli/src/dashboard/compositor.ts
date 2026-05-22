@@ -35,14 +35,14 @@ const SB_SELECTED = SB_BG + '\x1b[38;5;255m\x1b[1m';
 // (renderFooter URGENT). Reads as "this box needs your attention".
 const SB_PROMPT = SB_BG + '\x1b[38;5;220m\x1b[1m';
 // Bright cyan + bold for the agent's own "awaiting input" state
-// (claudeActivity === 'waiting'). Distinct hue from yellow so the user can
+// (activity === 'waiting'). Distinct hue from yellow so the user can
 // triage at a glance: yellow ▲ = relay needs a decision NOW; cyan ◐ =
 // the agent is idle waiting for the user's direction (less urgent).
 const SB_AWAITING = SB_BG + '\x1b[38;5;51m\x1b[1m';
 const SGR_RESET = '\x1b[0m';
 
 export type RightTarget =
-  | { kind: 'attach'; argv: string[]; mode?: 'claude' | 'shell' }
+  | { kind: 'attach'; argv: string[]; mode?: 'claude' | 'shell' | 'codex' | 'opencode' }
   | { kind: 'menu' }
   | { kind: 'lifecycle-menu'; state: 'paused' | 'stopped' }
   | { kind: 'create-menu'; where: string }
@@ -60,14 +60,17 @@ export interface CompositorDeps {
   listCandidates: () => Promise<SidebarBox[]>;
   /** What the right pane should show for a box (attach argv / menu / message). */
   resolveTarget: (boxId: string) => Promise<RightTarget>;
-  /** Start a proper Claude tmux session in the box, then resolve to attach. */
+  /** Start a Claude / Codex / OpenCode tmux session in the box, resolve to attach. */
   startClaude: (boxId: string) => Promise<RightTarget>;
+  startCodex: (boxId: string) => Promise<RightTarget>;
+  startOpencode: (boxId: string) => Promise<RightTarget>;
   /** Open an interactive shell in the box, resolve to attach. */
   openShell: (boxId: string) => Promise<RightTarget>;
-  /** Create a new box (config defaults). With Claude: also start + return an
-   *  attach target. `onProgress` streams createBox log lines. */
+  /** Create a new box (config defaults). When `agent` is set, also start that
+   *  agent's session + return an attach target; `undefined` = create only.
+   *  `onProgress` streams createBox log lines. */
   createNewBox: (
-    withClaude: boolean,
+    agent: 'claude' | 'codex' | 'opencode' | undefined,
     onProgress: (line: string) => void,
   ) => Promise<{ boxId: string; attach?: RightTarget }>;
   /** Resume a non-running box (unpause if paused, start if stopped). */
@@ -145,7 +148,7 @@ export class Compositor {
   /** Drives the spinner animation while {@link activeNotices} is non-empty. */
   private noticeTimer: ReturnType<typeof setInterval> | null = null;
   private readonly promptStreams = new Map<string, PromptStream>();
-  private activeMode: 'claude' | 'shell' = 'claude';
+  private activeMode: 'claude' | 'shell' | 'codex' | 'opencode' = 'claude';
   private flashMsg: string | null = null;
   private flashTimer: ReturnType<typeof setTimeout> | null = null;
   /** True while a start-Claude / open-shell action is in flight (suppresses
@@ -366,7 +369,7 @@ export class Compositor {
 
   private async poll(): Promise<void> {
     const before = JSON.stringify(
-      this.boxes.map((b) => [b.id, b.state, b.claudeActivity, b.sessionTitle]),
+      this.boxes.map((b) => [b.id, b.state, b.activity, b.sessionTitle]),
     );
     await this.refreshBoxes();
     if (this.busy) {
@@ -389,7 +392,7 @@ export class Compositor {
     }
     if (
       JSON.stringify(
-        this.boxes.map((b) => [b.id, b.state, b.claudeActivity, b.sessionTitle]),
+        this.boxes.map((b) => [b.id, b.state, b.activity, b.sessionTitle]),
       ) !== before
     ) {
       this.drawChrome();
@@ -461,6 +464,14 @@ export class Compositor {
         void this.chooseAction('claude');
         return;
       }
+      if (b === 0x78) {
+        void this.chooseAction('codex');
+        return;
+      }
+      if (b === 0x6f) {
+        void this.chooseAction('opencode');
+        return;
+      }
       if (b === 0x73) {
         void this.chooseAction('shell');
         return;
@@ -468,22 +479,34 @@ export class Compositor {
     }
   }
 
-  private async chooseAction(which: 'claude' | 'shell'): Promise<void> {
+  private async chooseAction(which: 'claude' | 'codex' | 'opencode' | 'shell'): Promise<void> {
     if (this.busy) return;
     const id = this.selectedId;
     const name = this.selectedBox()?.name ?? id;
     this.busy = true;
     this.menu = null;
     this.createMenu = null;
-    this.placeholder = ['', which === 'claude' ? '  Starting Claude…' : '  Opening shell…'];
+    const label =
+      which === 'shell'
+        ? 'shell'
+        : which === 'opencode'
+          ? 'OpenCode'
+          : which === 'codex'
+            ? 'Codex'
+            : 'Claude';
+    this.placeholder = ['', which === 'shell' ? '  Opening shell…' : `  Starting ${label}…`];
     this.prevRows = null;
     this.drawChrome();
     this.scheduleRender();
     try {
       const target =
-        which === 'claude'
-          ? await this.deps.startClaude(id)
-          : await this.deps.openShell(id);
+        which === 'shell'
+          ? await this.deps.openShell(id)
+          : which === 'codex'
+            ? await this.deps.startCodex(id)
+            : which === 'opencode'
+              ? await this.deps.startOpencode(id)
+              : await this.deps.startClaude(id);
       if (this.selectedId !== id || this.tornDown) return; // switched away
       this.applyTarget(target);
     } catch (err) {
@@ -491,12 +514,12 @@ export class Compositor {
       const msg = err instanceof Error ? err.message : String(err);
       this.placeholder = [
         '',
-        `  Failed to ${which === 'claude' ? 'start Claude' : 'open a shell'} in ${name}:`,
+        `  Failed to ${which === 'shell' ? 'open a shell' : `start ${label}`} in ${name}:`,
         `  ${msg}`,
         '',
-        which === 'claude'
-          ? `  Try from a shell: agentbox claude start ${name}`
-          : `  Try from a shell: agentbox shell ${name}`,
+        which === 'shell'
+          ? `  Try from a shell: agentbox shell ${name}`
+          : `  Try from a shell: agentbox ${which} start ${name}`,
       ];
       this.prevRows = null;
       this.scheduleRender();
@@ -720,17 +743,25 @@ export class Compositor {
   private handleCreateMenuKey(bytes: Buffer): void {
     for (const b of bytes) {
       if (b === 0x63 || b === 0x0d || b === 0x0a) {
-        void this.chooseCreate(true);
+        void this.chooseCreate('claude');
+        return;
+      }
+      if (b === 0x78) {
+        void this.chooseCreate('codex');
+        return;
+      }
+      if (b === 0x6f) {
+        void this.chooseCreate('opencode');
         return;
       }
       if (b === 0x6e) {
-        void this.chooseCreate(false);
+        void this.chooseCreate(undefined);
         return;
       }
     }
   }
 
-  private async chooseCreate(withClaude: boolean): Promise<void> {
+  private async chooseCreate(agent: 'claude' | 'codex' | 'opencode' | undefined): Promise<void> {
     if (this.busy) return;
     this.busy = true;
     this.menu = null;
@@ -740,7 +771,7 @@ export class Compositor {
     this.drawChrome();
     this.scheduleRender();
     try {
-      const { boxId, attach } = await this.deps.createNewBox(withClaude, (line) => {
+      const { boxId, attach } = await this.deps.createNewBox(agent, (line) => {
         if (this.tornDown) return;
         this.placeholder = ['', '  Creating box…', '  ' + line];
         this.prevRows = null;
@@ -915,7 +946,7 @@ export class Compositor {
       // `boxesWithPrompt` from the inject pass above (same list passed to
       // sidebarLines), so just match on owner.
       const ownerBox = owner !== null ? boxesWithPrompt.find((b) => b.id === owner) : undefined;
-      const isAwaiting = ownerBox?.claudeActivity === 'waiting';
+      const isAwaiting = ownerBox?.activity === 'waiting';
       // Priority: header > selected > pending prompt > awaiting input > body.
       // Selected wins over both attention states because the status-line
       // already shows what the selected box needs; double-yelling would
@@ -973,8 +1004,10 @@ export class Compositor {
           ? 'create'
           : this.menu
             ? 'menu'
-            : this.session && this.activeMode === 'shell'
-              ? 'shell'
+            : // Attached to a non-claude session → label it (shell/codex/
+              // opencode); claude → undefined so claude activity shows.
+              this.session && this.activeMode !== 'claude'
+              ? this.activeMode
               : undefined;
       status = statusLine(
         this.selectedBox(),

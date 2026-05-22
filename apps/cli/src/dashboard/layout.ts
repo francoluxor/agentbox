@@ -19,7 +19,7 @@ export interface DashboardLayout {
   tooSmall: boolean;
 }
 
-export const SIDEBAR_WIDTH = 32;
+export const SIDEBAR_WIDTH = 33;
 const MIN_RIGHT_W = 20;
 const MIN_RIGHT_H = 4;
 

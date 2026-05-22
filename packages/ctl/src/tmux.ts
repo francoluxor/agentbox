@@ -44,15 +44,15 @@ function runTool(cmd: string, args: string[]): Promise<ToolResult> {
 }
 
 /**
- * Probe the in-box tmux session running Claude Code. The daemon runs as
- * `vscode` inside the box, the same user that owns the tmux server socket
- * under /tmp/tmux-1000/. A missing tmux server, missing session, or
- * tmux-not-installed all surface uniformly as `running: false`.
+ * Probe an in-box agent tmux session (claude / codex / opencode) by name. The
+ * daemon runs as `vscode` inside the box, the same user that owns the tmux
+ * server socket under /tmp/tmux-1000/. A missing tmux server, missing session,
+ * or tmux-not-installed all surface uniformly as `running: false`.
  *
  * Shared by the `claude-session` wire op (socket.ts) and the status reporter
  * so both report the same thing.
  */
-export async function probeClaudeSession(sessionName: string): Promise<ClaudeSessionStatus> {
+export async function probeAgentSession(sessionName: string): Promise<ClaudeSessionStatus> {
   const has = await runTool('tmux', ['has-session', '-t', sessionName]);
   if (has.exitCode !== 0)
     return { running: false, sessionName, startedAt: null, title: null };

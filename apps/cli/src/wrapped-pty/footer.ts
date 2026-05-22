@@ -118,7 +118,7 @@ export function renderFooter(state: FooterState, cols: number): string {
       id: '', // unused by statusLine
       name: state.boxName,
       state: 'running', // we're attached, so the container is up
-      claudeActivity: state.claudeActivity,
+      activity: state.claudeActivity,
       sessionTitle: state.sessionTitle,
     };
     const isClaude = state.mode === 'claude';

@@ -3,24 +3,32 @@ import { log } from '@clack/prompts';
 import { Command } from 'commander';
 import { findProjectRoot, loadEffectiveConfig } from '@agentbox/config';
 import {
-  buildClaudeDashboardAttachArgv,
+  buildDashboardAttachArgv,
   buildShellSessionAttachArgv,
   claudeSessionInfo,
   createBox,
+  DEFAULT_CODEX_SESSION,
+  DEFAULT_OPENCODE_SESSION,
   DEFAULT_RELAY_PORT,
   destroyBox,
   ensureBoxBrowser,
+  ensureCodexInstalled,
+  ensureOpencodeInstalled,
   listBoxes,
   pauseBox,
   rebuildPluginNativeDeps,
+  seedCodexHooks,
   SHARED_CLAUDE_VOLUME,
   shellSessionInfo,
   startBox,
   startClaudeSession,
+  startCodexSession,
+  startOpencodeSession,
   startShellSession,
   stopBox,
   syncClaudeCredentials,
   unpauseBox,
+  waitForTmuxPaneContent,
   type ListedBox,
 } from '@agentbox/sandbox-docker';
 import { resolveBoxOrExit } from '../box-ref.js';
@@ -55,13 +63,37 @@ function scoped(all: boolean, projectRoot: string, boxes: ListedBox[]): ListedBo
   return sortBoxes(all ? boxes : boxes.filter((b) => b.projectRoot === projectRoot));
 }
 
+/**
+ * Pick the box's primary agent and return its activity + session title for the
+ * sidebar. A box runs one agent in practice; priority is claude > codex >
+ * opencode. `unknown` activity is not positive evidence (the supervisor seeds
+ * it for every box), so it never pins claude over a running codex/opencode.
+ */
+function resolveAgent(b: ListedBox): { activity?: string; sessionTitle?: string } {
+  const real = (s?: string): boolean => !!s && s !== 'unknown';
+  if (real(b.claudeActivity) || b.claudeSessionTitle) {
+    return { activity: b.claudeActivity, sessionTitle: b.claudeSessionTitle };
+  }
+  if (b.codexSession?.running || real(b.codexActivity)) {
+    return { activity: b.codexActivity, sessionTitle: b.codexSessionTitle };
+  }
+  if (b.opencodeSession?.running) {
+    // OpenCode reports no activity (no plugin) — title only.
+    return { sessionTitle: b.opencodeSessionTitle };
+  }
+  // No positive evidence — fall back to claude's fields, matching today's
+  // behavior for a plain box (`? unknown`, name shown).
+  return { activity: b.claudeActivity, sessionTitle: b.claudeSessionTitle };
+}
+
 function toSidebar(b: ListedBox): SidebarBox {
+  const agent = resolveAgent(b);
   return {
     id: b.id,
     name: b.name,
     state: b.state,
-    claudeActivity: b.claudeActivity,
-    sessionTitle: b.claudeSessionTitle,
+    activity: agent.activity,
+    sessionTitle: agent.sessionTitle,
     index: b.projectIndex,
     project: b.projectRoot,
   };
@@ -136,11 +168,29 @@ export const dashboardCommand = new Command('dashboard')
             ],
           };
         }
-        const info = await claudeSessionInfo(box.container);
-        if (info.running) {
+        // Attach whichever agent session is live — priority claude > codex >
+        // opencode. claude needs a fresh probe (not in listBoxes()); codex /
+        // opencode were already live-probed by listBoxes().
+        const claude = await claudeSessionInfo(box.container);
+        if (claude.running) {
           return {
             kind: 'attach',
-            argv: buildClaudeDashboardAttachArgv(box.container, info.sessionName),
+            argv: buildDashboardAttachArgv(box.container, claude.sessionName),
+            mode: 'claude',
+          };
+        }
+        if (box.codexSession?.running) {
+          return {
+            kind: 'attach',
+            argv: buildDashboardAttachArgv(box.container, box.codexSession.sessionName),
+            mode: 'codex',
+          };
+        }
+        if (box.opencodeSession?.running) {
+          return {
+            kind: 'attach',
+            argv: buildDashboardAttachArgv(box.container, box.opencodeSession.sessionName),
+            mode: 'opencode',
           };
         }
         return { kind: 'menu' };
@@ -169,10 +219,38 @@ export const dashboardCommand = new Command('dashboard')
         );
         await startClaudeSession({ container: box.container, claudeArgs: [], boxName: box.name });
         const info = await claudeSessionInfo(box.container);
+        // Attach only once the agent TUI has drawn — see waitForTmuxPaneContent.
+        await waitForTmuxPaneContent(box.container, info.sessionName);
         return {
           kind: 'attach',
-          argv: buildClaudeDashboardAttachArgv(box.container, info.sessionName),
+          argv: buildDashboardAttachArgv(box.container, info.sessionName),
           mode: 'claude',
+        };
+      };
+
+      const startCodex = async (boxId: string): Promise<RightTarget> => {
+        const box = await findBox(boxId);
+        // Install codex if the box image lacks it (checkpoint predating Codex).
+        await ensureCodexInstalled(box.container);
+        if (box.codexConfigVolume) await seedCodexHooks(box.codexConfigVolume, box.image);
+        await startCodexSession({ container: box.container, codexArgs: [] });
+        await waitForTmuxPaneContent(box.container, DEFAULT_CODEX_SESSION);
+        return {
+          kind: 'attach',
+          argv: buildDashboardAttachArgv(box.container, DEFAULT_CODEX_SESSION),
+          mode: 'codex',
+        };
+      };
+
+      const startOpencode = async (boxId: string): Promise<RightTarget> => {
+        const box = await findBox(boxId);
+        await ensureOpencodeInstalled(box.container);
+        await startOpencodeSession({ container: box.container, opencodeArgs: [] });
+        await waitForTmuxPaneContent(box.container, DEFAULT_OPENCODE_SESSION);
+        return {
+          kind: 'attach',
+          argv: buildDashboardAttachArgv(box.container, DEFAULT_OPENCODE_SESSION),
+          mode: 'opencode',
         };
       };
 
@@ -194,9 +272,9 @@ export const dashboardCommand = new Command('dashboard')
 
       // Non-interactive box creation from the "+ New box" entry: config
       // defaults only (no CLI overrides, no wizard, no setup-token prompt —
-      // the TUI can't prompt). Mirrors the `agentbox claude` create block.
+      // the TUI can't prompt). Mirrors the `agentbox <agent>` create block.
       const createNewBox = async (
-        withClaude: boolean,
+        agent: 'claude' | 'codex' | 'opencode' | undefined,
         onProgress: (line: string) => void,
       ): Promise<{ boxId: string; attach?: RightTarget }> => {
         const cfg = await loadEffectiveConfig(project.root);
@@ -212,6 +290,15 @@ export const dashboardCommand = new Command('dashboard')
           image: cfg.effective.box.image,
           claudeConfig: { isolate: cfg.effective.box.isolateClaudeConfig },
           claudeEnv: auth.env,
+          // Pass the agent's config so createBox mounts + syncs its volume
+          // (codex/opencode mount on detection too, but this makes it explicit
+          // and applies the `--isolate-*-config` preference).
+          ...(agent === 'codex'
+            ? { codexConfig: { isolate: cfg.effective.box.isolateCodexConfig } }
+            : {}),
+          ...(agent === 'opencode'
+            ? { opencodeConfig: { isolate: cfg.effective.box.isolateOpencodeConfig } }
+            : {}),
           withPlaywright:
             cfg.effective.box.withPlaywright ||
             cfg.effective.browser.default !== 'agent-browser',
@@ -222,21 +309,44 @@ export const dashboardCommand = new Command('dashboard')
           projectRoot: project.root,
           onLog: onProgress,
         });
-        if (!withClaude) return { boxId: result.record.id };
-        await rebuildPluginNativeDeps(result.record.container, {
-          volume: result.record.claudeConfigVolume,
-        });
-        await startClaudeSession({
-          container: result.record.container,
-          claudeArgs: [],
-          boxName: result.record.name,
-        });
-        const info = await claudeSessionInfo(result.record.container);
+        const ctr = result.record.container;
+        if (!agent) return { boxId: result.record.id };
+        if (agent === 'codex') {
+          await ensureCodexInstalled(ctr, { onProgress });
+          await startCodexSession({ container: ctr, codexArgs: [] });
+          // Attach only once the agent TUI has drawn — see waitForTmuxPaneContent.
+          await waitForTmuxPaneContent(ctr, DEFAULT_CODEX_SESSION);
+          return {
+            boxId: result.record.id,
+            attach: {
+              kind: 'attach',
+              argv: buildDashboardAttachArgv(ctr, DEFAULT_CODEX_SESSION),
+              mode: 'codex',
+            },
+          };
+        }
+        if (agent === 'opencode') {
+          await ensureOpencodeInstalled(ctr, { onProgress });
+          await startOpencodeSession({ container: ctr, opencodeArgs: [] });
+          await waitForTmuxPaneContent(ctr, DEFAULT_OPENCODE_SESSION);
+          return {
+            boxId: result.record.id,
+            attach: {
+              kind: 'attach',
+              argv: buildDashboardAttachArgv(ctr, DEFAULT_OPENCODE_SESSION),
+              mode: 'opencode',
+            },
+          };
+        }
+        await rebuildPluginNativeDeps(ctr, { volume: result.record.claudeConfigVolume });
+        await startClaudeSession({ container: ctr, claudeArgs: [], boxName: result.record.name });
+        const info = await claudeSessionInfo(ctr);
+        await waitForTmuxPaneContent(ctr, info.sessionName);
         return {
           boxId: result.record.id,
           attach: {
             kind: 'attach',
-            argv: buildClaudeDashboardAttachArgv(result.record.container, info.sessionName),
+            argv: buildDashboardAttachArgv(ctr, info.sessionName),
             mode: 'claude',
           },
         };
@@ -351,6 +461,8 @@ export const dashboardCommand = new Command('dashboard')
           listCandidates,
           resolveTarget,
           startClaude,
+          startCodex,
+          startOpencode,
           openShell,
           createNewBox,
           resumeBox,

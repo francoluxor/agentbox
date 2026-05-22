@@ -1016,18 +1016,20 @@ export function buildClaudeAttachArgv(container: string, sessionName?: string): 
 }
 
 /**
- * Like {@link buildClaudeAttachArgv}, but for the dashboard's right pane. The
- * dashboard already draws its own bottom status bar, so a second client must
- * not show the inner tmux status bar. We attach via a *grouped* sibling session
- * (`<name>-dash`, `tmux new-session -t <name>`): grouped sessions share the
- * same windows/panes (identical live screen + scrollback) but keep independent
- * session options, so `status off` here does not affect a direct
- * `agentbox claude attach` to `<name>`. The bare `;` elements are tmux's
- * command separator — node-pty spawns docker without a shell, so they reach
- * tmux verbatim. `new-session -A -d` is a no-op if the grouped session already
- * exists; `attach` runs after `status off` so the footer is gone on first paint.
+ * Like {@link buildClaudeAttachArgv}, but for the dashboard's right pane.
+ * Agent-agnostic — `sessionName` selects which agent's tmux session to attach
+ * (`claude` / `codex` / `opencode`). The dashboard already draws its own bottom
+ * status bar, so a second client must not show the inner tmux status bar. We
+ * attach via a *grouped* sibling session (`<name>-dash`, `tmux new-session -t
+ * <name>`): grouped sessions share the same windows/panes (identical live
+ * screen + scrollback) but keep independent session options, so `status off`
+ * here does not affect a direct `agentbox <agent> attach` to `<name>`. The bare
+ * `;` elements are tmux's command separator — node-pty spawns docker without a
+ * shell, so they reach tmux verbatim. `new-session -A -d` is a no-op if the
+ * grouped session already exists; `attach` runs after `status off` so the
+ * footer is gone on first paint.
  */
-export function buildClaudeDashboardAttachArgv(
+export function buildDashboardAttachArgv(
   container: string,
   sessionName?: string,
 ): string[] {
@@ -1064,6 +1066,32 @@ export function buildClaudeDashboardAttachArgv(
 }
 
 /**
+ * Poll a box's tmux pane until it has rendered non-blank content, or until
+ * `timeoutMs` elapses. The dashboard's right-pane terminal emulator can latch
+ * blank if it attaches while a heavy agent TUI (notably OpenCode's Bun-based
+ * UI) is still initializing — a fresh attach gets tmux's full screen replay,
+ * but a mid-init attach can miss it. Waiting for first content means the
+ * dashboard attaches in the working (post-draw) condition. Best-effort:
+ * returns on timeout regardless so a never-drawing agent never hangs the UI.
+ */
+export async function waitForTmuxPaneContent(
+  container: string,
+  sessionName: string,
+  timeoutMs = 20_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const res = await execa(
+      'docker',
+      ['exec', '--user', CONTAINER_USER, container, 'tmux', 'capture-pane', '-p', '-t', sessionName],
+      { reject: false },
+    );
+    if (res.exitCode === 0 && (res.stdout ?? '').trim().length > 0) return;
+    await delay(400);
+  }
+}
+
+/**
  * tmux command-list (separator-prefixed) that remaps the prefix and turns
  * the inner tmux status bar off. The outer host UI (the wrapped-pty footer
  * for `agentbox claude` / `agentbox shell`, the dashboard's own status row
@@ -1086,7 +1114,7 @@ export function buildClaudeDashboardAttachArgv(
  * `;` elements are tmux's command separator (execa array args, no host shell,
  * so they reach tmux verbatim). `status off` is a session option scoped with
  * `-t <session>` — the dashboard's grouped `<name>-dash` session has its own
- * option scope and runs its own `status off` in {@link buildClaudeDashboardAttachArgv}.
+ * option scope and runs its own `status off` in {@link buildDashboardAttachArgv}.
  */
 export function buildTmuxSessionArgs(sessionName: string): string[] {
   const s = sessionName;

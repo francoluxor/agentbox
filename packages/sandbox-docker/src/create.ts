@@ -15,6 +15,7 @@ import {
   buildCodexMounts,
   ensureCodexVolume,
   resolveCodexVolume,
+  seedCodexHooks,
   type CodexMountResult,
 } from './codex.js';
 import {
@@ -512,6 +513,10 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     if (codexEnsured.synced) log(`synced ${codexSpec.volume} from ~/.codex`);
     else if (codexEnsured.created) log(`created empty volume ${codexSpec.volume} (no host ~/.codex)`);
     else log(`reusing volume ${codexSpec.volume}`);
+    // Box-only: seed the Codex activity hooks (~/.codex/hooks.json). Re-seeded
+    // each create so an image upgrade propagates; never touches the host.
+    const codexHooks = await seedCodexHooks(codexSpec.volume, ensureRef);
+    if (codexHooks.seeded) log(`seeded Codex activity hooks into ${codexSpec.volume}`);
     codexMounts = buildCodexMounts(codexSpec, process.env);
     codexConfigVolume = codexSpec.volume;
   }

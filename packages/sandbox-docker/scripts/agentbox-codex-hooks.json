@@ -1,0 +1,37 @@
+{
+  "SessionStart": [
+    {
+      "hooks": [
+        { "type": "command", "command": "agentbox-ctl codex-state idle >/dev/null 2>&1 &", "timeout": 3 }
+      ]
+    }
+  ],
+  "UserPromptSubmit": [
+    {
+      "hooks": [
+        { "type": "command", "command": "agentbox-ctl codex-state working >/dev/null 2>&1 &", "timeout": 3 }
+      ]
+    }
+  ],
+  "PreToolUse": [
+    {
+      "hooks": [
+        { "type": "command", "command": "agentbox-ctl codex-state working >/dev/null 2>&1 &", "timeout": 3 }
+      ]
+    }
+  ],
+  "PermissionRequest": [
+    {
+      "hooks": [
+        { "type": "command", "command": "agentbox-ctl codex-state waiting >/dev/null 2>&1 &", "timeout": 3 }
+      ]
+    }
+  ],
+  "Stop": [
+    {
+      "hooks": [
+        { "type": "command", "command": "agentbox-ctl codex-state idle >/dev/null 2>&1 &", "timeout": 3 }
+      ]
+    }
+  ]
+}

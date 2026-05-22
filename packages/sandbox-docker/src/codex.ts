@@ -16,6 +16,12 @@ export const SHARED_CODEX_VOLUME = 'agentbox-codex-config';
 export const DEFAULT_CODEX_SESSION = 'codex';
 /** Workspace inside the box, same as for claude. */
 const CONTAINER_CODEX_DIR = '/home/vscode/.codex';
+/**
+ * Image-baked copy of the AgentBox Codex activity hooks (Dockerfile.box COPYs
+ * `scripts/agentbox-codex-hooks.json` here). {@link seedCodexHooks} copies it
+ * into the codex-config volume as `~/.codex/hooks.json`.
+ */
+const IN_BOX_CODEX_HOOKS_PATH = '/usr/local/share/agentbox/codex-hooks.json';
 
 export interface CodexConfigSpec {
   /** Resolved Docker volume name mounted at /home/vscode/.codex. */
@@ -103,8 +109,10 @@ export async function ensureCodexVolume(
       opts.image,
       'sh',
       '-c',
-      'rsync -a --exclude=sessions --exclude=log --exclude=history.jsonl /src/ /dst/' +
-        ' && chown -R 1000:1000 /dst',
+      // --exclude=hooks.json: the AgentBox activity hooks file is box-owned
+      // (seeded by seedCodexHooks); never let the host copy clobber it.
+      'rsync -a --exclude=sessions --exclude=log --exclude=history.jsonl --exclude=hooks.json' +
+        ' /src/ /dst/ && chown -R 1000:1000 /dst',
     ]);
     return { created, synced: true };
   }
@@ -128,6 +136,39 @@ export async function ensureCodexVolume(
     { reject: false },
   );
   return { created, synced: false };
+}
+
+/**
+ * Seed the AgentBox Codex activity hooks into the codex-config volume from the
+ * image-baked copy ({@link IN_BOX_CODEX_HOOKS_PATH}) as `~/.codex/hooks.json`.
+ * Codex auto-discovers that file; its hooks accumulate with any the user
+ * defined, so this never disables the user's own hooks.
+ *
+ * Re-seeded on every create/start (image-versioned) so an image upgrade
+ * propagates. Best-effort — a failure must not fail box creation.
+ */
+export async function seedCodexHooks(
+  volume: string,
+  image: string,
+): Promise<{ seeded: boolean }> {
+  try {
+    const { stdout } = await execa('docker', [
+      'run',
+      '--rm',
+      '--user',
+      '0',
+      '-v',
+      `${volume}:/dst`,
+      image,
+      'sh',
+      '-c',
+      `{ [ -f ${IN_BOX_CODEX_HOOKS_PATH} ] && cp -a ${IN_BOX_CODEX_HOOKS_PATH} /dst/hooks.json && ` +
+        `chown 1000:1000 /dst/hooks.json && echo SEEDED; } || true`,
+    ]);
+    return { seeded: stdout.includes('SEEDED') };
+  } catch {
+    return { seeded: false };
+  }
 }
 
 export interface CodexMountResult {

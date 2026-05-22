@@ -2,7 +2,7 @@ import { execa } from 'execa';
 import { readdir, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { BoxState } from '@agentbox/core';
-import type { BoxStatus, ClaudeActivityState } from '@agentbox/ctl';
+import type { AgentActivityState, BoxStatus, ClaudeActivityState } from '@agentbox/ctl';
 import { claudeSessionInfo, SHARED_CLAUDE_VOLUME, type ClaudeSessionInfo } from './claude.js';
 import { codexSessionInfo, SHARED_CODEX_VOLUME, type CodexSessionInfo } from './codex.js';
 import {
@@ -77,6 +77,11 @@ export interface ListedBox extends BoxRecord {
   claudeActivity?: ClaudeActivityState;
   /** Sanitized in-box terminal title Claude set; undefined when none. */
   claudeSessionTitle?: string;
+  /** Codex activity from the persisted status file (Codex hooks); undefined when none. */
+  codexActivity?: AgentActivityState;
+  /** Sanitized in-box terminal title the Codex/OpenCode TUI set; undefined when none. */
+  codexSessionTitle?: string;
+  opencodeSessionTitle?: string;
   /** Live shell tmux sessions; `[]` for non-running boxes (can't `docker exec`). */
   shellSessions: ShellSessionSummary[];
   /** Live probe of the Codex tmux session; null when the box isn't running. */
@@ -109,6 +114,9 @@ export async function listBoxes(): Promise<ListedBox[]> {
         endpoints,
         claudeActivity: persisted?.claude.state,
         claudeSessionTitle: persisted?.claude.sessionTitle,
+        codexActivity: persisted?.codex?.state,
+        codexSessionTitle: persisted?.codex?.sessionTitle,
+        opencodeSessionTitle: persisted?.opencode?.sessionTitle,
         shellSessions,
         codexSession,
         opencodeSession,

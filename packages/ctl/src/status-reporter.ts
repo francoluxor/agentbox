@@ -1,10 +1,13 @@
 import { spawn } from 'node:child_process';
 import type { RelayClient } from './relay-client.js';
 import type { Supervisor } from './supervisor.js';
-import { probeClaudeSession } from './tmux.js';
+import { probeAgentSession } from './tmux.js';
 import {
   BOX_STATUS_EVENT,
   BOX_STATUS_SCHEMA,
+  DEFAULT_CODEX_SESSION_NAME,
+  DEFAULT_OPENCODE_SESSION_NAME,
+  type AgentActivityState,
   type BoxStatus,
   type BoxStatusPort,
   type ClaudeActivityState,
@@ -38,6 +41,8 @@ export class StatusReporter {
   private readonly periodicMs: number;
   private claudeState: ClaudeActivityState = 'unknown';
   private claudeUpdatedAt: string | null = null;
+  private codexState: AgentActivityState = 'unknown';
+  private codexUpdatedAt: string | null = null;
   private debounceTimer: NodeJS.Timeout | null = null;
   private periodicTimer: NodeJS.Timeout | null = null;
   private readonly onChange = (): void => this.schedulePush();
@@ -73,6 +78,12 @@ export class StatusReporter {
   setClaudeState(state: ClaudeActivityState): void {
     this.claudeState = state;
     this.claudeUpdatedAt = new Date().toISOString();
+    this.schedulePush();
+  }
+
+  setCodexState(state: AgentActivityState): void {
+    this.codexState = state;
+    this.codexUpdatedAt = new Date().toISOString();
     this.schedulePush();
   }
 
@@ -118,9 +129,12 @@ export class StatusReporter {
 
     const ports = await collectPorts(this.supervisor);
 
-    const session = await probeClaudeSession(this.sessionName);
+    // Probe all three agent tmux sessions — whichever exist get reported.
+    const claudeSession = await probeAgentSession(this.sessionName);
+    const codexSession = await probeAgentSession(DEFAULT_CODEX_SESSION_NAME);
+    const opencodeSession = await probeAgentSession(DEFAULT_OPENCODE_SESSION_NAME);
 
-    return {
+    const status: BoxStatus = {
       schema: BOX_STATUS_SCHEMA,
       boxId: this.boxId,
       timestamp: new Date().toISOString(),
@@ -130,10 +144,27 @@ export class StatusReporter {
       claude: {
         state: this.claudeState,
         updatedAt: this.claudeUpdatedAt,
-        sessionRunning: session.running,
-        ...(session.title ? { sessionTitle: session.title } : {}),
+        sessionRunning: claudeSession.running,
+        ...(claudeSession.title ? { sessionTitle: claudeSession.title } : {}),
       },
     };
+    // Codex / OpenCode bodies are additive and present only when there's
+    // something to report — so a claude-only box's snapshot omits them.
+    if (codexSession.running || this.codexState !== 'unknown') {
+      status.codex = {
+        state: this.codexState,
+        updatedAt: this.codexUpdatedAt,
+        sessionRunning: codexSession.running,
+        ...(codexSession.title ? { sessionTitle: codexSession.title } : {}),
+      };
+    }
+    if (opencodeSession.running) {
+      status.opencode = {
+        sessionRunning: true,
+        ...(opencodeSession.title ? { sessionTitle: opencodeSession.title } : {}),
+      };
+    }
+    return status;
   }
 }
 
