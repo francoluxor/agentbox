@@ -40,6 +40,8 @@ async function renderText(i: InspectedBox): Promise<string> {
     `claude config ${i.record.claudeConfigVolume ?? '(none)'}`,
     `claude session ${renderClaudeSession(i)}`,
     `claude activity ${renderClaudeActivity(i)}`,
+    `codex config  ${i.record.codexConfigVolume ?? '(none)'}`,
+    `codex session ${renderCodexSession(i)}`,
     `shells        ${renderShells(i)}`,
     `persisted     ${renderPersisted(i)}`,
     `playwright    ${i.record.withPlaywright ? 'yes' : 'no'}`,
@@ -71,6 +73,13 @@ function renderClaudeSession(i: InspectedBox): string {
   if (!i.claudeSession.running) return `not running ("${i.claudeSession.sessionName}")`;
   const since = i.claudeSession.startedAt ? ` since ${i.claudeSession.startedAt}` : '';
   return `running ("${i.claudeSession.sessionName}")${since}`;
+}
+
+function renderCodexSession(i: InspectedBox): string {
+  if (i.codexSession === null) return '(n/a — box not running)';
+  if (!i.codexSession.running) return `not running ("${i.codexSession.sessionName}")`;
+  const since = i.codexSession.startedAt ? ` since ${i.codexSession.startedAt}` : '';
+  return `running ("${i.codexSession.sessionName}")${since}`;
 }
 
 function renderClaudeActivity(i: InspectedBox): string {

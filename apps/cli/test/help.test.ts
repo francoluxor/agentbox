@@ -4,6 +4,7 @@ import { HELP_GROUPS, buildGroupedHelp } from '../src/help.js';
 import { checkpointCommand } from '../src/commands/checkpoint.js';
 import { claudeCommand } from '../src/commands/claude.js';
 import { codeCommand } from '../src/commands/code.js';
+import { codexCommand } from '../src/commands/codex.js';
 import { configCommand } from '../src/commands/config.js';
 import { cpCommand } from '../src/commands/cp.js';
 import { createCommand } from '../src/commands/create.js';
@@ -35,6 +36,7 @@ function buildProgram(): Command {
   for (const cmd of [
     createCommand,
     claudeCommand,
+    codexCommand,
     codeCommand,
     shellCommand,
     listCommand,

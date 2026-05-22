@@ -20,6 +20,7 @@ export interface UserConfig {
     withEnv?: boolean;
     vnc?: boolean;
     isolateClaudeConfig?: boolean;
+    isolateCodexConfig?: boolean;
     image?: string;
     dockerCacheShared?: boolean;
     memory?: number;
@@ -31,6 +32,9 @@ export interface UserConfig {
     maxLayers?: number;
   };
   claude?: {
+    sessionName?: string;
+  };
+  codex?: {
     sessionName?: string;
   };
   code?: {
@@ -87,6 +91,7 @@ export interface EffectiveConfig {
     withEnv: boolean;
     vnc: boolean;
     isolateClaudeConfig: boolean;
+    isolateCodexConfig: boolean;
     image: string;
     dockerCacheShared: boolean;
     memory: number;
@@ -98,6 +103,9 @@ export interface EffectiveConfig {
     maxLayers: number;
   };
   claude: {
+    sessionName: string;
+  };
+  codex: {
     sessionName: string;
   };
   code: {
@@ -173,6 +181,7 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     withEnv: false,
     vnc: true,
     isolateClaudeConfig: false,
+    isolateCodexConfig: false,
     image: 'agentbox/box:dev',
     dockerCacheShared: false,
     memory: 0,
@@ -185,6 +194,9 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
   },
   claude: {
     sessionName: 'claude',
+  },
+  codex: {
+    sessionName: 'codex',
   },
   code: {
     ide: 'auto',
@@ -284,6 +296,11 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     description: 'Use a per-box ~/.claude volume instead of the shared one.',
   },
   {
+    key: 'box.isolateCodexConfig',
+    type: 'bool',
+    description: 'Use a per-box ~/.codex volume instead of the shared one.',
+  },
+  {
     key: 'box.image',
     type: 'string',
     description: 'Box image ref (advanced).',
@@ -323,6 +340,11 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     key: 'claude.sessionName',
     type: 'string',
     description: 'tmux session name for `agentbox claude`.',
+  },
+  {
+    key: 'codex.sessionName',
+    type: 'string',
+    description: 'tmux session name for `agentbox codex`.',
   },
   {
     key: 'code.ide',

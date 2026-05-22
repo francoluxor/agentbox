@@ -12,6 +12,12 @@ import {
 } from './claude.js';
 import { syncClaudeCredentials } from './claude-credentials.js';
 import {
+  buildCodexMounts,
+  ensureCodexVolume,
+  resolveCodexVolume,
+  type CodexMountResult,
+} from './codex.js';
+import {
   type BoxLimitSpec,
   containerExists,
   dockerInfo,
@@ -106,6 +112,14 @@ export interface CreateBoxOptions {
   claudeConfig?: { isolate: boolean };
   /** Extra env vars forwarded to the container (merged on top of claude env forwarding). */
   claudeEnv?: Record<string, string>;
+  /**
+   * Codex CLI config volume. When provided (i.e. `agentbox codex`), the box
+   * always mounts a synced `agentbox-codex-config` volume at /home/vscode/.codex.
+   * When omitted, `createBox` still mounts it *if the host has a `~/.codex`*
+   * (so a plain `agentbox create` for a Codex user gets a working box) — see
+   * the codex block below. `isolate: true` opts into a per-box volume.
+   */
+  codexConfig?: { isolate: boolean };
   /**
    * When true, run `npm install -g @playwright/cli@latest` inside the box after
    * `/workspace` is seeded. agent-browser is always installed in the image;
@@ -224,14 +238,14 @@ async function pathExists(p: string): Promise<boolean> {
   }
 }
 
-// ~/.claude is intentionally NOT in this list: it lives in the named volume
-// `agentbox-claude-config` (see resolveClaudeVolume / ensureClaudeVolume) so
-// auth persists inside the container without leaking host state. Only
-// non-claude identity files are bind-mounted from the host.
+// ~/.claude and ~/.codex are intentionally NOT in this list: each lives in a
+// named volume (`agentbox-claude-config` / `agentbox-codex-config`, see
+// resolveClaudeVolume / resolveCodexVolume) so auth persists inside the
+// container without leaking host state. Only the remaining identity files are
+// bind-mounted from the host.
 async function buildIdentityMounts(): Promise<string[]> {
   const home = homedir();
   const candidates: Array<{ src: string; dst: string; readOnly: boolean }> = [
-    { src: join(home, '.codex'), dst: '/home/vscode/.codex', readOnly: false },
     { src: join(home, '.gitconfig'), dst: '/home/vscode/.gitconfig', readOnly: true },
   ];
   const out: string[] = [];
@@ -463,6 +477,31 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
   }
   const claudeMounts = buildClaudeMounts(claudeSpec, process.env);
 
+  // Codex config volume. Mounted when the caller explicitly wants codex
+  // (`agentbox codex` passes `codexConfig`) OR the host already uses codex
+  // (`~/.codex` exists) — so a plain `agentbox create` for a Codex user still
+  // gets a working box. Same host-authoritative additive sync as the claude
+  // volume; `--isolate-codex-config` opts into a per-box volume.
+  const wantCodex =
+    opts.codexConfig !== undefined || (await pathExists(join(homedir(), '.codex')));
+  let codexMounts: CodexMountResult | undefined;
+  let codexConfigVolume: string | undefined;
+  if (wantCodex) {
+    const codexSpec = resolveCodexVolume({
+      isolate: opts.codexConfig?.isolate ?? false,
+      boxId: id,
+    });
+    const codexEnsured = await ensureCodexVolume(codexSpec, {
+      syncFromHost: true,
+      image: ensureRef,
+    });
+    if (codexEnsured.synced) log(`synced ${codexSpec.volume} from ~/.codex`);
+    else if (codexEnsured.created) log(`created empty volume ${codexSpec.volume} (no host ~/.codex)`);
+    else log(`reusing volume ${codexSpec.volume}`);
+    codexMounts = buildCodexMounts(codexSpec, process.env);
+    codexConfigVolume = codexSpec.volume;
+  }
+
   const boxDir = boxRunDirFor({ id, name, projectIndex });
   const socketDir = join(boxDir, 'run');
   const socketPath = join(socketDir, 'ctl.sock');
@@ -475,6 +514,7 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
 
   const extraVolumes = await buildIdentityMounts();
   extraVolumes.push(...claudeMounts.extraVolumes);
+  if (codexMounts) extraVolumes.push(...codexMounts.extraVolumes);
   extraVolumes.push(...ide.extraVolumes);
   extraVolumes.push(`${socketDir}:/run/agentbox`);
   extraVolumes.push(`${mergedExportDir}:${CONTAINER_EXPORT_MERGED}`);
@@ -607,6 +647,7 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
       AGENTBOX_BOX_ID: id,
       ...agentboxEnv,
       ...claudeMounts.env,
+      ...(codexMounts?.env ?? {}),
       ...relayEnv,
       ...vncEnv,
       ...portlessEnv,
@@ -816,6 +857,7 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     snapshotDir,
     socketPath,
     claudeConfigVolume: claudeSpec.volume,
+    codexConfigVolume,
     vscodeServerVolume: vscodeServerVolumeName(id),
     cursorServerVolume: cursorServerVolumeName(id),
     relayToken: relayUp ? relayToken : undefined,

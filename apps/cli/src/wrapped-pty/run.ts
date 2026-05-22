@@ -33,7 +33,7 @@ export interface WrappedAttachOptions {
    *  title. Pre-feature boxes lack it; absent is fine. */
   projectIndex?: number;
   /** Mode label affects the idle footer state label only. */
-  mode: 'claude' | 'shell';
+  mode: 'claude' | 'shell' | 'codex';
   /** Whether the inner session can be detached (tmux-backed). Drives the
    *  `Ctrl+a q` detach chord + footer hint. Defaults to `mode === 'claude'`
    *  (claude is always tmux-backed); a tmux-backed `agentbox shell` passes

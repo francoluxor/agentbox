@@ -42,6 +42,32 @@ export {
   type CredentialSyncDirection,
   type SyncClaudeCredentialsResult,
 } from './claude-credentials.js';
+export {
+  buildCodexAttachArgv,
+  buildCodexLoginRunArgv,
+  buildCodexMounts,
+  CODEX_FORWARDED_ENV_KEYS,
+  CodexSessionError,
+  codexSessionInfo,
+  DEFAULT_CODEX_SESSION,
+  ensureCodexInstalled,
+  ensureCodexVolume,
+  pullCodexConfig,
+  resolveCodexVolume,
+  runInteractiveCodexLogin,
+  SHARED_CODEX_VOLUME,
+  startCodexSession,
+  volumeHasCodexAuth,
+  type CodexConfigSpec,
+  type CodexMountResult,
+  type CodexSessionInfo,
+  type EnsureCodexInstalledResult,
+  type EnsureCodexVolumeOptions,
+  type EnsureCodexVolumeResult,
+  type PullCodexOptions,
+  type PullCodexResult,
+  type StartCodexSessionOptions,
+} from './codex.js';
 export { createBox, type CreateBoxOptions, type CreatedBox } from './create.js';
 export {
   agentboxHomeBytes,

@@ -184,6 +184,21 @@ USER vscode
 RUN curl -fsSL https://claude.ai/install.sh | bash -s stable
 USER root
 
+# OpenAI Codex CLI. The @openai/codex npm package ships platform-native
+# prebuilds for linux arm64/amd64, so a plain global install is enough.
+# Parallel to the Claude Code install above: `agentbox codex` launches it in a
+# tmux session and the box mounts a synced `agentbox-codex-config` volume at
+# ~/.codex for auth/config (see packages/sandbox-docker/src/codex.ts).
+#
+# `bubblewrap` (bwrap) is Codex's command-sandbox backend; without it on PATH
+# Codex falls back to a bundled copy and prints a warning on every run. It
+# works nested because the agentbox container already runs with --cap-add
+# SYS_ADMIN + apparmor:unconfined.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bubblewrap \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g @openai/codex
+
 # Browser support for in-box agents: Vercel's agent-browser drives Chrome via
 # CDP. Two things have to happen here:
 #

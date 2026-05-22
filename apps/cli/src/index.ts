@@ -11,6 +11,7 @@ import { browserCommand } from './commands/browser.js';
 import { claudeCommand } from './commands/claude.js';
 import { checkpointCommand } from './commands/checkpoint.js';
 import { codeCommand } from './commands/code.js';
+import { codexCommand } from './commands/codex.js';
 import { configCommand } from './commands/config.js';
 import { cpCommand } from './commands/cp.js';
 import { createCommand } from './commands/create.js';
@@ -44,6 +45,7 @@ program.enablePositionalOptions();
 
 program.addCommand(createCommand);
 program.addCommand(claudeCommand);
+program.addCommand(codexCommand);
 program.addCommand(codeCommand);
 program.addCommand(shellCommand);
 program.addCommand(listCommand);

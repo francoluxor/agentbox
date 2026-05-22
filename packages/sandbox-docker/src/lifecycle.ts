@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { BoxState } from '@agentbox/core';
 import type { BoxStatus, ClaudeActivityState } from '@agentbox/ctl';
 import { claudeSessionInfo, SHARED_CLAUDE_VOLUME, type ClaudeSessionInfo } from './claude.js';
+import { codexSessionInfo, SHARED_CODEX_VOLUME, type CodexSessionInfo } from './codex.js';
 import { listShellSessions, type ShellSessionSummary } from './shell-session.js';
 import { bindWorktrees, removeInBoxWorktree } from './in-box-git.js';
 import {
@@ -73,6 +74,8 @@ export interface ListedBox extends BoxRecord {
   claudeSessionTitle?: string;
   /** Live shell tmux sessions; `[]` for non-running boxes (can't `docker exec`). */
   shellSessions: ShellSessionSummary[];
+  /** Live probe of the Codex tmux session; null when the box isn't running. */
+  codexSession: CodexSessionInfo | null;
 }
 
 export async function listBoxes(): Promise<ListedBox[]> {
@@ -83,10 +86,14 @@ export async function listBoxes(): Promise<ListedBox[]> {
       const state = await inspectContainerStatus(b.container);
       const persisted = await readBoxStatus(b);
       const endpoints = await getBoxEndpoints(b, engine, persisted);
-      // Shell sessions are live tmux state — only a running container is
-      // reachable via `docker exec`; paused/stopped report none.
+      // Shell sessions + the codex session probe are live tmux state — only a
+      // running container is reachable via `docker exec`; paused/stopped report
+      // none. (Claude activity rides the persisted status snapshot instead, so
+      // it needs no live probe.)
       const shellSessions =
         state === 'running' ? await listShellSessions(b.container) : [];
+      const codexSession =
+        state === 'running' ? await codexSessionInfo(b.container) : null;
       return {
         ...b,
         state,
@@ -94,6 +101,7 @@ export async function listBoxes(): Promise<ListedBox[]> {
         claudeActivity: persisted?.claude.state,
         claudeSessionTitle: persisted?.claude.sessionTitle,
         shellSessions,
+        codexSession,
       };
     }),
   );
@@ -305,6 +313,8 @@ export interface InspectedBox {
   dockerInspect: unknown;
   /** Null when the container isn't running; otherwise best-effort probe of the tmux 'claude' session. */
   claudeSession: ClaudeSessionInfo | null;
+  /** Null when the container isn't running; otherwise best-effort probe of the tmux 'codex' session. */
+  codexSession: CodexSessionInfo | null;
   /** Live shell tmux sessions; `[]` when the container isn't running. */
   shellSessions: ShellSessionSummary[];
   /** Persisted status snapshot (services/tasks/ports/claude); null when none. */
@@ -334,12 +344,18 @@ export async function inspectBox(idOrName: string): Promise<InspectedBox> {
   const dockerJson = await inspectContainer(record.container);
 
   let claudeSession: ClaudeSessionInfo | null = null;
+  let codexSession: CodexSessionInfo | null = null;
   let shellSessions: ShellSessionSummary[] = [];
   if (state === 'running') {
     try {
       claudeSession = await claudeSessionInfo(record.container);
     } catch {
       claudeSession = null;
+    }
+    try {
+      codexSession = await codexSessionInfo(record.container);
+    } catch {
+      codexSession = null;
     }
     shellSessions = await listShellSessions(record.container);
   }
@@ -355,6 +371,7 @@ export async function inspectBox(idOrName: string): Promise<InspectedBox> {
     snapshotSizeBytes,
     dockerInspect: dockerJson,
     claudeSession,
+    codexSession,
     shellSessions,
     persistedStatus,
     hostPaths,
@@ -429,6 +446,13 @@ export async function destroyBox(
   if (box.claudeConfigVolume && box.claudeConfigVolume !== SHARED_CLAUDE_VOLUME) {
     await removeVolume(box.claudeConfigVolume);
     removedVolumes.push(box.claudeConfigVolume);
+  }
+  // Same reasoning for the codex-config volume: per-box variants are private
+  // and removed here; the shared SHARED_CODEX_VOLUME holds the user's Codex
+  // auth across boxes and is never auto-removed.
+  if (box.codexConfigVolume && box.codexConfigVolume !== SHARED_CODEX_VOLUME) {
+    await removeVolume(box.codexConfigVolume);
+    removedVolumes.push(box.codexConfigVolume);
   }
   // Per-box `.vscode-server` and `.cursor-server` volumes. The shared
   // SHARED_*_EXTENSIONS_VOLUMEs are never auto-removed (parallel reasoning to
@@ -573,6 +597,9 @@ export async function pruneBoxes(opts: PruneOptions = {}): Promise<PruneResult> 
         .map((b) => b.claudeConfigVolume)
         .filter((v): v is string => typeof v === 'string'),
       ...survivingBoxes
+        .map((b) => b.codexConfigVolume)
+        .filter((v): v is string => typeof v === 'string'),
+      ...survivingBoxes
         .map((b) => b.vscodeServerVolume)
         .filter((v): v is string => typeof v === 'string'),
       ...survivingBoxes
@@ -584,6 +611,8 @@ export async function pruneBoxes(opts: PruneOptions = {}): Promise<PruneResult> 
       // The shared claude-config volume holds user identity across every box;
       // never reap it via prune even if no surviving box currently references it.
       SHARED_CLAUDE_VOLUME,
+      // The shared codex-config volume — same reasoning (holds Codex auth).
+      SHARED_CODEX_VOLUME,
       // Shared across boxes: downloaded IDE extensions. Same reasoning.
       SHARED_VSCODE_EXTENSIONS_VOLUME,
       SHARED_CURSOR_EXTENSIONS_VOLUME,

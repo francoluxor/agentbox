@@ -40,6 +40,14 @@ export interface BoxRecord {
    */
   claudeConfigVolume?: string;
   /**
+   * Docker volume mounted at /home/vscode/.codex inside the box. Parallel to
+   * `claudeConfigVolume`: shared `agentbox-codex-config` by default, per-box
+   * (`agentbox-codex-config-<id>`) under `--isolate-codex-config`. Absent when
+   * the box was created without Codex (no host `~/.codex` and not `agentbox
+   * codex`), or before this field existed.
+   */
+  codexConfigVolume?: string;
+  /**
    * Per-box volume holding `.vscode-server` (server binary + TS cache).
    * The shared `agentbox-vscode-extensions` volume layers over the `extensions`
    * subdir at run time and isn't recorded here (never auto-removed). Absent
