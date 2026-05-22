@@ -82,9 +82,9 @@ export interface CompositorDeps {
   /** Destroy a box (container + volumes + record). Irreversible. */
   destroyBox: (boxId: string) => Promise<void>;
   /** Host-side actions for the selected box; return a short status message. */
-  openVnc: (boxId: string) => Promise<string>;
+  openScreen: (boxId: string) => Promise<string>;
   openCode: (boxId: string) => Promise<string>;
-  openWeb: (boxId: string) => Promise<string>;
+  openUrl: (boxId: string) => Promise<string>;
 }
 
 const POLL_MS = 1000;
@@ -798,7 +798,7 @@ export class Compositor {
     }
   }
 
-  private async doAction(name: 'vnc' | 'code' | 'web'): Promise<void> {
+  private async doAction(name: 'screen' | 'code' | 'url'): Promise<void> {
     if (this.selectedId === NEW_BOX_ID) {
       this.flash('select a box first');
       return;
@@ -807,11 +807,11 @@ export class Compositor {
     let msg: string;
     try {
       msg =
-        name === 'vnc'
-          ? await this.deps.openVnc(id)
+        name === 'screen'
+          ? await this.deps.openScreen(id)
           : name === 'code'
             ? await this.deps.openCode(id)
-            : await this.deps.openWeb(id);
+            : await this.deps.openUrl(id);
     } catch (err) {
       msg = err instanceof Error ? err.message : String(err);
     }

@@ -402,7 +402,7 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
   {
     key: 'shell.tmux',
     type: 'bool',
-    description: 'Run `agentbox shell` inside a detachable tmux session (Ctrl+a q to detach).',
+    description: 'Run `agentbox shell` inside a detachable tmux session (Ctrl+a d to detach).',
   },
   {
     key: 'engine.kind',

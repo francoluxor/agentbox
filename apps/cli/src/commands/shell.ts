@@ -113,14 +113,14 @@ interface ShellSessionCfg {
 
 /**
  * Start-or-attach a box's shell tmux session, then hand the docker
- * tmux-attach argv to the node-pty wrapper (footer + `Ctrl+a q` detach).
+ * tmux-attach argv to the node-pty wrapper (footer + `Ctrl+a d` detach).
  * Process-exits with the inner pty's code. The box must already be running.
  */
 async function startOrAttachShell(box: BoxRecord, cfg: ShellSessionCfg): Promise<never> {
   const label = shellLabel(cfg.sessionName);
   const info = await shellSessionInfo(box.container, cfg.sessionName, cfg.user);
   if (info.running) {
-    log.info(`reattaching to shell "${label}" — Control+a q to detach`);
+    log.info(`reattaching to shell "${label}" — Control+a d to detach`);
   } else {
     await startShellSession({
       container: box.container,
@@ -128,7 +128,7 @@ async function startOrAttachShell(box: BoxRecord, cfg: ShellSessionCfg): Promise
       user: cfg.user,
       login: cfg.login,
     });
-    log.info(`shell "${label}" — Control+a q to detach, leaves it running`);
+    log.info(`shell "${label}" — Control+a d to detach, leaves it running`);
   }
   const code = await runWrappedAttach({
     container: box.container,
@@ -218,7 +218,7 @@ export const shellCommand = new Command('shell')
       }
 
       // Interactive shell. Default: run inside a detachable tmux session so
-      // `Ctrl+a q` leaves it running (reattach with `agentbox shell attach`).
+      // `Ctrl+a d` leaves it running (reattach with `agentbox shell attach`).
       // `--no-tmux` keeps the plain wrapped `docker exec` shell — closing the
       // terminal kills it.
       if (tmux) {

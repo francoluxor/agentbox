@@ -300,7 +300,7 @@ export const opencodeCommand = new Command('opencode')
           : '';
       s.stop(`box ${result.record.container} ready${nSuffix}`);
 
-      outro('attaching — Control+a q to detach, leaves opencode running');
+      outro('attaching — Control+a d to detach, leaves opencode running');
       await attachOpencodeWrapped(result.record, sessionName, reattachRef(result.record));
     } catch (err) {
       s.stop('failed');
@@ -343,7 +343,7 @@ async function startOrAttachOpencode(
   // post-`--` args (they only apply to a fresh opencode).
   const existing = await opencodeSessionInfo(box.container, sessionName);
   if (existing.running) {
-    outro(`session "${sessionName}" already running — attaching (Control+a q to detach)`);
+    outro(`session "${sessionName}" already running — attaching (Control+a d to detach)`);
     await attachOpencodeWrapped(box, sessionName, reattachRef(box));
     return;
   }
@@ -387,7 +387,7 @@ async function startOrAttachOpencode(
 
   s.stop(`box ${box.container} ready`);
 
-  outro('attaching — Control+a q to detach, leaves opencode running');
+  outro('attaching — Control+a d to detach, leaves opencode running');
   await attachOpencodeWrapped(box, sessionName, reattachRef(box));
 }
 

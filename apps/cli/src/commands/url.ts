@@ -12,12 +12,12 @@ import { Command } from 'commander';
 import { resolveBoxOrExit } from '../box-ref.js';
 import { handleLifecycleError } from './_errors.js';
 
-interface BrowserOptions {
+interface UrlOptions {
   print?: boolean;
   loopback?: boolean;
 }
 
-export const browserCommand = new Command('browser')
+export const urlCommand = new Command('url')
   .description(
     "Open a box's web app URL in the browser, even when no service declares `expose:` (auto-unpause/start)",
   )
@@ -30,7 +30,7 @@ export const browserCommand = new Command('browser')
     '--loopback',
     'use the 127.0.0.1 URL instead of the OrbStack .orb.local / Portless .localhost URL',
   )
-  .action(async (idOrName: string | undefined, opts: BrowserOptions) => {
+  .action(async (idOrName: string | undefined, opts: UrlOptions) => {
     try {
       const box = await resolveBoxOrExit(idOrName);
 
@@ -50,7 +50,7 @@ export const browserCommand = new Command('browser')
       const { record } = await getBoxHostPaths(box.id);
       if (record.webContainerPort === undefined) {
         throw new Error(
-          `box ${box.name} predates the reserved web port; recreate it to use \`agentbox browser\``,
+          `box ${box.name} predates the reserved web port; recreate it to use \`agentbox url\``,
         );
       }
 

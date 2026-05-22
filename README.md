@@ -40,9 +40,9 @@ agentbox claude
 # See status and quickly switch between agents:
 agentbox dashboard
 
-# Launch web screen viewer (VNC), open in browser, open VSCode/Cursor
+# Launch web screen viewer (VNC), open the web app URL, open VSCode/Cursor
 agentbox screen
-agentbox browser
+agentbox url
 agentbox code
 ```
 
@@ -71,7 +71,7 @@ Uses `portless` to give box web apps the same URL from inside the box and on the
 **Access**
 
 - `agentbox dashboard` — Box list + the selected box's live agent session
-- `agentbox browser` — Open a box's web app URL in the browser (even with no `expose:` service)
+- `agentbox url` — Open a box's web app URL in the browser (even with no `expose:` service)
 - `agentbox screen` — Open a box's VNC (noVNC) viewer in the browser
 - `agentbox code` — Open a box in VS Code or Cursor via the Dev Containers extension
 - `agentbox shell` — Open an interactive bash shell in a box

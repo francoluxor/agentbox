@@ -71,7 +71,7 @@ agentbox start <box>                # docker start + re-mount the FUSE overlay +
 agentbox open <box> [--upper] [--no-refresh] [--include-node-modules] [--path]
                                     # open the box's workspace in Finder (refreshes via rsync first)
                                     # --path prints the host path instead (--print is a kept alias)
-agentbox browser <box> [--print] [--loopback]
+agentbox url <box> [--print] [--loopback]
                                     # open the box's web app URL in your browser (even with no expose: service)
 agentbox screen <box> [--print] [--loopback]
                                     # open the box's VNC (noVNC) viewer in your browser
@@ -115,14 +115,14 @@ agentbox open mybox --no-refresh          # open whatever's already on disk; ski
 agentbox open mybox --include-node-modules# merged export: include /workspace/node_modules (off by default — it's big; --upper always carries it)
 agentbox open mybox --path                # prints the host path instead of launching Finder (still refreshes; --print is a kept alias)
 agentbox open mybox --path --no-refresh   # just the host path, no rsync — pipe it into your editor / scripts
-agentbox browser mybox                    # open the box's web app URL (orb.local on OrbStack, 127.0.0.1:<port> otherwise)
-agentbox browser mybox --loopback         # force the 127.0.0.1 URL even on OrbStack
-agentbox browser mybox --print            # print the web URL instead of launching the browser
+agentbox url mybox                        # open the box's web app URL (orb.local on OrbStack, 127.0.0.1:<port> otherwise)
+agentbox url mybox --loopback             # force the 127.0.0.1 URL even on OrbStack
+agentbox url mybox --print                # print the web URL instead of launching the browser
 agentbox screen mybox                     # open the box's VNC (noVNC) viewer in your browser
 agentbox screen mybox --print             # print the noVNC URL instead of launching the browser
 ```
 
-`agentbox browser` works even when no service declares `expose:` — every box reserves the web port at create, so the URL is always openable (you'll just get a connection error until something listens on it).
+`agentbox url` works even when no service declares `expose:` — every box reserves the web port at create, so the URL is always openable (you'll just get a connection error until something listens on it).
 
 The merged export lives at `~/.agentbox/boxes/<id>/workspace`, the upper-only export at `~/.agentbox/boxes/<id>/upper`. The rsync runs inside the box (`docker exec rsync`) targeting a virtiofs bind-mount, so a refresh is a single mostly-zero-copy operation.
 
@@ -132,7 +132,7 @@ The merged export lives at `~/.agentbox/boxes/<id>/workspace`, the upper-only ex
 
 ```sh
 agentbox claude -n cc                          # snapshot + start claude REPL, attach via tmux
-# (in tmux) press Ctrl-b d to detach — claude keeps running
+# (in tmux) press Ctrl+a d to detach — claude keeps running
 agentbox claude attach cc                      # reattach later
 agentbox claude -n one-off -- --model sonnet   # pass-through args after `--`
 agentbox claude -n iso --isolate-claude-config # opt out of the shared identity volume

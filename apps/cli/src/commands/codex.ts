@@ -295,7 +295,7 @@ export const codexCommand = new Command('codex')
           : '';
       s.stop(`box ${result.record.container} ready${nSuffix}`);
 
-      outro('attaching — Control+a q to detach, leaves codex running');
+      outro('attaching — Control+a d to detach, leaves codex running');
       await attachCodexWrapped(result.record, sessionName, reattachRef(result.record));
     } catch (err) {
       s.stop('failed');
@@ -338,7 +338,7 @@ async function startOrAttachCodex(
   // post-`--` args (they only apply to a fresh codex).
   const existing = await codexSessionInfo(box.container, sessionName);
   if (existing.running) {
-    outro(`session "${sessionName}" already running — attaching (Control+a q to detach)`);
+    outro(`session "${sessionName}" already running — attaching (Control+a d to detach)`);
     await attachCodexWrapped(box, sessionName, reattachRef(box));
     return;
   }
@@ -387,7 +387,7 @@ async function startOrAttachCodex(
 
   s.stop(`box ${box.container} ready`);
 
-  outro('attaching — Control+a q to detach, leaves codex running');
+  outro('attaching — Control+a d to detach, leaves codex running');
   await attachCodexWrapped(box, sessionName, reattachRef(box));
 }
 

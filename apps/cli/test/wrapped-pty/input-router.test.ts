@@ -53,7 +53,7 @@ function leaderSetup(): LeaderSetup {
   const router = createInputRouter({
     onForward: (b) => forwarded.push(b),
     onAnswer: () => {},
-    leaderChords: { c: 'code', v: 'vnc', w: 'browser', q: 'detach' },
+    leaderChords: { c: 'code', s: 'screen', u: 'url', d: 'detach' },
     onLeaderChange: (open) => leaderEvents.push(open),
     onAction: (n) => actions.push(n),
     setTimer: (_ms, fn) => {
@@ -84,21 +84,21 @@ describe('input router (Ctrl+a leader)', () => {
     expect(s.actions).toHaveLength(0);
   });
 
-  it('c / v / w / q dispatch their actions and close the menu', () => {
+  it('c / s / u / d dispatch their actions and close the menu', () => {
     const s = leaderSetup();
     s.router.feed(Buffer.from([0x01, 0x63])); // ^A c
-    s.router.feed(Buffer.from([0x01, 0x76])); // ^A v
-    s.router.feed(Buffer.from([0x01, 0x77])); // ^A w
-    s.router.feed(Buffer.from([0x01, 0x71])); // ^A q
-    expect(s.actions).toEqual(['code', 'vnc', 'browser', 'detach']);
+    s.router.feed(Buffer.from([0x01, 0x73])); // ^A s
+    s.router.feed(Buffer.from([0x01, 0x75])); // ^A u
+    s.router.feed(Buffer.from([0x01, 0x64])); // ^A d
+    expect(s.actions).toEqual(['code', 'screen', 'url', 'detach']);
     expect(s.leaderEvents).toEqual([true, false, true, false, true, false, true, false]);
     expect(fwd(s)).toBe('');
   });
 
   it('chord matching is case-insensitive', () => {
     const s = leaderSetup();
-    s.router.feed(Buffer.from([0x01, 0x56])); // ^A V
-    expect(s.actions).toEqual(['vnc']);
+    s.router.feed(Buffer.from([0x01, 0x53])); // ^A S
+    expect(s.actions).toEqual(['screen']);
   });
 
   it('double Ctrl+a sends one literal Ctrl+a and closes the menu', () => {
@@ -136,16 +136,16 @@ describe('input router (Ctrl+a leader)', () => {
 
   it('bytes typed before Ctrl+a are forwarded; the chord still fires', () => {
     const s = leaderSetup();
-    s.router.feed(Buffer.from('hi\x01v', 'latin1'));
+    s.router.feed(Buffer.from('hi\x01s', 'latin1'));
     expect(fwd(s)).toBe('hi');
-    expect(s.actions).toEqual(['vnc']);
+    expect(s.actions).toEqual(['screen']);
   });
 
   it('a chord split across two reads still resolves', () => {
     const s = leaderSetup();
     s.router.feed(Buffer.from([0x01]));
-    s.router.feed(Buffer.from([0x76])); // 'v'
-    expect(s.actions).toEqual(['vnc']);
+    s.router.feed(Buffer.from([0x73])); // 's'
+    expect(s.actions).toEqual(['screen']);
     expect(s.leaderEvents).toEqual([true, false]);
   });
 

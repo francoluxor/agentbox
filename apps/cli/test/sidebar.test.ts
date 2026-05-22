@@ -169,7 +169,7 @@ describe('statusLine', () => {
       activity: 'working',
       sessionTitle: 'A reasonably long Claude session title here',
     };
-    // Full hints (~152 cols) + leftover for a shrunk title.
+    // Full hints (~151 cols) + leftover for a shrunk title.
     const wide = stripAnsi(statusLine(box, 220));
     expect(wide).toHaveLength(220);
     expect(wide).toContain('Control+a c: code'); // full hints intact
@@ -177,8 +177,8 @@ describe('statusLine', () => {
     expect(wide).toContain('…'); // ...but ellipsized (cap 40)
     expect(wide).not.toContain('session title here'); // tail trimmed
     // Just enough for full hints but no room for the title at all.
-    const tight = stripAnsi(statusLine(box, 150));
-    expect(tight).toHaveLength(150);
+    const tight = stripAnsi(statusLine(box, 152));
+    expect(tight).toHaveLength(152);
     expect(tight).toContain('Control+a c: code'); // hints kept
     expect(tight).not.toContain('—'); // title dropped entirely
   });
@@ -208,14 +208,14 @@ describe('statusLine', () => {
     expect(printable).not.toContain('^a');
   });
 
-  it('default hints stay code/vnc/web; advanced groups add stop/pause/destroy', () => {
+  it('default hints stay code/screen/url; advanced groups add stop/pause/destroy', () => {
     const box = { id: '1', name: 'api', state: 'running', activity: 'idle' };
     const normal = stripAnsi(statusLine(box, 200));
     expect(normal).toContain('code');
     expect(normal).not.toContain('stop');
     expect(normal).not.toContain('destroy');
     const advanced = stripAnsi(statusLine(box, 200, undefined, ADVANCED_HINT_GROUPS));
-    expect(advanced).toContain('s: stop');
+    expect(advanced).toContain('t: stop');
     expect(advanced).toContain('p: pause');
     expect(advanced).toContain('d: destroy');
     expect(advanced).toContain('c: code');

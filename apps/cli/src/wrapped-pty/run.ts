@@ -35,7 +35,7 @@ export interface WrappedAttachOptions {
   /** Mode label affects the idle footer state label only. */
   mode: 'claude' | 'shell' | 'codex' | 'opencode';
   /** Whether the inner session can be detached (tmux-backed). Drives the
-   *  `Ctrl+a q` detach chord + footer hint. Defaults to `mode === 'claude'`
+   *  `Ctrl+a d` detach chord + footer hint. Defaults to `mode === 'claude'`
    *  (claude is always tmux-backed); a tmux-backed `agentbox shell` passes
    *  `true`, a `--no-tmux` shell leaves it false. */
   detachable?: boolean;
@@ -53,9 +53,9 @@ const FLASH_DURATION_MS = 2000;
 
 /** Per-action confirmation text shown in the footer flash. */
 const ACTION_FLASH: Record<Exclude<LeaderAction, 'detach'>, string> = {
-  vnc: 'Opening noVNC viewer…',
+  screen: 'Opening noVNC viewer…',
   code: 'Launching VS Code / Cursor…',
-  browser: 'Opening box browser…',
+  url: 'Opening box URL…',
 };
 
 /** Per-action `agentbox` subcommand: `<sub> <boxId> <...flags>`. */
@@ -63,10 +63,10 @@ const ACTION_CMD: Record<
   Exclude<LeaderAction, 'detach'>,
   { sub: string; flags: string[] }
 > = {
-  vnc: { sub: 'screen', flags: [] },
+  screen: { sub: 'screen', flags: [] },
   // --no-wait: don't block on `wait-ready` — the box is already running.
   code: { sub: 'code', flags: ['--no-wait'] },
-  browser: { sub: 'browser', flags: [] },
+  url: { sub: 'url', flags: [] },
 };
 
 /**
@@ -209,12 +209,12 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
     redrawFooter();
   });
 
-  // Ctrl+a leader chord map — keys mirror the dashboard's (`c`/`v`/`w`).
-  // A detachable (tmux-backed) session also gets `q: detach`; a plain
+  // Ctrl+a leader chord map — keys mirror the dashboard's (`c`/`s`/`u`).
+  // A detachable (tmux-backed) session also gets `d: detach`; a plain
   // `--no-tmux` shell has nothing to detach from.
   const leaderChords: Record<string, LeaderAction> = detachable
-    ? { c: 'code', v: 'vnc', w: 'browser', q: 'detach' }
-    : { c: 'code', v: 'vnc', w: 'browser' };
+    ? { c: 'code', s: 'screen', u: 'url', d: 'detach' }
+    : { c: 'code', s: 'screen', u: 'url' };
 
   // Run a Ctrl+a leader action. `detach` writes the tmux detach sequence to
   // the pty (`\x02` = Ctrl+b, tmux's secondary prefix; `d` = detach-client) —

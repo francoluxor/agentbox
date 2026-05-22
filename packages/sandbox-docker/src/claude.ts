@@ -987,7 +987,7 @@ export async function startClaudeSession(opts: StartClaudeSessionOptions): Promi
 }
 
 /**
- * Replace the current process with `docker exec -it tmux attach`. Ctrl+a q returns
+ * Replace the current process with `docker exec -it tmux attach`. Ctrl+a d returns
  * the user to their host shell with exit 0. We forward TERM so tmux declares
  * the outer terminal's true-color and hyperlink capabilities; without it
  * docker exec sets TERM=xterm and Claude renders without RGB.
@@ -1102,8 +1102,8 @@ export async function waitForTmuxPaneContent(
  * `Ctrl+a` is the **primary** prefix (matches the dashboard's quit chord), and
  * tmux's default `Ctrl+b` is kept as a **secondary** prefix (`prefix2 C-b`) so
  * existing tmux muscle memory + integrations that send `Ctrl+b <key>` keep
- * working. Either prefix triggers the same key table — so `Ctrl+a q` *and*
- * `Ctrl+b q` both detach. `Ctrl+a Ctrl+a` sends a literal `Ctrl+a` through to
+ * working. Either prefix triggers the same key table — so `Ctrl+a d` *and*
+ * `Ctrl+b d` both detach. `Ctrl+a Ctrl+a` sends a literal `Ctrl+a` through to
  * Claude (`send-prefix`); `Ctrl+b Ctrl+b` does the same for `Ctrl+b` via
  * `send-prefix -2`. `prefix`/`bind-key` are tmux server-global (no `-t`);
  * that's fine because each box's tmux server hosts only the claude session.
@@ -1121,15 +1121,16 @@ export function buildTmuxSessionArgs(sessionName: string): string[] {
   return [
     // Server-global (no -t): primary prefix Ctrl+a (dashboard parity), keep
     // tmux's default Ctrl+b as a secondary prefix so users with existing
-    // muscle memory / integrations aren't broken. `q` is the same key under
-    // both prefixes (single key table) -> Ctrl+a q AND Ctrl+b q both detach.
-    // `send-prefix` / `send-prefix -2` let a double-tap of either prefix
-    // reach Claude as that literal key.
+    // muscle memory / integrations aren't broken. `d` is the same key under
+    // both prefixes (single key table) -> Ctrl+a d AND Ctrl+b d both detach
+    // (and `d` is already tmux's built-in detach key — bound explicitly so
+    // the contract is visible). `send-prefix` / `send-prefix -2` let a
+    // double-tap of either prefix reach Claude as that literal key.
     ';', 'set', '-g', 'prefix', 'C-a',
     ';', 'set', '-g', 'prefix2', 'C-b',
     ';', 'bind-key', 'C-a', 'send-prefix',
     ';', 'bind-key', 'C-b', 'send-prefix', '-2',
-    ';', 'bind-key', 'q', 'detach-client',
+    ';', 'bind-key', 'd', 'detach-client',
     // Hide the inner tmux status bar — the wrapped-pty footer (for
     // `agentbox claude` / `agentbox shell`) and the dashboard's own status
     // row already show the box name + detach hint; without `status off`

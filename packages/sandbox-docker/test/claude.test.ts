@@ -152,8 +152,8 @@ describe('buildTmuxSessionArgs', () => {
     expect(args).not.toContain('unbind-key');
 
     const bindIdxs = args.flatMap((a, i) => (a === 'bind-key' ? [i] : []));
-    // q -> detach-client under either prefix.
-    expect(bindIdxs.some((i) => args[i + 1] === 'q' && args[i + 2] === 'detach-client')).toBe(true);
+    // d -> detach-client under either prefix.
+    expect(bindIdxs.some((i) => args[i + 1] === 'd' && args[i + 2] === 'detach-client')).toBe(true);
     // C-a C-a -> literal Ctrl+a; C-b C-b -> literal Ctrl+b (send-prefix -2)
     expect(bindIdxs.some((i) => args[i + 1] === 'C-a' && args[i + 2] === 'send-prefix')).toBe(true);
     expect(

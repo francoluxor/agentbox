@@ -353,7 +353,7 @@ export const dashboardCommand = new Command('dashboard')
       };
 
       // Detached + stdio ignored: never blocks the dashboard loop and can't
-      // write into the alt-screen. (`open` mirrors browser.ts but not
+      // write into the alt-screen. (`open` mirrors url.ts but not
       // spawnSync/inherit, which would corrupt the TUI.)
       const detach = (cmd: string, args: string[]): void => {
         spawn(cmd, args, { detached: true, stdio: 'ignore' }).unref();
@@ -374,7 +374,7 @@ export const dashboardCommand = new Command('dashboard')
       // service is exposed and the host port is resolved). On OrbStack prefer
       // the stable <container>.orb.local domain (routes to :80; WebProxy
       // forwards to the exposed service) over the loopback port, which Docker
-      // reallocates on every restart. Mirrors `agentbox browser`. Other
+      // reallocates on every restart. Mirrors `agentbox url`. Other
       // engines have no `.local` DNS, so use the published loopback endpoint.
       const webTarget = (box: ListedBox): { url: string; exposed: boolean } => {
         const ep = box.endpoints.endpoints.find((e) => e.kind === 'web');
@@ -387,7 +387,7 @@ export const dashboardCommand = new Command('dashboard')
         return { url, exposed };
       };
 
-      const openVnc = async (boxId: string): Promise<string> => {
+      const openScreen = async (boxId: string): Promise<string> => {
         const { url } = await findEndpointUrl(boxId, 'vnc');
         if (!url) return 'VNC not available for this box';
         let exposedWebUrl: string | null = null;
@@ -414,7 +414,7 @@ export const dashboardCommand = new Command('dashboard')
         return 'Opening VNC in browser…';
       };
 
-      const openWeb = async (boxId: string): Promise<string> => {
+      const openUrl = async (boxId: string): Promise<string> => {
         const box = (await listBoxes()).find((b) => b.id === boxId);
         if (!box) return 'box not found';
         const { url } = webTarget(box);
@@ -469,9 +469,9 @@ export const dashboardCommand = new Command('dashboard')
           pauseBox: pauseBoxAction,
           stopBox: stopBoxAction,
           destroyBox: destroyBoxAction,
-          openVnc,
+          openScreen,
           openCode,
-          openWeb,
+          openUrl,
         },
         initialId,
       );

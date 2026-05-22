@@ -15,7 +15,7 @@ import { downloadCommand } from '../src/commands/download.js';
 import { listCommand } from '../src/commands/list.js';
 import { logsCommand } from '../src/commands/logs.js';
 import { openCommand } from '../src/commands/open.js';
-import { browserCommand } from '../src/commands/browser.js';
+import { urlCommand } from '../src/commands/url.js';
 import { screenCommand } from '../src/commands/screen.js';
 import { pauseCommand } from '../src/commands/pause.js';
 import { pruneCommand } from '../src/commands/prune.js';
@@ -43,7 +43,7 @@ function buildProgram(): Command {
     shellCommand,
     listCommand,
     openCommand,
-    browserCommand,
+    urlCommand,
     screenCommand,
     downloadCommand,
     cpCommand,
@@ -93,8 +93,8 @@ describe('grouped --help', () => {
     for (const g of HELP_GROUPS) expect(help).toContain(g.title);
     expect(help).toContain('Advanced');
     expect(help).toContain('Run `agentbox <command> --help`');
-    // browser/screen are top-level commands listed under Access.
-    expect(help).toMatch(/^\s+browser\s/m);
+    // url/screen are top-level commands listed under Access.
+    expect(help).toMatch(/^\s+url\s/m);
     expect(help).toMatch(/^\s+screen\s/m);
     // `path` was folded into `open --path`; not a standalone command.
     expect(help).not.toMatch(/^\s+path\s/m);

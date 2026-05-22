@@ -27,13 +27,13 @@ describe('renderFooter — idle (claude mode)', () => {
     expect(out).toContain('Edit src/foo.ts');
     expect(out).toContain('Control+a: Actions');
     // detach stays pinned on the right even while the menu is collapsed
-    expect(out).toContain('Control+a q: detach');
+    expect(out).toContain('Control+a d: detach');
   });
 
   it('keeps the detach chord pinned, dropping `Actions` first, on a narrow bar', () => {
     const out = visible(renderFooter(idle, 60));
     expect(out).toContain('agentbox ▸');
-    expect(out).toContain('Control+a q: detach');
+    expect(out).toContain('Control+a d: detach');
     // the lower-priority `Actions` hint is dropped to make room
     expect(out).not.toContain('Actions');
   });
@@ -42,7 +42,7 @@ describe('renderFooter — idle (claude mode)', () => {
     const out = visible(renderFooter(idle, 50));
     expect(out).toContain('agentbox ▸');
     expect(out).toContain('smoke');
-    expect(out).toContain('Control+a q');
+    expect(out).toContain('Control+a d');
     // session title is dropped (≈ ` — <title>` doesn't fit)
     expect(out).not.toContain('Edit src/foo.ts');
   });
@@ -60,9 +60,9 @@ describe('renderFooter — idle (claude mode)', () => {
   it('expands to the chord menu while the leader is active', () => {
     const out = visible(renderFooter({ ...idle, leaderActive: true }, 120));
     expect(out).toContain('c: code');
-    expect(out).toContain('v: vnc');
-    expect(out).toContain('w: browser');
-    expect(out).toContain('q: detach');
+    expect(out).toContain('s: screen');
+    expect(out).toContain('u: url');
+    expect(out).toContain('d: detach');
     // the collapsed `Actions` label is replaced by the chords
     expect(out).not.toContain('Actions');
   });
@@ -87,8 +87,8 @@ describe('renderFooter — idle (shell mode)', () => {
   it('expands to a chord menu without a detach entry while the leader is active', () => {
     const out = visible(renderFooter({ ...idle, leaderActive: true }, 120));
     expect(out).toContain('c: code');
-    expect(out).toContain('v: vnc');
-    expect(out).toContain('w: browser');
+    expect(out).toContain('s: screen');
+    expect(out).toContain('u: url');
     // a plain (--no-tmux) shell has nothing to detach from
     expect(out).not.toContain('detach');
   });
@@ -105,13 +105,13 @@ describe('renderFooter — idle (tmux-backed shell)', () => {
   it('keeps the `(shell)` label but pins the detach chord', () => {
     const out = visible(renderFooter(idle, 80));
     expect(out).toContain('(shell)');
-    expect(out).toContain('Control+a q: detach');
+    expect(out).toContain('Control+a d: detach');
   });
 
   it('includes the detach entry in the expanded chord menu', () => {
     const out = visible(renderFooter({ ...idle, leaderActive: true }, 120));
     expect(out).toContain('c: code');
-    expect(out).toContain('q: detach');
+    expect(out).toContain('d: detach');
   });
 });
 

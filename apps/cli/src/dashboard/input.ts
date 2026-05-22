@@ -1,7 +1,7 @@
 export type InputEvent =
   | { type: 'switch'; dir: 'next' | 'prev' }
   | { type: 'quit' }
-  | { type: 'action'; name: 'vnc' | 'code' | 'web' | 'pause' | 'stop' | 'destroy' }
+  | { type: 'action'; name: 'screen' | 'code' | 'url' | 'pause' | 'stop' | 'destroy' }
   | { type: 'leader'; active: boolean }
   | { type: 'forward'; bytes: Buffer };
 
@@ -32,7 +32,7 @@ type State = 'normal' | 'leader' | 'esc' | 'mouseX10';
  *
  * - Switch boxes: `Ctrl+Option+Up/Down` (CSI `1;7A`/`1;7B`) — the one chord
  *   macOS/iTerm2 reliably emits.
- * - Everything else (vnc/code/web/quit) is a `Ctrl-a <key>` leader chord —
+ * - Everything else (screen/code/url/quit/…) is a `Ctrl-a <key>` leader chord —
  *   `Ctrl+Option+<letter>` is too terminal-dependent to rely on.
  *
  * Unrecognized input is forwarded verbatim to the pty, with timeout buffering
@@ -89,10 +89,10 @@ export class InputParser {
           this.flush();
         } else {
           const c = String.fromCharCode(b);
-          if (c === 'v') this.onEvent({ type: 'action', name: 'vnc' });
-          else if (c === 'w') this.onEvent({ type: 'action', name: 'web' });
+          if (c === 's') this.onEvent({ type: 'action', name: 'screen' });
+          else if (c === 'u') this.onEvent({ type: 'action', name: 'url' });
           else if (c === 'c') this.onEvent({ type: 'action', name: 'code' });
-          else if (c === 's') this.onEvent({ type: 'action', name: 'stop' });
+          else if (c === 't') this.onEvent({ type: 'action', name: 'stop' });
           else if (c === 'p') this.onEvent({ type: 'action', name: 'pause' });
           else if (c === 'd') this.onEvent({ type: 'action', name: 'destroy' });
           else if (c === 'q') this.onEvent({ type: 'quit' });

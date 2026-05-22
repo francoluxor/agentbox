@@ -8,7 +8,7 @@ import { withWatchOptions, watchRender, type WatchableOptions } from '../watch.j
 
 interface ListOptions extends WatchableOptions {
   json?: boolean;
-  all?: boolean;
+  global?: boolean;
 }
 
 /** A table cell: the (possibly OSC-8-wrapped) text to print + its visible width. */
@@ -172,8 +172,8 @@ function renderTable(boxes: ListedBox[], stream: NodeJS.WriteStream): string {
  * The boxes `list` should render: scoped to the cwd's project by default
  * (consistent with every other box-arg command, which routes through
  * `box-ref.ts`'s `findProjectRoot` + `resolveBoxRef`), or all boxes under
- * `--all`. Pre-feature boxes have no `projectRoot`, so they surface only under
- * `--all` — same as auto-pick, which never matches them implicitly.
+ * `--global`. Pre-feature boxes have no `projectRoot`, so they surface only
+ * under `--global` — same as auto-pick, which never matches them implicitly.
  */
 async function scopedBoxes(
   all: boolean,
@@ -188,7 +188,7 @@ async function buildListText(all: boolean): Promise<string> {
   const { boxes, projectRoot, scoped } = await scopedBoxes(all);
   if (boxes.length === 0) {
     if (scoped) {
-      return `no boxes in this project (${projectRoot}) — run \`agentbox create\`, or \`agentbox list --all\` to see all`;
+      return `no boxes in this project (${projectRoot}) — run \`agentbox create\`, or \`agentbox list --global\` to see all`;
     }
     return 'no boxes — run `agentbox create` to make one';
   }
@@ -202,15 +202,15 @@ async function buildListText(all: boolean): Promise<string> {
 export const listCommand = withWatchOptions(
   new Command('list')
     .alias('ls')
-    .description('List agent boxes in the current project (-a for all)')
+    .description('List agent boxes in the current project (-g for all)')
     .option('-j, --json', 'machine-readable JSON output')
-    .option('-a, --all', 'include boxes from all projects'),
+    .option('-g, --global', 'include boxes from all projects'),
 ).action(async (opts: ListOptions) => {
   if (opts.json && opts.watch) {
     log.error('cannot combine --json with --watch');
     process.exit(2);
   }
-  const all = opts.all ?? false;
+  const all = opts.global ?? false;
   if (opts.watch) {
     await watchRender(() => buildListText(all), opts.interval);
     return;

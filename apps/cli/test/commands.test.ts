@@ -7,7 +7,7 @@ import { statusCommand } from '../src/commands/status.js';
 import { runInspect } from '../src/commands/inspect.js';
 import { listCommand } from '../src/commands/list.js';
 import { openCommand } from '../src/commands/open.js';
-import { browserCommand } from '../src/commands/browser.js';
+import { urlCommand } from '../src/commands/url.js';
 import { screenCommand } from '../src/commands/screen.js';
 import { pauseCommand } from '../src/commands/pause.js';
 import { pruneCommand } from '../src/commands/prune.js';
@@ -18,10 +18,14 @@ import { stopCommand } from '../src/commands/stop.js';
 import { unpauseCommand } from '../src/commands/unpause.js';
 
 describe('lifecycle CLI surface', () => {
-  it('list is registered with -j/--json and the ls alias', () => {
+  it('list is registered with -j/--json, -g/--global, and the ls alias', () => {
     expect(listCommand.name()).toBe('list');
     expect(listCommand.aliases()).toContain('ls');
-    expect(listCommand.options.map((o) => o.long)).toContain('--json');
+    const longs = listCommand.options.map((o) => o.long);
+    expect(longs).toContain('--json');
+    expect(longs).toContain('--global');
+    // --all / -a renamed to --global / -g.
+    expect(longs).not.toContain('--all');
   });
 
   it('status takes a <box> arg, --json, and absorbs inspect via --inspect', () => {
@@ -69,10 +73,10 @@ describe('lifecycle CLI surface', () => {
     expect(longs).not.toContain('--loopback');
   });
 
-  it('browser/screen are separate top-level commands with [box] + --print/--loopback', () => {
-    expect(browserCommand.name()).toBe('browser');
+  it('url/screen are separate top-level commands with [box] + --print/--loopback', () => {
+    expect(urlCommand.name()).toBe('url');
     expect(screenCommand.name()).toBe('screen');
-    for (const cmd of [browserCommand, screenCommand]) {
+    for (const cmd of [urlCommand, screenCommand]) {
       expect(cmd.registeredArguments[0]!.required, `${cmd.name()}: [box]`).toBe(false);
       const longs = cmd.options.map((o) => o.long);
       expect(longs, cmd.name()).toEqual(expect.arrayContaining(['--print', '--loopback']));

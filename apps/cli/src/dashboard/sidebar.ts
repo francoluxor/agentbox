@@ -209,7 +209,7 @@ export function menuLines(boxName: string, w: number, h: number): string[] {
     '   [o]  Start OpenCode',
     '   [s]  Open a shell',
     '',
-    '  Ctrl+Option+↑/↓ switch · Ctrl-a then v/c/w/q (vnc/code/web/quit)',
+    '  Ctrl+Option+↑/↓ switch · Ctrl-a then c/s/u/q (code/screen/url/quit)',
   ];
   const top = Math.max(0, Math.floor((h - body.length) / 2));
   const out: string[] = [];
@@ -299,8 +299,8 @@ const SWITCH_HINT: readonly [string, string] = ['Control+Option+↑/↓', 'switc
 const HINT_GROUPS: ReadonlyArray<readonly [string, string]> = [
   SWITCH_HINT,
   ['Control+a c', 'code'],
-  ['Control+a v', 'vnc'],
-  ['Control+a w', 'web'],
+  ['Control+a s', 'screen'],
+  ['Control+a u', 'url'],
   ['Control+a q', 'quit'],
 ];
 
@@ -317,9 +317,9 @@ export const COLLAPSED_HINT_GROUPS: ReadonlyArray<readonly [string, string]> = [
  *  pending — every chord, compact (`KEY: label`), reverts on the next key. */
 export const ADVANCED_HINT_GROUPS: ReadonlyArray<readonly [string, string]> = [
   ['c', 'code'],
-  ['v', 'vnc'],
-  ['w', 'web'],
-  ['s', 'stop'],
+  ['s', 'screen'],
+  ['u', 'url'],
+  ['t', 'stop'],
   ['p', 'pause'],
   ['d', 'destroy'],
   ['q', 'quit'],

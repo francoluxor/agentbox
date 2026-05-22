@@ -22,7 +22,7 @@ export type FooterState =
        *  others show `(shell)` / `(codex)` / `(opencode)`. */
       mode: 'claude' | 'shell' | 'codex' | 'opencode';
       /** Whether the session can be detached (tmux-backed). Drives the
-       *  expanded leader menu + the pinned `Control+a q: detach` hint. */
+       *  expanded leader menu + the pinned `Control+a d: detach` hint. */
       detachable?: boolean;
       /** True while the Ctrl+a leader menu is open — swaps the collapsed
        *  `Control+a: Actions` hint for the expanded chord list. */
@@ -71,26 +71,26 @@ const COLLAPSED_HINTS_PLAIN: ReadonlyArray<readonly [string, string]> = [
  *  on the right even while the actions menu is closed. */
 const COLLAPSED_HINTS_DETACHABLE: ReadonlyArray<readonly [string, string]> = [
   ['Control+a', 'Actions'],
-  ['Control+a q', 'detach'],
+  ['Control+a d', 'detach'],
 ];
 /** Narrow-bar fallback for a detachable session: drop the `Actions` hint
  *  first, but never the detach chord. */
 const DETACH_PIN_HINTS: ReadonlyArray<readonly [string, string]> = [
-  ['Control+a q', 'detach'],
+  ['Control+a d', 'detach'],
 ];
 /** Expanded which-key menu shown while the Ctrl+a leader is open. A
- *  detachable (tmux-backed) session also gets `q: detach`; a plain shell
+ *  detachable (tmux-backed) session also gets `d: detach`; a plain shell
  *  has nothing to detach from. */
 const DETACHABLE_LEADER_HINTS: ReadonlyArray<readonly [string, string]> = [
   ['c', 'code'],
-  ['v', 'vnc'],
-  ['w', 'browser'],
-  ['q', 'detach'],
+  ['s', 'screen'],
+  ['u', 'url'],
+  ['d', 'detach'],
 ];
 const PLAIN_LEADER_HINTS: ReadonlyArray<readonly [string, string]> = [
   ['c', 'code'],
-  ['v', 'vnc'],
-  ['w', 'browser'],
+  ['s', 'screen'],
+  ['u', 'url'],
 ];
 
 /**
