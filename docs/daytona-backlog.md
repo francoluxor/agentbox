@@ -63,8 +63,8 @@ Docker provider runs `git stash create` + tar of untracked files so the in-box w
 ### 2.2 ✅ In-box `agentbox-ctl download workspace` cloud executor (done)
 ~~Stub~~ — `executeCloudAction` handles `download.workspace` via `pullCloudDirContents` (`/workspace → box.workspacePath`). `download.env` / `download.config` / `download.claude` still return a clear "not yet supported on cloud" because the source paths live in per-agent volumes that aren't routed yet — Phase 6 follow-up.
 
-### 2.3 🟡 `checkpoint.create` cloud executor stubbed
-v1 deferred checkpoints for cloud (Daytona can't snapshot a live sandbox's FS). For long-term: implement via `sb.archive()` + naming, or via image rebuild. Until then the in-box `agentbox-ctl checkpoint` returns "not yet supported".
+### 2.3 ✅ `checkpoint.create` cloud executor (done)
+~~Stubbed~~ — `executeCloudAction` handles `checkpoint.create` by shelling out to `AGENTBOX_CLI_ENTRY` with `agentbox checkpoint create <boxId>` plus the original `--name`/`--merged`/`--set-default`/`--replace` flags. The CLI's `checkpoint create` is already provider-aware (`apps/cli/src/commands/checkpoint.ts` dispatches on `box.provider`), so the cloud branch calls `provider.checkpoint.create(box, name)` which captures the live sandbox via `backend.createSnapshot` and writes the project-scoped manifest at `~/.agentbox/cloud-checkpoints/...`. `--merged` is docker-only and the cloud branch ignores it; `--set-default` writes `box.defaultCheckpoint` in the project config; `--replace` rms the prior snapshot+manifest first.
 
 ### 2.3.1 🟡 defaultCheckpoint should be provider specific
 Today `box.defaultCheckpoint` is global — `agentbox checkpoint set-default <name>` sets it for all providers. Daytona needs a per-provider default checkpoint — `agentbox checkpoint set-default --provider daytona <name>` sets it for Daytona only and in future other providers too.

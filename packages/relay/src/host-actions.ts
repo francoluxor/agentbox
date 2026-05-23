@@ -22,6 +22,7 @@ import type { CloudBackend, CloudHandle } from '@agentbox/core';
 import { findBox, readState } from '@agentbox/sandbox-core';
 import { askPrompt, type PendingPrompts, type PromptSubscribers } from './prompts.js';
 import type {
+  CheckpointRpcParams,
   CpRpcParams,
   DownloadKind,
   DownloadRpcParams,
@@ -85,6 +86,9 @@ export async function executeCloudAction(
     action.method === 'download.claude'
   ) {
     return runDownloadRpc(action, deps);
+  }
+  if (action.method === 'checkpoint.create') {
+    return runCheckpointRpc(action, deps);
   }
   return {
     exitCode: 1,
@@ -198,6 +202,43 @@ async function runCpRpc(
       stderr: `cp failed: ${err instanceof Error ? err.message : String(err)}\n`,
     };
   }
+}
+
+/**
+ * Capture a checkpoint by shelling out to the installed `agentbox` CLI
+ * (same decoupling as the docker handler — the CLI owns checkpoint name
+ * allocation, the `--set-default` config write, snapshot store layout, and
+ * the cloud-snapshot creation via `provider.checkpoint.create`). The CLI's
+ * `checkpoint create` is already provider-aware, so this path works for
+ * both backends; we just hand it the box id.
+ */
+async function runCheckpointRpc(
+  action: HostAction,
+  deps: CloudActionExecutorDeps,
+): Promise<HostActionResult> {
+  const params = (action.params ?? {}) as Partial<CheckpointRpcParams>;
+  const entry = process.env['AGENTBOX_CLI_ENTRY'];
+  if (!entry) {
+    return {
+      exitCode: 64,
+      stdout: '',
+      stderr: 'relay: AGENTBOX_CLI_ENTRY not set; cannot run checkpoint host-side\n',
+    };
+  }
+  const argv = [process.execPath, entry, 'checkpoint', 'create', deps.boxId];
+  if (params.name) argv.push('--name', params.name);
+  // --merged is docker-image-layer specific (flatten). For cloud snapshots
+  // it's a no-op; pass it through anyway so the CLI's docker branch sees it
+  // and the cloud branch ignores it cleanly.
+  if (params.merged === true) argv.push('--merged');
+  if (params.setDefault === true) argv.push('--set-default');
+  if (params.replace === true) argv.push('--replace');
+  const result = await execa(argv[0]!, argv.slice(1), { reject: false });
+  return {
+    exitCode: result.exitCode ?? 1,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+  };
 }
 
 async function runDownloadRpc(
