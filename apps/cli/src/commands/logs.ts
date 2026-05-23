@@ -1,10 +1,9 @@
 import { log } from '@clack/prompts';
 import { Command } from 'commander';
 import { spawn } from 'node:child_process';
-import { execInBox } from '@agentbox/sandbox-docker';
 import { resolveBoxOrExit } from '../box-ref.js';
+import { providerForBox } from '../provider/registry.js';
 import { handleLifecycleError } from './_errors.js';
-import { requireDockerProvider } from './_provider-guard.js';
 
 interface LogsOptions {
   tail: string;
@@ -44,14 +43,17 @@ export const logsCommand = new Command('logs')
       }
 
       const box = await resolveBoxOrExit(idOrName);
-      requireDockerProvider(box, 'logs');
+      const provider = await providerForBox(box);
+      const isCloud = (box.provider ?? 'docker') !== 'docker';
 
       const tail = String(Number.parseInt(opts.tail, 10) || 200);
       const args = ['agentbox-ctl', 'logs', service, '--tail', tail];
       if (opts.follow) args.push('--follow');
 
       if (!opts.follow) {
-        const proc = await execInBox(box.container, args, { user: 'vscode' });
+        // Non-follow returns once the snapshot dump is done — safe to round-trip
+        // through provider.exec on both docker and cloud.
+        const proc = await provider.exec(box, args, { user: 'vscode' });
         if (proc.exitCode !== 0) {
           log.error(`agentbox-ctl logs failed: ${proc.stderr || proc.stdout}`);
           process.exit(1);
@@ -61,12 +63,44 @@ export const logsCommand = new Command('logs')
         return;
       }
 
-      // Streaming: hand stdio to `docker exec` directly so the user sees lines
-      // as the daemon emits them, and Ctrl-C kills both ends cleanly.
-      const child = spawn('docker', ['exec', '--user', 'vscode', box.container, ...args], {
-        stdio: ['ignore', 'inherit', 'inherit'],
+      // Streaming. Docker keeps the spawn-docker-exec fast path so Ctrl-C
+      // tears both ends down cleanly. Cloud goes through `provider.buildAttach`
+      // which mints a fresh SSH token and runs `agentbox-ctl logs --follow`
+      // directly (no tmux wrap — `kind: 'logs'` skips the tmux render).
+      if (!isCloud) {
+        const child = spawn('docker', ['exec', '--user', 'vscode', box.container, ...args], {
+          stdio: ['ignore', 'inherit', 'inherit'],
+        });
+        child.on('exit', (code) => process.exit(code ?? 0));
+        return;
+      }
+
+      if (!provider.buildAttach) {
+        throw new Error(
+          `provider '${provider.name}' does not support follow-mode log streaming`,
+        );
+      }
+      const spec = await provider.buildAttach(box, 'logs', {
+        service,
+        tail: Number.parseInt(tail, 10),
+        follow: true,
+        user: 'vscode',
       });
-      child.on('exit', (code) => process.exit(code ?? 0));
+      const [argv0, ...rest] = spec.argv;
+      if (!argv0) throw new Error('provider.buildAttach returned an empty argv');
+      const child = spawn(argv0, rest, { stdio: ['ignore', 'inherit', 'inherit'] });
+      const cleanup = async (): Promise<void> => {
+        if (spec.cleanup) await spec.cleanup();
+      };
+      child.on('exit', async (code) => {
+        await cleanup();
+        process.exit(code ?? 0);
+      });
+      const term = (): void => {
+        child.kill('SIGTERM');
+      };
+      process.on('SIGINT', term);
+      process.on('SIGTERM', term);
     } catch (err) {
       handleLifecycleError(err);
     }

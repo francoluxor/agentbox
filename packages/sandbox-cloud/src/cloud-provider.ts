@@ -720,12 +720,18 @@ function defaultCommand(kind: AttachKind, opts?: BuildAttachOptions): string {
       // Caller didn't tell us which agent — fall back to a login shell;
       // claude/codex/opencode wrappers pass an explicit `command`.
       return 'bash -l';
-    case 'logs':
-      // Caller MUST pass service + a real command for logs; this is a safe
-      // placeholder when neither is set.
-      return opts?.service
-        ? `tail -F ${opts.follow !== false ? '' : '-n 0 '}/var/log/agentbox/${opts.service}.log`
-        : 'echo "no service specified — set BuildAttachOptions.service"';
+    case 'logs': {
+      if (!opts?.service) {
+        return 'echo "no service specified — set BuildAttachOptions.service"';
+      }
+      // Prefer `agentbox-ctl logs` so the cloud follow stream matches the
+      // docker format (timestamps + stream marker, ring-buffered tail). The
+      // ctl daemon binds the unix socket regardless of how we exec in.
+      const tail = opts.tail !== undefined ? String(opts.tail) : '200';
+      const args = [`--tail ${shellSingle(tail)}`];
+      if (opts.follow !== false) args.push('--follow');
+      return `/usr/local/bin/agentbox-ctl logs ${shellSingle(opts.service)} ${args.join(' ')}`;
+    }
   }
 }
 

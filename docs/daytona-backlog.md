@@ -107,8 +107,8 @@ The Docker shell command has multi-session support (named shells, attach-by-labe
 ### 3.4 ✅ `agentbox cp` / `download` cloud-routed (done)
 ~~Cloud-guarded~~ — routed through `provider.uploadPath` / `downloadPath` / `downloadDirContents`. See "Already landed".
 
-### 3.5 🟡 `agentbox logs` cloud-guarded
-For cloud could run `backend.exec("tail -F /var/log/agentbox/<service>.log")` via the SSH attach machinery. Same shape as `agentbox shell` one-shot.
+### 3.5 ✅ `agentbox logs` cloud-routed (done)
+~~Cloud-guarded~~ — `logs.ts` resolves the provider via `providerForBox(box)`. Non-follow rounds through `provider.exec(box, ['agentbox-ctl', 'logs', service, '--tail', N])` on both providers (same `agentbox-ctl logs` ring-buffer snapshot, so timestamp + stream-marker output matches docker). Follow mode keeps the existing `docker exec` spawn for docker, and for cloud spawns the SSH argv returned by `provider.buildAttach(box, 'logs', { service, tail, follow: true })` — `buildAttach`'s `logs` kind skips the tmux wrap and runs `agentbox-ctl logs <service> --tail N --follow` directly over SSH, so Ctrl-C tears the stream down cleanly. The cloud `defaultCommand('logs', ...)` switched from raw `tail -F` to `agentbox-ctl logs` for output parity with docker.
 
 ### 3.6 ✅ `agentbox screen` (noVNC) cloud-routed (done)
 ~~Cloud-guarded~~ — `screen.ts` now branches on provider and calls `provider.resolveUrl(box, { kind: 'vnc', ttl })` for cloud boxes, which mints a signed preview URL on port 6080. The cloud provider launches the in-sandbox VNC stack (Xvnc + websockify + noVNC) at create time and re-launches it on `start` via `launchCloudVncDaemon` (mirrors Docker's `launchVncDaemon`); the per-box `vncPassword` is generated host-side and persisted on the cloud `BoxRecord`. `agentbox screen <cloud-box>` appends `/vnc.html?autoconnect=1&password=…` to the signed URL so the browser auto-connects without prompting. `--no-vnc` at create skips the daemon launch and the screen command refuses with the same "VNC is disabled" message Docker uses.
