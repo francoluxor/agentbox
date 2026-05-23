@@ -228,9 +228,19 @@ export const daytonaBackend: CloudBackend = {
     const sb = await getSandbox(h.sandboxId);
     const p = await sb.getPreviewLink(port);
     // The host CloudBoxPoller attaches `token` as `x-daytona-preview-token`
-    // for every /bridge call. The user-facing CLI `url` currently surfaces
-    // only `url` — embedding the token for a browser is a Phase 6 polish.
+    // for every /bridge call. Browser-bound URLs use `signedPreviewUrl` below
+    // instead (the two token kinds are not interchangeable on Daytona).
     return { url: p.url, token: p.token };
+  },
+
+  async signedPreviewUrl(
+    h: CloudHandle,
+    port: number,
+    expiresInSeconds: number,
+  ): Promise<CloudPreviewUrl> {
+    const sb = await getSandbox(h.sandboxId);
+    const s = await sb.getSignedPreviewUrl(port, expiresInSeconds);
+    return { url: s.url, token: s.token };
   },
 
   async attachArgv(h: CloudHandle): Promise<string[]> {

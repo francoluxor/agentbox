@@ -118,7 +118,10 @@ export const dockerProvider: Provider = {
     return { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr };
   },
 
-  async resolveUrl(box: BoxRecord, opts?: { loopback?: boolean }): Promise<string> {
+  async resolveUrl(
+    box: BoxRecord,
+    opts?: { loopback?: boolean; kind?: 'web' | 'vnc'; ttl?: number },
+  ): Promise<string> {
     if (box.webContainerPort === undefined) {
       throw new Error(
         `box ${box.name} predates the reserved web port; recreate it to use \`agentbox url\``,

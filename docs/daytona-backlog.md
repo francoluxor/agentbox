@@ -98,8 +98,8 @@ The Docker shell command has multi-session support (named shells, attach-by-labe
 ### 3.5 🟡 `agentbox logs` cloud-guarded
 For cloud could run `backend.exec("tail -F /var/log/agentbox/<service>.log")` via the SSH attach machinery. Same shape as `agentbox shell` one-shot.
 
-### 3.6 🟡 `agentbox screen` (noVNC) cloud-guarded
-The VNC daemon does run inside the cloud sandbox (Dockerfile.box bakes it). Need to resolve `backend.previewUrl(6080)` and open it; same pattern as `agentbox url` but on a different port.
+### 3.6 ✅ `agentbox screen` (noVNC) cloud-routed (done)
+~~Cloud-guarded~~ — `screen.ts` now branches on provider and calls `provider.resolveUrl(box, { kind: 'vnc', ttl })` for cloud boxes, which mints a signed preview URL on port 6080. Same primitive as `agentbox url`.
 
 ### 3.7 🟡 `agentbox wait` cloud-guarded
 Could route via `provider.exec(box, ['agentbox-ctl', 'wait-ready', '--json', ...])` and parse the same `WaitReadyReply`.
@@ -123,10 +123,8 @@ Plan deferred these for cloud v1. Checkpoint depends on cloud snapshot semantics
 
 ## 4. URL / browser UX
 
-### 4.1 🔴 `agentbox url <cloud-box>` opens a URL the browser rejects
-Daytona's preview proxy requires the `x-daytona-preview-token` header for every request. Browsers can't add custom headers from a URL; `agentbox url` opens the bare URL which immediately 401s.
-
-**Fix:** either (a) make the cloud box's web preview `public: true` at provision (security tradeoff — anyone with the URL can hit the app); (b) attach the token as a `?token=…` query parameter if Daytona's proxy accepts it; (c) generate a signed URL via the Daytona API (if it exists); (d) ship a tiny localhost helper that proxies host requests through the token. **Document the current limitation prominently** until one of these is wired.
+### 4.1 ✅ `agentbox url <cloud-box>` now uses signed preview URLs (done)
+~~Browser-rejected bare URL~~ — `CloudBackend.signedPreviewUrl` (Daytona: `sb.getSignedPreviewUrl(port, expiresInSeconds)`) mints a URL with the token embedded in the host (`https://{port}-{token}.proxy.daytona.work`). The cloud provider's `resolveUrl` calls it with a 3600s default expiry, overridable via `agentbox url --ttl <seconds>` (max 86400). Standard header-token URLs (`getPreviewLink`) stay in use for bridge/poller traffic where headers are controlled.
 
 ### 4.2 🟡 `getBoxEndpoints` for cloud doesn't include service ports
 Cloud box's `cloud.previewUrls` only carries port 80/8080 today. Per-service `expose:` ports declared in `agentbox.yaml` could each get a preview URL (call `backend.previewUrl(port)` at create+start for every declared port).

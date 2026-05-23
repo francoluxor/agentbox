@@ -80,6 +80,20 @@ export interface CloudBackend {
   previewUrl(h: CloudHandle, port: number): Promise<CloudPreviewUrl>;
 
   /**
+   * Browser-bound signed preview URL with the auth token embedded in the URL
+   * (no header needed). Used for `agentbox url` / `agentbox screen` — anywhere
+   * the host hands the URL off to a browser. Distinct from `previewUrl()`
+   * because the two token kinds are not interchangeable on Daytona: standard
+   * tokens go in `x-daytona-preview-token`; signed tokens are baked into the
+   * URL itself and can't be swapped for a header value. `expiresInSeconds` is
+   * provider-clamped (Daytona: 1s–86400s).
+   *
+   * Optional: backends without a signed-URL primitive omit this and callers
+   * must surface a header-token workaround (today: error out clearly).
+   */
+  signedPreviewUrl?(h: CloudHandle, port: number, expiresInSeconds: number): Promise<CloudPreviewUrl>;
+
+  /**
    * Optional: SSH connect argv for an interactive attach. Returns argv where
    * `argv[0]` is the program (e.g. `'ssh'`) and the rest are connection args
    * (user@host, options). `@agentbox/sandbox-cloud`'s `buildAttach` appends a

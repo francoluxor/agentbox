@@ -16,6 +16,22 @@ import { handleLifecycleError } from './_errors.js';
 interface UrlOptions {
   print?: boolean;
   loopback?: boolean;
+  ttl?: string;
+}
+
+/** Daytona's signed-URL ceiling is 24h; clamp the CLI flag to the same. */
+const SIGNED_URL_TTL_MIN = 1;
+const SIGNED_URL_TTL_MAX = 86400;
+
+function parseTtlOrExit(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < SIGNED_URL_TTL_MIN || n > SIGNED_URL_TTL_MAX) {
+    throw new Error(
+      `--ttl must be an integer between ${String(SIGNED_URL_TTL_MIN)} and ${String(SIGNED_URL_TTL_MAX)} seconds`,
+    );
+  }
+  return n;
 }
 
 export const urlCommand = new Command('url')
@@ -30,6 +46,10 @@ export const urlCommand = new Command('url')
   .option(
     '--loopback',
     'use the 127.0.0.1 URL instead of the OrbStack .orb.local / Portless .localhost URL',
+  )
+  .option(
+    '--ttl <seconds>',
+    'cloud only: signed-URL expiry in seconds (default 3600, max 86400)',
   )
   .action(async (idOrName: string | undefined, opts: UrlOptions) => {
     try {
@@ -76,8 +96,10 @@ export const urlCommand = new Command('url')
           url = `http://127.0.0.1:${String(record.webHostPort)}`;
         }
       } else {
-        // Cloud provider: probeState + lifecycle handled by the provider; URL
-        // is the (token-authed) preview URL the backend resolves on demand.
+        // Cloud provider: probeState + lifecycle handled by the provider;
+        // URL is a signed preview URL (token embedded in the URL itself) so
+        // the host browser can open it without a custom header.
+        const ttl = parseTtlOrExit(opts.ttl);
         const p = await providerForBox(box);
         const state = await p.probeState(box);
         if (state === 'paused') {
@@ -89,7 +111,7 @@ export const urlCommand = new Command('url')
         } else if (state === 'missing') {
           throw new Error(`cloud sandbox for ${box.name} is missing; was it deleted?`);
         }
-        url = await p.resolveUrl(box, { loopback: opts.loopback });
+        url = await p.resolveUrl(box, { kind: 'web', ttl });
       }
 
       if (opts.print) {

@@ -49,6 +49,15 @@ import { seedCloudWorkspace } from './workspace-seed.js';
 export const CLOUD_WORKSPACE_DIR = '/workspace';
 /** In-box port the supervisor's WebProxy binds to. Non-privileged so no `setcap` dep. */
 export const CLOUD_WEB_PROXY_PORT = 8080;
+/** In-box port the noVNC viewer (websockify) serves on — fixed by Dockerfile.box. */
+export const CLOUD_VNC_PORT = 6080;
+/**
+ * Default expiry for browser-bound signed preview URLs. 1h matches Daytona's
+ * docs recommendation: long enough for one CLI invocation + browser session,
+ * short enough that a stale link doesn't outlive the box. Override with the
+ * CLI `--ttl` flag when sharing or running long-lived sessions.
+ */
+export const DEFAULT_SIGNED_URL_TTL_SECONDS = 3600;
 
 /**
  * Provider-neutral image selector. Cloud backends typically resolve it to a
@@ -454,15 +463,31 @@ export function createCloudProvider(
       return pullCloudDirContents(backend, handleFor(box), boxSrc, hostDst);
     },
 
-    async resolveUrl(box: BoxRecord): Promise<string> {
+    async resolveUrl(
+      box: BoxRecord,
+      opts?: { loopback?: boolean; kind?: 'web' | 'vnc'; ttl?: number },
+    ): Promise<string> {
       const h = handleFor(box);
-      const webPort = box.cloud?.webPort ?? CLOUD_WEB_PROXY_PORT;
-      // Always re-resolve via the SDK — the cached URL on the record may be
-      // from a previous start whose token has rotated. The bare URL alone
-      // isn't enough for a browser (Daytona's preview proxy expects the
-      // token as a header); Phase 6 grows this to surface both.
-      const p = await backend.previewUrl(h, webPort);
-      return p.url;
+      const kind = opts?.kind ?? 'web';
+      // VNC port is fixed by Dockerfile.box (websockify serves noVNC on :6080).
+      const port = kind === 'vnc' ? CLOUD_VNC_PORT : (box.cloud?.webPort ?? CLOUD_WEB_PROXY_PORT);
+      // Always re-resolve through the SDK — cached URLs on the record may be
+      // from a previous start whose token has rotated. Prefer signed URLs
+      // because the user is about to hand the URL to a browser (no way to
+      // attach an `x-daytona-preview-token` header from a click).
+      if (backend.signedPreviewUrl) {
+        const ttl = opts?.ttl ?? DEFAULT_SIGNED_URL_TTL_SECONDS;
+        const signed = await backend.signedPreviewUrl(h, port, ttl);
+        return signed.url;
+      }
+      // No signed-URL primitive: fall back to the header-token URL, but fail
+      // loudly so the caller sees this isn't usable in a browser as-is.
+      const p = await backend.previewUrl(h, port);
+      throw new Error(
+        `cloud backend '${backend.name}' does not support signed preview URLs; ` +
+          `the standard URL (${p.url}) requires a header token (e.g. x-daytona-preview-token: ${p.token ?? '<unset>'}) ` +
+          `that browsers can't attach from a click. Use a programmatic client or wait for backend support.`,
+      );
     },
 
     // stats is provider-optional; cloud backends without a metrics API just

@@ -52,7 +52,7 @@
   },
   "dependencies": {
     "@clack/prompts": "^0.9.0",
-    "@daytonaio/sdk": "^0.27.0",
+    "@daytonaio/sdk": "^0.179.0",
     "@xterm/headless": "^5.5.0",
     "commander": "^12.1.0",
     "execa": "^9.5.2",

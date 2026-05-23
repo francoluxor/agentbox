@@ -126,7 +126,21 @@ export interface Provider {
   exec(box: BoxRecord, argv: string[], opts?: ExecOptions): Promise<ExecResult>;
 
   // ---- url / endpoints ----
-  resolveUrl(box: BoxRecord, opts?: { loopback?: boolean }): Promise<string>;
+  /**
+   * Resolve the user-facing URL to open in the host browser.
+   *
+   * - `kind: 'web'` (default) — the box's exposed web app (Docker: port 80
+   *   via OrbStack/Portless/loopback; cloud: the supervisor's WebProxy port).
+   * - `kind: 'vnc'` — the in-box noVNC viewer (port 6080).
+   * - `loopback` — Docker-only knob to prefer `127.0.0.1:<port>` over the
+   *   engine's auto-routed URL; ignored by cloud providers.
+   * - `ttl` — cloud-only hint for signed-URL expiry in seconds (cloud
+   *   providers default to 3600 when omitted; Docker providers ignore it).
+   */
+  resolveUrl(
+    box: BoxRecord,
+    opts?: { loopback?: boolean; kind?: 'web' | 'vnc'; ttl?: number },
+  ): Promise<string>;
 
   // ---- optional capabilities (the CLI feature-detects these) ----
   /** Build the argv the CLI's PTY wrapper attaches to (shell/agent/logs). */
