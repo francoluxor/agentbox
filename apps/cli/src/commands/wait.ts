@@ -1,10 +1,9 @@
 import { log } from '@clack/prompts';
 import { Command } from 'commander';
 import type { WaitReadyReply } from '@agentbox/ctl';
-import { execInBox } from '@agentbox/sandbox-docker';
 import { resolveBoxOrExit } from '../box-ref.js';
+import { providerForBox } from '../provider/registry.js';
 import { handleLifecycleError } from './_errors.js';
-import { requireDockerProvider } from './_provider-guard.js';
 
 interface WaitOptions {
   timeout: string;
@@ -24,13 +23,13 @@ export const waitCommand = new Command('wait')
   .action(async (idOrName: string | undefined, opts: WaitOptions) => {
     try {
       const box = await resolveBoxOrExit(idOrName);
-      requireDockerProvider(box, 'wait');
+      const provider = await providerForBox(box);
 
       const ctlArgs = ['agentbox-ctl', 'wait-ready', '--json', '--timeout', opts.timeout];
       if (opts.units && opts.units.length > 0) {
         ctlArgs.push('--units', ...opts.units);
       }
-      const proc = await execInBox(box.container, ctlArgs, { user: 'vscode' });
+      const proc = await provider.exec(box, ctlArgs, { user: 'vscode' });
       // wait-ready exits 0 on ready, 1 on not-ready; both write JSON.
       let parsed: WaitReadyReply;
       try {
