@@ -34,6 +34,7 @@ import {
   ensureRelay,
   forgetBoxFromRelay,
   generateRelayToken,
+  generateVncPassword,
   registerBoxWithRelay,
 } from '@agentbox/sandbox-docker';
 import {
@@ -47,6 +48,7 @@ import {
 } from './cloud-cp.js';
 import { launchCloudCtlDaemon } from './ctl-launch.js';
 import { quoteShellArgv } from './shell.js';
+import { launchCloudVncDaemon } from './vnc-launch.js';
 import { seedCloudWorkspace } from './workspace-seed.js';
 
 /** Workspace mount path inside every cloud sandbox. Matches the Docker model. */
@@ -213,6 +215,23 @@ export function createCloudProvider(
           bridgeToken,
         });
 
+        // Mint the per-box VNC password and start the in-sandbox VNC stack
+        // when VNC is opted in (default-on, matching Docker). Best-effort —
+        // a failure logs but doesn't fail create; `agentbox screen` will
+        // surface "daemon may not be up" if the URL stays 502.
+        const vncEnabled = req.vnc?.enabled !== false;
+        const vncPassword = vncEnabled ? generateVncPassword() : undefined;
+        if (vncEnabled && vncPassword) {
+          log('launching VNC stack (Xvnc + websockify + noVNC)');
+          try {
+            await launchCloudVncDaemon({ backend, handle, vncPassword });
+          } catch (err) {
+            log(
+              `VNC daemon launch failed (continuing): ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+
         // The web preview URL is best-effort at create — most boxes won't
         // have a service on CLOUD_WEB_PROXY_PORT until the supervisor schedules
         // the `expose:` service. `agentbox url` re-resolves on demand.
@@ -273,7 +292,9 @@ export function createCloudProvider(
           relayToken,
           withPlaywright: req.withPlaywright,
           withEnv: req.withEnv,
-          vncEnabled: req.vnc?.enabled,
+          vncEnabled,
+          vncPassword,
+          vncContainerPort: vncEnabled ? CLOUD_VNC_PORT : undefined,
           resourceLimits: req.limits
             ? {
                 memoryBytes: req.limits.memoryBytes ?? undefined,
@@ -355,6 +376,17 @@ export function createCloudProvider(
         relayToken: box.relayToken ?? '',
         bridgeToken: box.cloud?.bridgeToken,
       });
+      // Re-launch the VNC stack — Xvnc + websockify die with the sandbox.
+      // Best-effort: a failure here shouldn't block start; `agentbox screen`
+      // surfaces the missing daemon with a clear error.
+      if (box.vncEnabled && box.vncPassword) {
+        try {
+          await launchCloudVncDaemon({ backend, handle: h, vncPassword: box.vncPassword });
+        } catch {
+          // swallowed; user-visible error comes from `agentbox screen` if it
+          // can't reach websockify after a few retries.
+        }
+      }
       // Re-register with the host relay so its CloudBoxPoller picks up the
       // fresh preview URL/token.
       if (relayPreview && box.relayToken && box.cloud?.bridgeToken) {

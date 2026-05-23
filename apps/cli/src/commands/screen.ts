@@ -108,6 +108,11 @@ export const screenCommand = new Command('screen')
         // Cloud provider: lifecycle handled by the provider; URL is a signed
         // preview URL for the in-box noVNC port (6080) — the host browser
         // can open it directly without a custom header.
+        if (!box.vncPassword) {
+          throw new Error(
+            `cloud box ${box.name} has no VNC password recorded — recreate it to enable \`agentbox screen\``,
+          );
+        }
         const ttl = parseTtlOrExit(opts.ttl);
         const p = await providerForBox(box);
         const state = await p.probeState(box);
@@ -120,7 +125,12 @@ export const screenCommand = new Command('screen')
         } else if (state === 'missing') {
           throw new Error(`cloud sandbox for ${box.name} is missing; was it deleted?`);
         }
-        url = await p.resolveUrl(box, { kind: 'vnc', ttl });
+        const base = await p.resolveUrl(box, { kind: 'vnc', ttl });
+        // Append noVNC's auto-connect query so the browser jumps straight to
+        // the desktop without prompting for a password — same shape Docker's
+        // `buildVncUrls` produces. Strip any trailing slash from the signed
+        // host so the path concatenation stays canonical.
+        url = `${base.replace(/\/$/, '')}/vnc.html?autoconnect=1&password=${encodeURIComponent(box.vncPassword)}`;
       }
 
       if (opts.print) {

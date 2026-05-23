@@ -103,7 +103,7 @@ The Docker shell command has multi-session support (named shells, attach-by-labe
 For cloud could run `backend.exec("tail -F /var/log/agentbox/<service>.log")` via the SSH attach machinery. Same shape as `agentbox shell` one-shot.
 
 ### 3.6 ✅ `agentbox screen` (noVNC) cloud-routed (done)
-~~Cloud-guarded~~ — `screen.ts` now branches on provider and calls `provider.resolveUrl(box, { kind: 'vnc', ttl })` for cloud boxes, which mints a signed preview URL on port 6080. Same primitive as `agentbox url`.
+~~Cloud-guarded~~ — `screen.ts` now branches on provider and calls `provider.resolveUrl(box, { kind: 'vnc', ttl })` for cloud boxes, which mints a signed preview URL on port 6080. The cloud provider launches the in-sandbox VNC stack (Xvnc + websockify + noVNC) at create time and re-launches it on `start` via `launchCloudVncDaemon` (mirrors Docker's `launchVncDaemon`); the per-box `vncPassword` is generated host-side and persisted on the cloud `BoxRecord`. `agentbox screen <cloud-box>` appends `/vnc.html?autoconnect=1&password=…` to the signed URL so the browser auto-connects without prompting. `--no-vnc` at create skips the daemon launch and the screen command refuses with the same "VNC is disabled" message Docker uses.
 
 ### 3.7 🟡 `agentbox wait` cloud-guarded
 Could route via `provider.exec(box, ['agentbox-ctl', 'wait-ready', '--json', ...])` and parse the same `WaitReadyReply`.
