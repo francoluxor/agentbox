@@ -18,10 +18,17 @@ import { execa } from 'execa';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { CloudBackend } from '@agentbox/core';
+import type { CloudBackend, CloudHandle } from '@agentbox/core';
 import { findBox, readState } from '@agentbox/sandbox-core';
 import { askPrompt, type PendingPrompts, type PromptSubscribers } from './prompts.js';
-import type { GitRpcParams, HostAction, HostActionResult } from './types.js';
+import type {
+  CpRpcParams,
+  DownloadKind,
+  DownloadRpcParams,
+  GitRpcParams,
+  HostAction,
+  HostActionResult,
+} from './types.js';
 
 export interface CloudActionExecutorDeps {
   /** From BoxRegistration.backend (e.g. 'daytona'). */
@@ -68,6 +75,17 @@ export async function executeCloudAction(
   if (action.method === 'git.push' || action.method === 'git.fetch') {
     return runGitRpc(action, deps);
   }
+  if (action.method === 'cp.toHost' || action.method === 'cp.fromHost') {
+    return runCpRpc(action, deps);
+  }
+  if (
+    action.method === 'download.workspace' ||
+    action.method === 'download.env' ||
+    action.method === 'download.config' ||
+    action.method === 'download.claude'
+  ) {
+    return runDownloadRpc(action, deps);
+  }
   return {
     exitCode: 1,
     stdout: '',
@@ -91,6 +109,147 @@ async function lookupCloudBox(boxId: string): Promise<BoxLookup> {
     throw new Error(`box ${boxId} has no cloud.sandboxId — record is malformed`);
   }
   return { workspacePath: hit.box.workspacePath, cloudSandboxId: sid };
+}
+
+/**
+ * Cloud cp helpers live in `@agentbox/sandbox-cloud` — same dynamic-import
+ * trick as `resolveCloudBackend` keeps the relay bundle from eagerly pulling
+ * the cloud package (and its sandbox-docker transitive). Imports the helpers
+ * once and caches; only loaded the first time a cloud box queues `cp.*`.
+ */
+interface CloudCpModule {
+  uploadToCloudBox(
+    backend: CloudBackend,
+    handle: CloudHandle,
+    hostSrc: string,
+    boxDst: string,
+  ): Promise<{ finalPath: string }>;
+  downloadFromCloudBox(
+    backend: CloudBackend,
+    handle: CloudHandle,
+    boxSrc: string,
+    hostDst: string,
+  ): Promise<{ finalPath: string }>;
+  pullCloudDirContents(
+    backend: CloudBackend,
+    handle: CloudHandle,
+    boxSrc: string,
+    hostDst: string,
+  ): Promise<{ finalPath: string }>;
+}
+
+let cloudCpModule: CloudCpModule | undefined;
+async function loadCloudCp(): Promise<CloudCpModule> {
+  if (cloudCpModule) return cloudCpModule;
+  // Computed string defeats esbuild's static resolution — see resolveCloudBackend.
+  const pkg = '@agentbox/sandbox-' + 'cloud';
+  const mod = (await import(pkg)) as CloudCpModule;
+  cloudCpModule = mod;
+  return mod;
+}
+
+async function runCpRpc(
+  action: HostAction,
+  deps: CloudActionExecutorDeps,
+): Promise<HostActionResult> {
+  const params = (action.params ?? {}) as Partial<CpRpcParams>;
+  if (typeof params.boxPath !== 'string' || typeof params.hostPath !== 'string') {
+    return {
+      exitCode: 64,
+      stdout: '',
+      stderr: 'cp.* requires {boxPath, hostPath} strings\n',
+    };
+  }
+  const direction = action.method === 'cp.toHost' ? 'box -> host' : 'host -> box';
+  // Same askPrompt UX as docker's /rpc handler — keeps the in-box agent from
+  // pulling host files / scattering box files without explicit consent.
+  if (deps.prompts && deps.subscribers) {
+    const verdict = await askPrompt(deps.prompts, deps.subscribers, deps.boxId, {
+      kind: 'confirm',
+      message: `Allow cp (${direction}) on ${deps.boxName ?? deps.boxId}?`,
+      detail:
+        action.method === 'cp.toHost'
+          ? `${params.boxPath} -> ${params.hostPath}`
+          : `${params.hostPath} -> ${params.boxPath}`,
+      defaultAnswer: 'n',
+      context: {
+        command: action.method,
+        argv: [params.boxPath, params.hostPath],
+      },
+    });
+    if (verdict.answer !== 'y') {
+      return { exitCode: 10, stdout: '', stderr: 'denied by user\n' };
+    }
+  }
+  const lookup = await lookupCloudBox(deps.boxId);
+  const backend = await resolveCloudBackend(deps.backendName);
+  const handle: CloudHandle = { sandboxId: lookup.cloudSandboxId };
+  const cp = await loadCloudCp();
+  try {
+    const result =
+      action.method === 'cp.toHost'
+        ? await cp.downloadFromCloudBox(backend, handle, params.boxPath, params.hostPath)
+        : await cp.uploadToCloudBox(backend, handle, params.hostPath, params.boxPath);
+    return { exitCode: 0, stdout: `${result.finalPath}\n`, stderr: '' };
+  } catch (err) {
+    return {
+      exitCode: 1,
+      stdout: '',
+      stderr: `cp failed: ${err instanceof Error ? err.message : String(err)}\n`,
+    };
+  }
+}
+
+async function runDownloadRpc(
+  action: HostAction,
+  deps: CloudActionExecutorDeps,
+): Promise<HostActionResult> {
+  const params = (action.params ?? {}) as Partial<DownloadRpcParams>;
+  const kind = (action.method.split('.')[1] ?? 'workspace') as DownloadKind;
+  // Only `workspace` lands cleanly on cloud today — env/config/claude live in
+  // per-agent volumes and aren't routed yet (Phase 6 follow-up; see backlog
+  // 2.2). Surface a clear error instead of pretending to succeed.
+  if (kind !== 'workspace') {
+    return {
+      exitCode: 1,
+      stdout: '',
+      stderr: `download.${kind} is not yet supported for cloud boxes (only download.workspace is)\n`,
+    };
+  }
+  if (deps.prompts && deps.subscribers) {
+    const verdict = await askPrompt(deps.prompts, deps.subscribers, deps.boxId, {
+      kind: 'confirm',
+      message: `Allow download (${kind}) from ${deps.boxName ?? deps.boxId}?`,
+      detail: params.hostPath ?? '(default host location)',
+      defaultAnswer: 'n',
+      context: {
+        command: action.method,
+        argv: params.hostPath ? [params.hostPath] : [],
+      },
+    });
+    if (verdict.answer !== 'y') {
+      return { exitCode: 10, stdout: '', stderr: 'denied by user\n' };
+    }
+  }
+  const lookup = await lookupCloudBox(deps.boxId);
+  const backend = await resolveCloudBackend(deps.backendName);
+  const handle: CloudHandle = { sandboxId: lookup.cloudSandboxId };
+  const cp = await loadCloudCp();
+  // params.hostPath is reserved in the wire shape; v1 lands /workspace under
+  // box.workspacePath (the host project root), matching docker's default.
+  const hostDst = typeof params.hostPath === 'string' && params.hostPath.length > 0
+    ? params.hostPath
+    : lookup.workspacePath;
+  try {
+    const result = await cp.pullCloudDirContents(backend, handle, '/workspace', hostDst);
+    return { exitCode: 0, stdout: `${result.finalPath}\n`, stderr: '' };
+  } catch (err) {
+    return {
+      exitCode: 1,
+      stdout: '',
+      stderr: `download failed: ${err instanceof Error ? err.message : String(err)}\n`,
+    };
+  }
 }
 
 /**

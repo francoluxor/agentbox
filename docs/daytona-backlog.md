@@ -57,15 +57,11 @@ Docker provider runs `git stash create` + tar of untracked files so the in-box w
 
 ## 2. Host executor & comms layer (Phase 4 polish)
 
-### 2.1 🟡 In-box `agentbox-ctl cp` cloud executor is a stub
-**Host-side `agentbox cp` works** (`provider.uploadPath`/`downloadPath`, see "Already landed"). What's still stubbed is the **in-box `agentbox-ctl cp`** path — when the agent inside the sandbox calls `cp`, the request goes through the bridge → host action queue → `executeCloudAction` in `packages/relay/src/host-actions.ts`, which currently returns `"host executor for 'cp.toHost' is not yet supported for cloud boxes"`. The in-box CTL call unblocks cleanly with that error.
+### 2.1 ✅ In-box `agentbox-ctl cp` cloud executor (done)
+~~Stub~~ — `executeCloudAction` in `packages/relay/src/host-actions.ts` now handles `cp.toHost` and `cp.fromHost`. The executor `askPrompt`-gates the call (same UX as Docker's `/rpc` route), resolves the `CloudBackend` lazily via `resolveCloudBackend`, and dispatches to `uploadToCloudBox` / `downloadFromCloudBox` from `@agentbox/sandbox-cloud` (lazy-imported via the same computed-string trick as `sandbox-daytona` so the relay bundle stays slim). Refusal returns exit 10 with `denied by user`; success writes the resolved host or box path to stdout.
 
-**Fix:** in `executeCloudAction`, add `cp.toHost`/`cp.fromHost` cases that call `provider.uploadPath`/`downloadPath` (or `cloud-cp.ts` helpers directly). Reuse the `askPrompt` gating like Docker does.
-
-### 2.2 🟡 In-box `agentbox-ctl download` cloud executor stubbed
-Same as 2.1 — host-side `agentbox download <cloud-box>` is wired. The in-box `agentbox-ctl download workspace|env|config|claude` parks an action that no cloud executor handles.
-
-**Fix:** map `download.workspace` to `provider.downloadDirContents`; the others (`env`/`config`/`claude`) defer to Phase 6 once cloud agent-config sync (1.2) lands.
+### 2.2 ✅ In-box `agentbox-ctl download workspace` cloud executor (done)
+~~Stub~~ — `executeCloudAction` handles `download.workspace` via `pullCloudDirContents` (`/workspace → box.workspacePath`). `download.env` / `download.config` / `download.claude` still return a clear "not yet supported on cloud" because the source paths live in per-agent volumes that aren't routed yet — Phase 6 follow-up.
 
 ### 2.3 🟡 `checkpoint.create` cloud executor stubbed
 v1 deferred checkpoints for cloud (Daytona can't snapshot a live sandbox's FS). For long-term: implement via `sb.archive()` + naming, or via image rebuild. Until then the in-box `agentbox-ctl checkpoint` returns "not yet supported".
