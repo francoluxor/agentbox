@@ -28,13 +28,19 @@ import { withDaytonaRetry } from './retry.js';
 function retry<T>(
   method: string,
   fn: () => Promise<T>,
-  opts: { attemptTimeoutMs?: number; retryOnAmbiguous?: boolean } = {},
+  opts: {
+    attemptTimeoutMs?: number;
+    retryOnAmbiguous?: boolean;
+    /** When true, single-shot — no backoff list, no retries. */
+    noRetry?: boolean;
+  } = {},
 ): Promise<T> {
   return withDaytonaRetry(
     {
       method,
       retryOnAmbiguous: opts.retryOnAmbiguous ?? true,
       attemptTimeoutMs: opts.attemptTimeoutMs,
+      backoffMs: opts.noRetry === true ? [] : undefined,
     },
     fn,
   );
@@ -366,7 +372,7 @@ export const daytonaBackend: CloudBackend = {
         const r = await sb.process.executeCommand(cmd, opts?.cwd, opts?.env);
         return { exitCode: r.exitCode, stdout: r.result, stderr: '' };
       },
-      { attemptTimeoutMs: 120_000 },
+      { attemptTimeoutMs: opts?.attemptTimeoutMs ?? 120_000, noRetry: opts?.noRetry },
     );
   },
 

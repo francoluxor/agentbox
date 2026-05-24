@@ -263,7 +263,19 @@ async function seedOne(
       `rm -rf ${stageDir}; ` +
       `date -u +%FT%TZ > ${spec.mountPath}/${SEED_MARKER}; ` +
       `rm -f ${remoteTar}`;
-    const extract = await backend.exec(handle, extractCmd);
+    // Daytona's S3-backed FUSE volumes make per-small-file cp very slow — the
+    // claude tarball (plugins/skills/many JSONs) regularly takes minutes to
+    // land. Stretch the per-attempt timeout so legit slow extracts complete.
+    //
+    // Disable retries: this pipeline is *not* safely idempotent under retry.
+    // If the SDK abandons attempt 1 on its 120s timeout, the in-box cp keeps
+    // running; a retry's `rm -rf ${stageDir}` then yanks files out from
+    // under the still-live cp, and two cps race writing to the same mount.
+    // Empirically, retries make the wedge worse, never better.
+    const extract = await backend.exec(handle, extractCmd, {
+      attemptTimeoutMs: 900_000,
+      noRetry: true,
+    });
     if (extract.exitCode !== 0) {
       const msg =
         `${spec.kind}: extract failed (exit ${String(extract.exitCode)}); ` +

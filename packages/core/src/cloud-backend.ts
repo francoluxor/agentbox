@@ -56,6 +56,21 @@ export interface CloudExecOptions {
   cwd?: string;
   env?: Record<string, string>;
   user?: string;
+  /**
+   * Per-attempt wall-clock cap. Defaults to the backend's exec default
+   * (Daytona: 120s). Override for slow operations whose in-box runtime is
+   * expected to exceed the default — e.g. extracting many small files into
+   * a FUSE-backed volume where cp can take minutes.
+   */
+  attemptTimeoutMs?: number;
+  /**
+   * Disable retries for this call. Set when the command is not safely
+   * idempotent against a still-running previous invocation — e.g. a
+   * `rm -rf` + extract pipeline whose retry would race the earlier cp that
+   * the SDK abandoned at the prior timeout, but which is still running
+   * in-box.
+   */
+  noRetry?: boolean;
 }
 
 export interface CloudFileEntry {
