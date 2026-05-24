@@ -32,7 +32,6 @@ import {
   type ListedBox,
 } from '@agentbox/sandbox-docker';
 import { resolveBoxOrExit } from '../box-ref.js';
-import { requireDockerProvider } from './_provider-guard.js';
 import { resolveClaudeAuth } from '../auth.js';
 import { resolveLimits } from '../limits.js';
 import { Compositor, type RightTarget } from '../dashboard/compositor.js';
@@ -137,7 +136,9 @@ export const dashboardCommand = new Command('dashboard')
       let initialId: string;
       if (idOrName !== undefined) {
         const picked = await resolveBoxOrExit(idOrName);
-        requireDockerProvider(picked, 'dashboard');
+        // Cloud boxes are surfaced read-only in the sidebar — selecting one
+        // shows a "live panels are docker-only" placeholder via
+        // resolveTarget. Don't refuse the ref here.
         initialId = picked.id;
         if (!scoped0.some((b) => b.id === picked.id)) showAll = true; // widen so it shows
       } else if (scoped0.length === 0) {
@@ -157,6 +158,28 @@ export const dashboardCommand = new Command('dashboard')
         if (boxId === NEW_BOX_ID) return { kind: 'create-menu', where: project.root };
         const box = (await listBoxes()).find((b) => b.id === boxId);
         if (!box) return { kind: 'placeholder', lines: ['', '  box not found'] };
+        // Cloud boxes don't have a host docker container — the live attach
+        // (`docker exec tmux attach`) used for the right pane has no
+        // equivalent we can do from a TUI today. Surface a placeholder
+        // pointing the user at the relevant `agentbox <agent> attach`
+        // commands instead.
+        if ((box.provider ?? 'docker') !== 'docker') {
+          return {
+            kind: 'placeholder',
+            lines: [
+              '',
+              `  ${box.name} is a cloud box (${box.provider ?? ''}).`,
+              '',
+              '  The TUI dashboard\'s live panels are docker-only.',
+              '  From another terminal:',
+              `    agentbox claude attach ${box.name}`,
+              `    agentbox codex attach ${box.name}`,
+              `    agentbox opencode attach ${box.name}`,
+              `    agentbox shell ${box.name}`,
+              `    agentbox url ${box.name}`,
+            ],
+          };
+        }
         if (box.state === 'paused' || box.state === 'stopped') {
           return { kind: 'lifecycle-menu', state: box.state };
         }
