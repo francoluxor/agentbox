@@ -137,8 +137,10 @@ Implementation: per-agent option added to the `.option(...)` chain + provider-na
 
 ## 5. Image / provisioning
 
-### 5.1 🟡 First-time Dockerfile.box snapshot build takes ~7 min on Daytona
-41 layers including Playwright + Chrome download. Acceptable for first run, but `agentbox create --provider daytona` from a fresh org/user feels slow. Considered: publish a pre-built snapshot to a public Daytona snapshot registry; default to it; fall back to `Image.fromDockerfile` for users who want to rebuild.
+### 5.1 ✅ `agentbox daytona publish-snapshot` cuts cold creates to seconds (done)
+~~~7-min Dockerfile every time~~ — added a one-time publish step. `agentbox daytona publish-snapshot [--name X] [-y]` provisions a sandbox from `Image.fromDockerfile`, calls `backend.createSnapshot(handle, X)` to register it as a named, org-scoped snapshot, then destroys the capture sandbox. Subsequent `agentbox create --provider daytona --image X` (or `box.image: X` in per-project / global config) provisions from the snapshot in seconds and skips the Dockerfile build entirely. Idempotent at the name level — re-publishing with the same name replaces the snapshot. Org admins typically publish once and pin the name in the org's project config; everyone in the org then sees fast creates.
+
+`docs/cloud-providers.md` §2.5 lists snapshots; the publish workflow surfaces in the printed `next steps` block at command completion.
 
 ### 5.2 ✅ `agentbox dockerd <box>` launches in-box dockerd (done)
 ~~Manual `dockerd &`~~ — added a new CLI command `agentbox dockerd [box] [--timeout ms]`. Behavior:

@@ -161,7 +161,85 @@ const resyncSub = new Command('resync')
     }
   });
 
+interface PublishOpts {
+  name?: string;
+  yes?: boolean;
+}
+
+/**
+ * `agentbox daytona publish-snapshot [--name X]` — build the agentbox image
+ * once (the ~7-min Dockerfile.box cold path) and register it as a named
+ * Daytona snapshot. Subsequent `agentbox create --provider daytona --image
+ * <name>` (or with `box.image: <name>` in config) provisions from that
+ * snapshot in seconds, skipping the build entirely.
+ *
+ * Idempotent: passing the same name twice rebuilds + replaces. Snapshot
+ * names are org-scoped, so this affects only the credentials' org.
+ */
+const publishSub = new Command('publish-snapshot')
+  .description(
+    'Build the AgentBox image and register it as a reusable Daytona snapshot (skips the ~7-min Dockerfile build on future creates).',
+  )
+  .option(
+    '-n, --name <name>',
+    'snapshot name (default: agentbox-box-prebuilt-<timestamp>)',
+  )
+  .option('-y, --yes', 'skip the cost confirmation')
+  .action(async (opts: PublishOpts) => {
+    try {
+      const snapshotName =
+        opts.name ?? `agentbox-box-prebuilt-${Math.floor(Date.now() / 1000).toString()}`;
+      if (!opts.yes && process.stdin.isTTY) {
+        process.stdout.write(
+          `About to provision a temporary Daytona sandbox + register snapshot '${snapshotName}'.\n` +
+            'This takes ~7 minutes and consumes a sandbox slot during the build.\n' +
+            'Re-run with --yes to skip this confirmation.\n',
+        );
+      }
+      if (!daytonaBackend.createSnapshot) {
+        process.stderr.write('daytona backend does not expose createSnapshot in this build.\n');
+        process.exitCode = 1;
+        return;
+      }
+      const sp = spinner();
+      sp.start(`provisioning sandbox to capture snapshot '${snapshotName}'`);
+      const handle = await daytonaBackend.provision({
+        name: `agentbox-snapshot-${Date.now().toString(36)}`,
+        image: 'agentbox/box:dev', // resolveImage(...) translates this to Image.fromDockerfile
+        resources: { cpu: 2, memory: 4, disk: 8 },
+        env: {},
+        onLog: (line) => sp.message(line.slice(0, 80)),
+      });
+      sp.stop(`sandbox ${handle.sandboxId} up — capturing snapshot…`);
+      try {
+        const sp2 = spinner();
+        sp2.start(`createSnapshot '${snapshotName}'`);
+        await daytonaBackend.createSnapshot(handle, snapshotName);
+        sp2.stop(`snapshot '${snapshotName}' captured`);
+      } finally {
+        const sp3 = spinner();
+        sp3.start('destroying capture sandbox');
+        try {
+          await daytonaBackend.destroy(handle);
+          sp3.stop('capture sandbox destroyed');
+        } catch (err) {
+          sp3.stop(
+            `destroy failed (sandbox may linger): ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      log.success(
+        `published Daytona snapshot '${snapshotName}'. Use it with:\n` +
+          `  agentbox config set --project box.image ${snapshotName}\n` +
+          `  agentbox create --provider daytona  # (provisions from the snapshot, no Dockerfile build)`,
+      );
+    } catch (err) {
+      reportError(err);
+    }
+  });
+
 export const daytonaCommand = new Command('daytona')
   .description('Daytona cloud-provider credential management')
   .addCommand(loginSub, { isDefault: true })
-  .addCommand(resyncSub);
+  .addCommand(resyncSub)
+  .addCommand(publishSub);
