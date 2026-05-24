@@ -3,7 +3,8 @@
  *
  * Precedence (highest wins):
  *   1. `box.defaultCheckpoint<Provider>` — per-provider override
- *      (`defaultCheckpointDocker` / `defaultCheckpointDaytona`).
+ *      (`defaultCheckpointDocker` / `defaultCheckpointDaytona` /
+ *      `defaultCheckpointHetzner`).
  *   2. `box.defaultCheckpoint` — global fallback (back-compat shape: every
  *      pre-cloud config has this; no flag was needed).
  *   3. '' — no default.
@@ -21,7 +22,11 @@ export function resolveDefaultCheckpoint(
   // Treat unknown provider names like 'docker' for back-compat — a stray
   // value in config or argv shouldn't crash before the validation layer.
   const perProvider =
-    provider === 'daytona' ? cfg.box.defaultCheckpointDaytona : cfg.box.defaultCheckpointDocker;
+    provider === 'daytona'
+      ? cfg.box.defaultCheckpointDaytona
+      : provider === 'hetzner'
+        ? cfg.box.defaultCheckpointHetzner
+        : cfg.box.defaultCheckpointDocker;
   if (perProvider && perProvider.length > 0) return perProvider;
   return cfg.box.defaultCheckpoint;
 }
@@ -33,8 +38,13 @@ export function resolveDefaultCheckpoint(
  */
 export function defaultCheckpointConfigKey(
   provider: ProviderKind | string | undefined,
-): 'box.defaultCheckpoint' | 'box.defaultCheckpointDocker' | 'box.defaultCheckpointDaytona' {
+):
+  | 'box.defaultCheckpoint'
+  | 'box.defaultCheckpointDocker'
+  | 'box.defaultCheckpointDaytona'
+  | 'box.defaultCheckpointHetzner' {
   if (provider === 'docker') return 'box.defaultCheckpointDocker';
   if (provider === 'daytona') return 'box.defaultCheckpointDaytona';
+  if (provider === 'hetzner') return 'box.defaultCheckpointHetzner';
   return 'box.defaultCheckpoint';
 }

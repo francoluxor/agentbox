@@ -73,3 +73,27 @@ export {
   type StageOpencodeOptions,
   type StageResult,
 } from '@agentbox/sandbox-docker';
+// Portless helpers — same re-export pattern as the stage* helpers above.
+// Lives in sandbox-docker for historical reasons (the file predates the
+// hetzner provider), surfaced here so non-docker providers (sandbox-hetzner,
+// any future SSH-tunneled backend) don't need a direct sandbox-docker dep.
+// Phase 1 of the hetzner provider work: `portlessBrowserEnv` now takes a
+// `{ mapTarget }` option so the in-box Chromium remap targets the right host
+// gateway per provider (`host.docker.internal` for docker, `127.0.0.1` for
+// hetzner where the box is the VPS).
+export {
+  detectPortless,
+  installPortless,
+  portlessAlias,
+  portlessBrowserEnv,
+  portlessGetUrl,
+  portlessInstallHint,
+  portlessStartHint,
+  portlessUnalias,
+  resetPortlessCache,
+  resolvePortlessHostStateDir,
+  startPortlessProxy,
+  PORTLESS_PROXY_PORT,
+  type PortlessBrowserEnvOptions,
+  type PortlessState,
+} from '@agentbox/sandbox-docker';

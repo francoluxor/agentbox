@@ -8,9 +8,9 @@
 import type { EffectiveConfig } from '@agentbox/config';
 import type { BoxRecord, Provider, ProviderName } from '@agentbox/core';
 
-export type KnownProviderName = 'docker' | 'daytona';
+export type KnownProviderName = 'docker' | 'daytona' | 'hetzner';
 
-const KNOWN: readonly KnownProviderName[] = ['docker', 'daytona'];
+const KNOWN: readonly KnownProviderName[] = ['docker', 'daytona', 'hetzner'];
 
 export function isKnownProvider(name: string): name is KnownProviderName {
   return (KNOWN as readonly string[]).includes(name);
@@ -31,6 +31,19 @@ export async function getProvider(name: ProviderName): Promise<Provider> {
       const mod = await import('@agentbox/sandbox-daytona');
       await mod.ensureDaytonaCredentials();
       return mod.daytonaProvider;
+    }
+    case 'hetzner': {
+      // Same lazy-import pattern as daytona. `ensureHetznerCredentials` walks
+      // the user through `agentbox hetzner login` on first use. The base-
+      // snapshot gate (`ensureHetznerBaseSnapshot`) is deliberately *not*
+      // called here: it would chicken-and-egg `agentbox prepare --provider
+      // hetzner` (which exists precisely to BUILD the snapshot). The gate
+      // lives inside `backend.provision` instead — `prepare` calls the REST
+      // client directly, never `provision`, so it slips past the gate while
+      // `create`/`claude`/etc. still trip it.
+      const mod = await import('@agentbox/sandbox-hetzner');
+      await mod.ensureHetznerCredentials();
+      return mod.hetznerProvider;
     }
     default:
       throw new Error(`unknown sandbox provider: ${String(name)}`);

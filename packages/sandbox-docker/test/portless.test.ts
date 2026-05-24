@@ -167,9 +167,16 @@ describe('portlessGetUrl', () => {
 });
 
 describe('portlessBrowserEnv', () => {
-  it('maps the box hostname to host.docker.internal for the in-box browser', () => {
-    expect(portlessBrowserEnv('mybox')).toEqual({
+  it('maps the box hostname to host.docker.internal for docker (mapTarget option)', () => {
+    expect(portlessBrowserEnv('mybox', { mapTarget: 'host.docker.internal' })).toEqual({
       AGENT_BROWSER_ARGS: '--host-resolver-rules=MAP mybox.localhost host.docker.internal',
+      AGENT_BROWSER_IGNORE_HTTPS_ERRORS: '1',
+    });
+  });
+
+  it('maps to 127.0.0.1 for hetzner (box is the VPS, WebProxy on loopback)', () => {
+    expect(portlessBrowserEnv('mybox', { mapTarget: '127.0.0.1' })).toEqual({
+      AGENT_BROWSER_ARGS: '--host-resolver-rules=MAP mybox.localhost 127.0.0.1',
       AGENT_BROWSER_IGNORE_HTTPS_ERRORS: '1',
     });
   });

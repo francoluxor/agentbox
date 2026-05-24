@@ -201,7 +201,7 @@ export const prepareCommand = new Command('prepare')
   )
   .option(
     '-p, --provider <name>',
-    'provider to prepare (docker | daytona). Omit for status-only.',
+    'provider to prepare (docker | daytona | hetzner). Omit for status-only.',
   )
   .option(
     '-n, --name <name>',
@@ -220,7 +220,7 @@ export const prepareCommand = new Command('prepare')
     const providerName = opts.provider.trim();
     if (!isKnownProvider(providerName)) {
       process.stderr.write(
-        `error: --provider must be one of: docker, daytona\n`,
+        `error: --provider must be one of: docker, daytona, hetzner\n`,
       );
       process.exit(1);
     }

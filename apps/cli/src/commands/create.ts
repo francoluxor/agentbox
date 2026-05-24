@@ -166,7 +166,7 @@ export const createCommand = new Command('create')
     const providerName = opts.provider ?? cfg.effective.box.provider ?? 'docker';
     const checkpointRef = resolveCheckpointRef(
       opts,
-      resolveDefaultCheckpoint(cfg.effective, providerName as 'docker' | 'daytona'),
+      resolveDefaultCheckpoint(cfg.effective, providerName as 'docker' | 'daytona' | 'hetzner'),
     );
 
     // Cloud providers don't use the Docker-only Portless proxy and would

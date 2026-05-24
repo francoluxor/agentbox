@@ -586,7 +586,7 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
   // PORTLESS_STATE_DIR pins both sides to the same path.
   const portlessEnv: Record<string, string> = {};
   if (opts.portless === true && (await detectEngine()) !== 'orbstack') {
-    Object.assign(portlessEnv, portlessBrowserEnv(name));
+    Object.assign(portlessEnv, portlessBrowserEnv(name, { mapTarget: 'host.docker.internal' }));
     try {
       const hostStateDir = await resolvePortlessHostStateDir(opts.portlessStateDir);
       await mkdir(hostStateDir, { recursive: true });

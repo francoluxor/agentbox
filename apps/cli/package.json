@@ -71,6 +71,7 @@
     "@agentbox/sandbox-core": "workspace:*",
     "@agentbox/sandbox-daytona": "workspace:*",
     "@agentbox/sandbox-docker": "workspace:*",
+    "@agentbox/sandbox-hetzner": "workspace:*",
     "@types/node": "^22.10.1",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",

@@ -12,7 +12,7 @@ export type IdeFlavor = 'vscode' | 'cursor' | 'auto';
 export type EngineKind = 'orbstack' | 'docker-desktop' | 'other' | 'auto';
 export type BrowserKind = 'agent-browser' | 'playwright' | 'both';
 /** Sandbox backend new boxes are created on. */
-export type ProviderKind = 'docker' | 'daytona';
+export type ProviderKind = 'docker' | 'daytona' | 'hetzner';
 
 export interface UserConfig {
   box?: {
@@ -22,6 +22,7 @@ export interface UserConfig {
     /** Per-provider override of `defaultCheckpoint`. Resolved before falling back to the global. */
     defaultCheckpointDocker?: string;
     defaultCheckpointDaytona?: string;
+    defaultCheckpointHetzner?: string;
     withPlaywright?: boolean;
     withEnv?: boolean;
     vnc?: boolean;
@@ -100,6 +101,7 @@ export interface EffectiveConfig {
     defaultCheckpoint: string;
     defaultCheckpointDocker: string;
     defaultCheckpointDaytona: string;
+    defaultCheckpointHetzner: string;
     withPlaywright: boolean;
     withEnv: boolean;
     vnc: boolean;
@@ -197,6 +199,7 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     defaultCheckpoint: '',
     defaultCheckpointDocker: '',
     defaultCheckpointDaytona: '',
+    defaultCheckpointHetzner: '',
     withPlaywright: false,
     withEnv: false,
     vnc: true,
@@ -282,9 +285,9 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
   {
     key: 'box.provider',
     type: 'enum',
-    enumValues: ['docker', 'daytona'] as const,
+    enumValues: ['docker', 'daytona', 'hetzner'] as const,
     description:
-      'Sandbox backend new boxes are created on: local Docker containers or Daytona Cloud sandboxes.',
+      'Sandbox backend new boxes are created on: local Docker containers, Daytona Cloud sandboxes, or Hetzner Cloud VPSes.',
   },
   {
     key: 'box.hostSnapshot',
@@ -310,6 +313,13 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     type: 'string',
     description:
       'Per-provider override of `box.defaultCheckpoint` for daytona. Wins over the global when set; set via `agentbox checkpoint set-default --provider daytona`.',
+    advanced: true,
+  },
+  {
+    key: 'box.defaultCheckpointHetzner',
+    type: 'string',
+    description:
+      'Per-provider override of `box.defaultCheckpoint` for hetzner. Wins over the global when set; set via `agentbox checkpoint set-default --provider hetzner`.',
     advanced: true,
   },
   {

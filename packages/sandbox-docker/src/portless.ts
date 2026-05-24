@@ -8,10 +8,25 @@ import { execa } from 'execa';
  * Portless (https://portless.sh) — a host reverse-proxy that maps
  * `portless alias <name> <port>` to a stable https://<name>.localhost URL.
  *
- * AgentBox uses it to give Docker Desktop boxes a friendly web URL (OrbStack
- * already has <container>.orb.local). Portless is user-installed; AgentBox
- * never bundles, installs, or starts it — every function here is best-effort
- * and must never throw: a Portless failure degrades to the loopback URL.
+ * AgentBox uses it to give a box a friendly web URL on the host. Two
+ * providers consume these helpers today:
+ *   - sandbox-docker: aliases the docker port-published web port
+ *     (`<name>.localhost -> 127.0.0.1:<webHostPort>`). In-box browser
+ *     remaps `<name>.localhost` to `host.docker.internal` because the box
+ *     is in a separate net namespace.
+ *   - sandbox-hetzner: aliases the SSH-forwarded loopback port for the
+ *     remote VPS's WebProxy. In-box browser remaps to `127.0.0.1` because
+ *     the box (= VPS) has no separate net namespace.
+ *
+ * The file lives in sandbox-docker for historical reasons but is shared via
+ * a re-export from `@agentbox/sandbox-cloud` (Phase 1 of the hetzner work).
+ * The dep direction is `sandbox-cloud → sandbox-docker`, so this is the
+ * canonical home; we can't move it the other way without cycle-fixing
+ * package.json wiring.
+ *
+ * Portless is user-installed; AgentBox never bundles, installs, or starts
+ * it — every function here is best-effort and must never throw: a Portless
+ * failure degrades to the loopback URL.
  */
 
 /**
@@ -129,6 +144,17 @@ export function portlessStartHint(): string {
   return 'portless proxy start';
 }
 
+export interface PortlessBrowserEnvOptions {
+  /**
+   * Where Chromium should resolve `<box-name>.localhost` to when running
+   * inside the box. Docker boxes pass `host.docker.internal` (the host
+   * gateway baked into every container's `/etc/hosts`). Hetzner boxes —
+   * where the box *is* the VPS and WebProxy listens on the VPS's loopback —
+   * pass `127.0.0.1`.
+   */
+  mapTarget: string;
+}
+
 /**
  * Box env that makes the in-box browser (agent-browser → Chromium) load the
  * box's Portless `<name>.localhost` URL via the *host* Portless proxy — so the
@@ -136,14 +162,17 @@ export function portlessStartHint(): string {
  *
  * Chromium hard-codes `*.localhost` → loopback and ignores `/etc/hosts`, so
  * `--host-resolver-rules` (passed through agent-browser's `AGENT_BROWSER_ARGS`)
- * remaps the box's hostname to `host.docker.internal` — the host gateway,
- * already in every box's `/etc/hosts`. `IGNORE_HTTPS_ERRORS` covers a TLS host
- * proxy whose self-signed CA the box doesn't trust. Set at `docker run` so the
- * agent-browser daemon carries it however it first starts.
+ * remaps the box's hostname to `opts.mapTarget` — the address that, from
+ * inside the box, actually reaches the host Portless proxy.
+ * `IGNORE_HTTPS_ERRORS` covers a TLS host proxy whose self-signed CA the box
+ * doesn't trust.
  */
-export function portlessBrowserEnv(boxName: string): Record<string, string> {
+export function portlessBrowserEnv(
+  boxName: string,
+  opts: PortlessBrowserEnvOptions,
+): Record<string, string> {
   return {
-    AGENT_BROWSER_ARGS: `--host-resolver-rules=MAP ${boxName}.localhost host.docker.internal`,
+    AGENT_BROWSER_ARGS: `--host-resolver-rules=MAP ${boxName}.localhost ${opts.mapTarget}`,
     AGENT_BROWSER_IGNORE_HTTPS_ERRORS: '1',
   };
 }

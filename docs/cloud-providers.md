@@ -1,19 +1,20 @@
 # Cloud providers
 
-> _Status: v1 ships with Daytona. The provider abstraction is generic — adding another cloud is ~150 lines (see §6)._
+> _Status: v1 ships with Daytona + Hetzner. The provider abstraction is generic — adding another cloud is ~150 lines (see §6)._
 
-AgentBox runs on two backends today, behind a single `Provider` interface
+AgentBox runs on three backends today, behind a single `Provider` interface
 (`packages/core/src/provider.ts`):
 
 | Provider | Where the box lives | When to use it |
 | --- | --- | --- |
 | `docker` (default) | Local Docker container | Fast, free, owns the host. Good default. |
 | `daytona` | Daytona Cloud sandbox | When the workload outgrows the laptop, when teammates need to attach, when you want a snapshot-ready remote env. |
+| `hetzner` | Hetzner Cloud VPS (1:1 per box) | When you want bare-VPS control (root, full kernel, your own region), pure OpenSSH (no third-party agent in the box), and a Cloud Firewall locked to your egress IP. ~€4/mo per running box. |
 
-Switch backends per box: `agentbox create --provider daytona` (or pin
-project-wide via `box.provider: daytona` in `agentbox.yaml`). The rest of
+Switch backends per box: `agentbox create --provider daytona` (or `--provider hetzner`),
+or pin project-wide via `box.provider: <name>` in `agentbox.yaml`. The rest of
 the CLI surface (`shell`, `claude`, `url`, `cp`, `checkpoint`, …) routes
-on `box.provider` and Just Works for both.
+on `box.provider` and Just Works for all three.
 
 ## 1. The provider abstraction
 
@@ -205,7 +206,158 @@ attach by alias.
   so a host relay restart doesn't replay forgotten `git.push` attempts
   (6.4).
 
-## 3. Authentication
+## 3. The Hetzner shape
+
+Hetzner is structurally different from Daytona: instead of a managed
+sandbox service with its own SDK + signed preview URLs, each box is a
+bare Hetzner Cloud VPS reached over pure OpenSSH. No third-party agent
+runs inside the box. The user owns root.
+
+The `CloudBackend` interface is the same, but the implementation
+(`packages/sandbox-hetzner/`) maps onto a small hand-rolled REST client
+(`src/client.ts`) over `https://api.hetzner.cloud/v1`, plus a system
+`ssh`/`scp` for everything that's not a Hetzner API call.
+
+### 3.1 Topology + lifecycle
+
+- **One VPS per box** (1:1, like Daytona). Default `cx23` (2 vCPU / 4 GB / 40 GB
+  x86, ~€4/mo while running). Default location `nbg1`. Both configurable
+  per provision request.
+- **Per-box ed25519 SSH key** minted at `provision` time into
+  `~/.agentbox/boxes/<sandboxId>/ssh/{id_ed25519,id_ed25519.pub,known_hosts}`.
+  Private key never leaves the host. Pubkey is injected via cloud-init's
+  `users.vscode.ssh_authorized_keys` — explicitly NOT via Hetzner's
+  SSH-keys-import API (that would make the key reusable on other VPSes).
+- **Per-box Hetzner Cloud Firewall**, also minted at provision time,
+  rule set = `[{direction: 'in', port: '22', protocol: 'tcp', source_ips: ['<host-egress>/32']}]`.
+  Outbound unrestricted. Source IP auto-detected via a 3-probe race
+  (api.ipify.org → ifconfig.io → icanhazip.com); if all three fail, the
+  call **fails loud** rather than silently opening `0.0.0.0/0`. Override
+  via `AGENTBOX_HETZNER_FIREWALL_SOURCE` env or `--firewall-source <cidr>`
+  on the prepare command.
+- **State mapping** (`backend.state`): Hetzner `running` → `running`;
+  transitional states (`starting`/`initializing`/`stopping`/`migrating`/`rebuilding`)
+  all report `running` so callers don't ping-pong; `off` → `paused`
+  (pause ≡ stop ≡ poweroff for Hetzner — no archive primitive); deleting
+  / missing → `missing`.
+
+### 3.2 The `prepare` flow — a one-time base snapshot
+
+Hetzner can't build images from a Dockerfile, so `agentbox prepare
+--provider hetzner` does the bake by running an install script on a
+throwaway VPS, snapshotting the result, then deleting the VPS.
+
+Flow (`packages/sandbox-hetzner/src/prepare.ts`):
+
+1. Mint ephemeral SSH key under `~/.agentbox/hetzner/prepare-<ts>/`.
+2. Detect egress IP + create a per-prepare firewall locked to it.
+3. Create a temp VPS (Ubuntu 24.04, cx23, `start_after_create: true`)
+   with cloud-init injecting the pubkey for `root` and clearing the
+   first-login password expiry (Hetzner Ubuntu enforces it; without
+   the clear, key-only SSH gets "Password change required").
+4. Poll `waitForSsh` (5-min deadline).
+5. scp the 10 runtime assets to `/tmp/` **sequentially** (parallel scp
+   trips sshd's MaxStartups on a freshly-booted VPS).
+6. Run `bash -x /tmp/agentbox-install.sh 2>&1 | sudo tee /var/log/agentbox/install.log`
+   over ssh — script runs ~5-15 min, output streams through `onLog`.
+7. `create_image` snapshot of the live VPS; poll until `available` (20-min deadline).
+8. Persist `{base.imageId, description, createdAt, installScriptSha256}`
+   into `~/.agentbox/hetzner-prepared.json`.
+9. Delete VPS + firewall.
+
+Every failure path runs cleanup of VPS + firewall (best-effort, with a
+"check Hetzner dashboard manually" warning on a cleanup-failure). The
+user never ends up with a forgotten €4/mo VPS due to a transient error.
+
+**Skip-fast**: when prepared.json already records a base AND that image
+is still on Hetzner AND `installScriptSha256` matches AND `--force`
+wasn't passed → return the existing record without rebuilding.
+
+The install script (`packages/sandbox-hetzner/scripts/install-box.sh`)
+is a shell mirror of `packages/sandbox-docker/Dockerfile.box`: Node 24
++ Python + corepack, docker.io + the same `/usr/local/bin/agentbox-dockerd-start`
+the docker provider ships, TigerVNC + noVNC + websockify + autocutsel,
+Playwright Chromium + agent-browser + portless, Claude Code (native
+installer) + Codex + OpenCode, sshd hardening drop-in, vscode user (UID
+1000) with passwordless sudo. Order matters: all small file-install
+steps run BEFORE the long Chromium download (see follow-ups in
+`docs/hertzner_backlog.md` for the diagnostic on why).
+
+### 3.3 SSH tunnel manager — the load-bearing comms primitive
+
+`SshTunnelManager` (`packages/sandbox-hetzner/src/ssh-tunnel.ts`) owns
+one persistent `ssh -fNT -M` ControlMaster per box. The socket lives at
+`~/.agentbox/boxes/<sandboxId>/ssh/control.sock`. Every `backend.exec`,
+`uploadFile`, `downloadFile`, `previewUrl`, `attachArgv` call reuses
+that master via `-S <socket>` — no per-call SSH handshake.
+
+- `open(boxId, vpsHost, identity)` — spawns the master, idempotent.
+- `forward(boxId, remotePort) → localPort` — mints
+  `ssh -O forward -L 127.0.0.1:<localPort>:127.0.0.1:<remotePort>`,
+  caches the local port per `(boxId, remotePort)` pair.
+- `unforward(boxId, remotePort)`, `close(boxId)`, `closeAll()` — symmetric.
+
+`previewUrl(handle, port)` calls `forward()` and returns
+`http://127.0.0.1:<localPort>`. The cloud-provider scaffolding then
+decorates these URLs with Portless aliases for symmetric
+`<box-name>.localhost` URLs (handled provider-side, not in the
+backend, so the backend stays focused on plumbing).
+
+### 3.4 Checkpoints
+
+Map to Hetzner's `create_image` API (`type: snapshot`). Defaults to
+**no-pause** — `create_image` works on a running server, matching
+`docker commit`'s default. Optional opt-in pause (powdoff → snapshot
+→ poweron) is gated on `CloudBackend.createSnapshot` signature
+extension (open follow-up).
+
+Manifests share the same on-disk layout as Daytona:
+`~/.agentbox/cloud-checkpoints/hetzner/<projectSegment>/<name>/manifest.json`.
+The snapshot is labeled `agentbox.role=ckpt + agentbox.box=<sandboxId>`
+for orphan discovery.
+
+`box.defaultCheckpointHetzner` (per-provider config key) takes
+precedence over `box.defaultCheckpoint` for Hetzner boxes. Set via
+`agentbox checkpoint set-default --provider hetzner <ref>`.
+
+### 3.5 DinD inside the VPS
+
+Reuses the unchanged `launchCloudDockerdDaemon` scaffolding — the
+install script bakes `/usr/local/bin/agentbox-dockerd-start` (the same
+script the docker provider ships), and `createCloudProvider.create()`
+auto-launches it via `backend.exec` at provision + resume time.
+`docker run --rm hello-world` works inside the box without any
+hetzner-specific code (verified live in Phase-7 smoke).
+
+### 3.6 Known shape differences vs Daytona
+
+- **No shared volume primitive.** Hetzner Block Volumes are per-server,
+  not shared. Daytona's `agentbox-credentials` per-org volume has no
+  equivalent — agent credentials get pushed via scp at create time
+  instead (see follow-ups for the wiring).
+- **No signed-preview-URL primitive.** SSH local forwards are already
+  loopback + auth-gated by the bridge token; `signedPreviewUrl` is the
+  same as `previewUrl` for hetzner.
+- **No per-attach-token primitive** (like Daytona's
+  `sb.createSshAccess(60)`). `attachArgv` reuses the ControlMaster via
+  `-S <sock>` — no token rotation, no SSH-token mint pressure.
+- **Pause bills.** Hetzner charges ~€4/mo for stopped VPSes; pause/
+  resume = poweroff/poweron. True zero-cost pause (delete-and-respawn-
+  from-per-box-snapshot) is a follow-up.
+
+### 3.7 The `agentbox hetzner` CLI surface
+
+- `agentbox hetzner login` — interactive `HCLOUD_TOKEN` setup, validates
+  via `GET /locations`, persists to `~/.agentbox/secrets.env`.
+- `agentbox hetzner login --status` — masked token + source.
+- `agentbox hetzner firewall sync <box> [--source <cidr>]` —
+  re-detects egress IP, updates the per-box firewall via
+  `setFirewallRules`. The common "I moved networks and ssh times out"
+  recovery.
+- `agentbox hetzner firewall show <box>` — prints current rules + the
+  host's current egress IP, with a `WARN` line on drift.
+
+## 4. Authentication
 
 `agentbox daytona login` is the supported path. It prompts for
 `DAYTONA_API_KEY` (required) and `DAYTONA_ORGANIZATION_ID` (optional)
@@ -213,7 +365,13 @@ and persists them to `~/.agentbox/secrets.env`. Subsequent runs read
 that file; project `.env` is never harvested. First-time use of
 `--provider daytona` triggers the login prompt automatically.
 
-## 4. Known caveats
+`agentbox hetzner login` is the analogous command for Hetzner. It
+prompts for `HCLOUD_TOKEN` (Read+Write API token from a Hetzner project's
+Security → API Tokens page), validates it via `GET /locations`, and
+persists it to the same `~/.agentbox/secrets.env`. First-time use of
+`--provider hetzner` triggers the login prompt automatically.
+
+## 5. Known caveats
 
 - **Destroy lag in the Daytona dashboard**: `sb.delete()` returns immediately
   and our local `state.json` clears synchronously, but the Daytona web UI
@@ -233,7 +391,7 @@ that file; project `.env` is never harvested. First-time use of
   source paths live in per-agent volumes that need a separate route.
   `download.workspace` works.
 
-## 5. CLI surface reference (cloud-routed)
+## 6. CLI surface reference (cloud-routed)
 
 Every command below honors `box.provider` automatically. Pass
 `--provider <name>` on `create` / `claude` / `codex` / `opencode` to
@@ -255,7 +413,7 @@ override per invocation.
 | `top` / `dashboard` | Cloud rows surface (no live stats / no live attach pane). |
 | `prune --provider daytona` | Orphan cleanup. |
 
-## 6. Adding a new cloud backend
+## 7. Adding a new cloud backend
 
 Implementing `CloudBackend` (`packages/core/src/cloud-backend.ts`) is
 the only work. Required:
@@ -277,7 +435,7 @@ Then add a one-line case to `resolveCloudBackend` in
 `apps/cli/src/provider/registry.ts`'s `KNOWN`. Compose the full
 `Provider` with `createCloudProvider(backend)`.
 
-### 6.1 Validating with the mock backend + contract tests
+### 7.1 Validating with the mock backend + contract tests
 
 `@agentbox/sandbox-cloud` exports a `makeMockCloudBackend()` reference
 implementation:
@@ -307,7 +465,7 @@ To certify a new backend (`@agentbox/sandbox-vercel`, say): copy the
 suite, swap the factory, and ensure every test still passes. Any
 failure flags either a backend bug or an abstraction gap.
 
-## 7. Where each cloud piece actually lives
+## 8. Where each cloud piece actually lives
 
 | Topic | File |
 | --- | --- |

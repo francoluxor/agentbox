@@ -23,6 +23,7 @@ const cliRoot = resolve(scriptDir, '..'); // apps/cli
 const repoRoot = resolve(cliRoot, '..', '..'); // monorepo root
 const runtime = join(cliRoot, 'runtime');
 const dockerCtx = join(runtime, 'docker');
+const hetznerCtx = join(runtime, 'hetzner');
 
 // Copies that land directly under runtime/ (not part of the docker context).
 const direct = [
@@ -74,11 +75,31 @@ for (const srcRel of contextFiles) {
   copy(srcRel, join(dockerCtx, srcRel), execBitFiles.has(srcRel));
 }
 
+// Hetzner provider — flat list of files mirroring the basenames the
+// `packages/sandbox-hetzner/src/runtime-assets.ts` resolver looks for. We
+// drop them at runtime/hetzner/<basename> so the resolver only needs one
+// candidate per asset in the published-CLI path.
+const hetznerFiles = [
+  ['packages/sandbox-hetzner/scripts/install-box.sh', 'scripts/install-box.sh', true],
+  ['packages/ctl/dist/bin.cjs', 'ctl.cjs', true],
+  ['packages/sandbox-docker/scripts/agentbox-vnc-start', 'agentbox-vnc-start', true],
+  ['packages/sandbox-docker/scripts/agentbox-dockerd-start', 'agentbox-dockerd-start', true],
+  ['packages/sandbox-docker/scripts/agentbox-checkpoint-cleanup', 'agentbox-checkpoint-cleanup', true],
+  ['packages/sandbox-docker/scripts/agentbox-open', 'agentbox-open', true],
+  ['packages/sandbox-docker/scripts/custom-system-CLAUDE.md', 'custom-system-CLAUDE.md', false],
+  ['packages/sandbox-docker/scripts/claude-managed-settings.json', 'claude-managed-settings.json', false],
+  ['packages/sandbox-docker/scripts/agentbox-codex-hooks.json', 'agentbox-codex-hooks.json', false],
+  ['apps/cli/share/agentbox-setup/SKILL.md', 'agentbox-setup-skill.md', false],
+];
+for (const [srcRel, destRel, exec] of hetznerFiles) {
+  copy(srcRel, join(hetznerCtx, destRel), exec);
+}
+
 if (missing > 0) {
   console.warn(
     `[stage-runtime] ${missing} asset(s) missing — fine in a partial dev rebuild, ` +
       `but a publish must run a full \`pnpm -w build\` first (prepublishOnly does).`,
   );
 } else {
-  console.log('[stage-runtime] staged runtime/ (relay bin + docker build context)');
+  console.log('[stage-runtime] staged runtime/ (relay bin + docker build context + hetzner install assets)');
 }

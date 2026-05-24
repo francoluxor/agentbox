@@ -280,6 +280,7 @@ const rmSub = new Command('rm')
         ['box.defaultCheckpoint', projectBox?.defaultCheckpoint, cfg.effective.box.defaultCheckpoint],
         ['box.defaultCheckpointDocker', projectBox?.defaultCheckpointDocker, cfg.effective.box.defaultCheckpointDocker],
         ['box.defaultCheckpointDaytona', projectBox?.defaultCheckpointDaytona, cfg.effective.box.defaultCheckpointDaytona],
+        ['box.defaultCheckpointHetzner', projectBox?.defaultCheckpointHetzner, cfg.effective.box.defaultCheckpointHetzner],
       ] as const;
       for (const [key, projectValue, effectiveValue] of defKeys) {
         if (projectValue === ref) {

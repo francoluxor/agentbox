@@ -266,6 +266,7 @@ export {
   resetPortlessCache,
   resolvePortlessHostStateDir,
   startPortlessProxy,
+  type PortlessBrowserEnvOptions,
   type PortlessState,
 } from './portless.js';
 export {

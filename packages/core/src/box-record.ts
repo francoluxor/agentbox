@@ -6,7 +6,7 @@
  */
 
 /** Sandbox backend a box runs on. Open-ended so future providers need no core change. */
-export type ProviderName = 'docker' | 'daytona' | (string & {});
+export type ProviderName = 'docker' | 'daytona' | 'hetzner' | (string & {});
 
 /**
  * Docker-backend-specific fields nested under `BoxRecord.docker` once 7.1
