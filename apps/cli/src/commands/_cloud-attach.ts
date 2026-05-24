@@ -56,10 +56,16 @@ export function buildCloudAttachInnerCommand(binary: string, extraArgs?: string[
   // its own argv element — quotes/spaces inside an arg are preserved exactly
   // because base64 is opaque to every outer shell quoting pass.
   const blob = Buffer.from(extraArgs.join('\n'), 'utf8').toString('base64');
-  // Double-quote the heredoc — base64 chars are inert under both single- and
-  // double-quoting, but using single-quotes here would clash with the outer
-  // SSH/tmux single-quote wrapping (`shellSingle` in cloud-provider.ts).
-  return `bash -lc "mapfile -t A < <(echo ${blob} | base64 -d); exec ${binary} \\"\${A[@]}\\""`;
+  // **bash -lc body MUST be single-quoted, not double-quoted.** When tmux
+  // launches the session command, it goes through `/bin/sh -c <cmd>`. If we
+  // double-quote, sh's parser sees `"${A[@]}"` and expands it eagerly —
+  // before mapfile ever runs — to the empty string, so claude is invoked as
+  // `claude ""` and the wizard's initial prompt is silently dropped. Single
+  // quotes are inert in sh's parser: the literal `${A[@]}` reaches bash,
+  // which expands it AFTER mapfile populates A. The outer shellSingle wrap
+  // in renderInnerCommand re-escapes any internal `'` as `'\''`, so this
+  // composes fine.
+  return `bash -lc 'mapfile -t A < <(echo ${blob} | base64 -d); exec ${binary} "\${A[@]}"'`;
 }
 
 export async function cloudAgentAttach(args: CloudAgentAttachArgs): Promise<void> {
