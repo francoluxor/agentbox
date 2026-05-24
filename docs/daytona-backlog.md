@@ -210,8 +210,13 @@ Project's `CLAUDE.md` describes the Docker box model. Should mention `--provider
 ### 9.1 🟡 No automated cloud E2E test
 All cloud verification has been manual via the Daytona API. A scripted test in `apps/cli/test/cloud-e2e.test.ts` that does create → ssh shell → destroy (requires `DAYTONA_API_KEY` + `DAYTONA_ORGANIZATION_ID` in env) would catch regressions.
 
-### 9.2 🟡 No unit tests for cloud-cloud
-`packages/sandbox-cloud/test/shell.test.ts` covers shell quoting. Nothing tests `cloud-provider.ts` `buildAttach` / `createCloudProvider` composition, `workspace-seed.ts` script construction, or `ctl-launch.ts`. Worth a mock-backend test.
+### 9.2 ✅ Unit tests for sandbox-cloud composition + expose-ports (done)
+~~Only `shell.test.ts`~~ — added:
+
+- `expose-ports.test.ts` — covers `readExposedServicePorts` happy + edge paths (missing file, no services key, single port, dedup+sort, ignoring services without expose, type/range filtering).
+- `cloud-provider.test.ts` — `createCloudProvider` composition smoke tests with an in-test mock `CloudBackend`: `name` propagation, `buildAttach` "no attachArgv" error, `inspect` surfacing per-service `service-<port>` endpoints, `resolveUrl` preferring `signedPreviewUrl` when available + clear error when not.
+
+`workspace-seed.ts` script construction + `ctl-launch.ts` are still covered only via end-to-end runs — they're tightly coupled to `execa` shell-outs and would require heavier mocking. Acceptable for now; coverage can grow as those surfaces stabilize.
 
 ### 9.3 ✅ Routing-level unit tests for `host-actions.ts` (done)
 ~~No coverage~~ — `packages/relay/test/host-actions.test.ts` covers the routing surface: unknown methods, `cp.*` parameter validation, `download.env|config|claude` "not supported" branch, `checkpoint.create` without `AGENTBOX_CLI_ENTRY`, `browser.open.mirror` URL safety + no-subscribers fallback. The cloud SDK + sandbox-cloud helpers are dynamic-imported by computed string (intentionally — see 7.3), which makes them hard to vitest-mock; that's why the test stops at the routing layer rather than the full executor path. A future expansion could intercept the dynamic import via a vitest setup file if needed.
