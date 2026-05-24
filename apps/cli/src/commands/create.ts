@@ -49,6 +49,8 @@ interface CreateOptions {
   cpus?: string;
   pidsLimit?: string;
   disk?: string;
+  /** -v / --verbose: also stream raw build / provision output to stderr. */
+  verbose?: boolean;
 }
 
 function buildCliOverrides(opts: CreateOptions): Partial<UserConfig> {
@@ -148,6 +150,10 @@ export const createCommand = new Command('create')
   .option('--pids-limit <n>', 'max process count (PIDs cgroup); unset = unlimited')
   .option('--disk <size>', 'best-effort container writable-layer size (e.g. 10g); no-op on overlay2/macOS')
   .option('-y, --yes', 'skip prompts, accept defaults')
+  .option(
+    '-v, --verbose',
+    'also stream the raw provider output (docker build / Daytona snapshot create) to stderr. The same content always lands in ~/.agentbox/logs/create.log — pass -v when you want to watch it live without tailing the log.',
+  )
   .action(async (opts: CreateOptions) => {
     const cmdLog = openCommandLog('create');
     process.stderr.write(`log: ${cmdLog.path}\n`);
@@ -212,8 +218,18 @@ export const createCommand = new Command('create')
 
     const useSnapshot = resolveUseSnapshot(opts, cfg.effective.box.hostSnapshot);
 
-    const s = spinner();
-    s.start('creating box');
+    // Verbose mode bypasses the spinner entirely: a cold cloud create
+    // streams ~7 minutes of Dockerfile build output that's interesting to
+    // watch and reassures the user that progress is happening. Without
+    // --verbose, the spinner shows only the latest collapsed status line
+    // (full output still lands in cmdLog) — calmer default.
+    const verbose = opts.verbose === true;
+    const s = verbose ? null : spinner();
+    if (s) {
+      s.start('creating box');
+    } else {
+      process.stderr.write('creating box (verbose mode — streaming provider output below)\n');
+    }
     try {
       // browser.default = 'playwright' | 'both' implies installing playwright
       // even if box.withPlaywright wasn't explicitly set in any layer.
@@ -235,7 +251,11 @@ export const createCommand = new Command('create')
         limits: resolveLimits(cfg.effective.box, opts),
         projectRoot,
         onLog: (line) => {
-          s.message(clampSpinnerLine(line));
+          if (s) {
+            s.message(clampSpinnerLine(line));
+          } else {
+            process.stderr.write(line.endsWith('\n') ? line : line + '\n');
+          }
           cmdLog.write(line);
         },
         providerOptions: {
@@ -245,7 +265,11 @@ export const createCommand = new Command('create')
           portlessStateDir: cfg.effective.portless.stateDir || undefined,
         },
       });
-      s.stop(`box ${result.record.container} ready`);
+      if (s) {
+        s.stop(`box ${result.record.container} ready`);
+      } else {
+        process.stderr.write(`box ${result.record.container} ready\n`);
+      }
 
       log.info(`id:        ${result.record.id}`);
       if (typeof result.record.projectIndex === 'number') {
@@ -329,7 +353,11 @@ export const createCommand = new Command('create')
         await attachShell(result.record);
       }
     } catch (err) {
-      s.stop('failed');
+      if (s) {
+        s.stop('failed');
+      } else {
+        process.stderr.write('create failed\n');
+      }
       const msg = err instanceof Error ? err.message : String(err);
       cmdLog.write(`FAIL: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
       log.error(msg);
