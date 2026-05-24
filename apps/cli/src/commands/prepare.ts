@@ -274,7 +274,35 @@ export const prepareCommand = new Command('prepare')
       process.stdout.write('\n');
       await showStatus({ onlyProvider: providerName });
     } catch (err) {
-      sp.stop(`prepare failed: ${err instanceof Error ? err.message : String(err)}`);
+      sp.stop(`prepare failed: ${describeError(err)}`);
       process.exit(1);
     }
   });
+
+/**
+ * Unwrap the cause chain on Error objects so opaque wrappers like Node's
+ * `TypeError: fetch failed` (whose `.message` carries zero context but
+ * whose `.cause` is e.g. `{ code: 'ECONNREFUSED', address, port }`)
+ * surface the real reason in the CLI's one-line failure message.
+ */
+function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const parts: string[] = [err.message];
+  let cause: unknown = (err as Error & { cause?: unknown }).cause;
+  // Bound the walk so a cyclic / pathological cause chain can't OOM.
+  for (let i = 0; i < 5 && cause; i++) {
+    if (cause instanceof Error) {
+      parts.push(`caused by: ${cause.message}`);
+      const code = (cause as Error & { code?: unknown }).code;
+      if (typeof code === 'string') parts.push(`(${code})`);
+      cause = (cause as Error & { cause?: unknown }).cause;
+    } else if (typeof cause === 'object') {
+      parts.push(`caused by: ${JSON.stringify(cause)}`);
+      break;
+    } else {
+      parts.push(`caused by: ${String(cause)}`);
+      break;
+    }
+  }
+  return parts.join(' — ');
+}
