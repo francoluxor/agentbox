@@ -213,8 +213,8 @@ All cloud verification has been manual via the Daytona API. A scripted test in `
 ### 9.2 🟡 No unit tests for cloud-cloud
 `packages/sandbox-cloud/test/shell.test.ts` covers shell quoting. Nothing tests `cloud-provider.ts` `buildAttach` / `createCloudProvider` composition, `workspace-seed.ts` script construction, or `ctl-launch.ts`. Worth a mock-backend test.
 
-### 9.3 🟡 No unit tests for `host-actions.ts`
-The git-bundle pull-back logic is e2e-tested but lacks unit coverage. A mock `CloudBackend` would make this testable.
+### 9.3 ✅ Routing-level unit tests for `host-actions.ts` (done)
+~~No coverage~~ — `packages/relay/test/host-actions.test.ts` covers the routing surface: unknown methods, `cp.*` parameter validation, `download.env|config|claude` "not supported" branch, `checkpoint.create` without `AGENTBOX_CLI_ENTRY`, `browser.open.mirror` URL safety + no-subscribers fallback. The cloud SDK + sandbox-cloud helpers are dynamic-imported by computed string (intentionally — see 7.3), which makes them hard to vitest-mock; that's why the test stops at the routing layer rather than the full executor path. A future expansion could intercept the dynamic import via a vitest setup file if needed.
 
 ### 9.4 🟢 Interactive flows (claude / shell PTY) only manually verifiable
 Hard to fully test without a real TTY; rely on the smoke `agentbox shell <box> -- <cmd>` non-TTY path which exercises the SSH + exec + env code paths.
