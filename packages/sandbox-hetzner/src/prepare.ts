@@ -33,6 +33,12 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Provider } from '@agentbox/core';
+import {
+  stageClaudeStaticForUpload,
+  stageCodexStaticForUpload,
+  stageOpencodeStaticForUpload,
+  type StageResult,
+} from '@agentbox/sandbox-cloud';
 import { ensureHetznerCredentials } from './credentials.js';
 import { detectEgressIp } from './egress-ip.js';
 import {
@@ -242,6 +248,54 @@ export async function prepareHetzner(
       );
     }
     progress('install script complete');
+
+    // 6b. Stage host agent static config (~/.claude plugins/skills/settings/
+    // _claude.json, ~/.codex config + prompts, ~/.local/share/opencode), scp
+    // each tarball, extract into /home/vscode/ as the `vscode` user. Mirrors
+    // the Daytona bake step (`Image.addLocalFile` + `Image.runCommands`),
+    // adapted for our ssh+scp model. Without this, the in-box claude/codex/
+    // opencode boot with no plugins, no skills, no settings, and prompt the
+    // user to log in fresh on every box.
+    progress('staging host agent static config');
+    const stagings: Array<{ kind: 'claude' | 'codex' | 'opencode'; tar: StageResult; dest: string }> = [];
+    try {
+      const claudeTar = await stageClaudeStaticForUpload({ hostWorkspace: opts.hostWorkspace });
+      for (const w of claudeTar.warnings) log(`prepare-hetzner: ${w}`);
+      if (claudeTar.tarballPath) stagings.push({ kind: 'claude', tar: claudeTar, dest: '/home/vscode/.claude' });
+      else await claudeTar.cleanup();
+
+      const codexTar = await stageCodexStaticForUpload();
+      for (const w of codexTar.warnings) log(`prepare-hetzner: ${w}`);
+      if (codexTar.tarballPath) stagings.push({ kind: 'codex', tar: codexTar, dest: '/home/vscode/.codex' });
+      else await codexTar.cleanup();
+
+      const opencodeTar = await stageOpencodeStaticForUpload();
+      for (const w of opencodeTar.warnings) log(`prepare-hetzner: ${w}`);
+      if (opencodeTar.tarballPath) stagings.push({ kind: 'opencode', tar: opencodeTar, dest: '/home/vscode/.local/share/opencode' });
+      else await opencodeTar.cleanup();
+
+      for (const s of stagings) {
+        const remote = `/tmp/agentbox-${s.kind}-static.tar.gz`;
+        log(`prepare-hetzner: scp ${s.kind} static (${s.tar.tarballPath}) -> ${remote}`);
+        await scpUpload(sshTarget, s.tar.tarballPath as string, remote);
+        // Extract as vscode so the files land owned by uid 1000. The dir
+        // already exists (created by the install script's credential-pivot
+        // step) — extract into it, don't replace it.
+        const extractCmd =
+          `sudo -u vscode mkdir -p ${s.dest} && ` +
+          `sudo -u vscode tar -xzf ${remote} -C ${s.dest} --no-same-permissions --no-same-owner -m && ` +
+          `rm -f ${remote}`;
+        const r = await sshExec(sshTarget, extractCmd, { onLine: (line) => log(`[stage:${s.kind}] ${line}`) });
+        if (r.exitCode !== 0) {
+          throw new Error(
+            `prepare-hetzner: ${s.kind} static extract failed (exit ${String(r.exitCode)}): ${r.stderr.slice(-300)}`,
+          );
+        }
+        progress(`baked ${s.kind} static config into snapshot`);
+      }
+    } finally {
+      for (const s of stagings) await s.tar.cleanup();
+    }
 
     // 7. Snapshot.
     const description = opts.name ?? `agentbox-base-${stamp}`;

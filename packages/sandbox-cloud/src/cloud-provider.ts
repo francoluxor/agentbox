@@ -798,7 +798,10 @@ function renderInnerCommand(kind: AttachKind, opts?: BuildAttachOptions): string
   }
   // Single-quote the inner cmd so tmux gets exactly one argv element. Use
   // `command -v tmux` so a missing tmux fails fast with a clear error.
-  return `command -v tmux >/dev/null || { echo "tmux not installed in sandbox"; exit 127; }; exec tmux new-session -A -s ${shellSingle(sessionName)} ${shellSingle(fallback)}`;
+  // `-c /workspace` starts the session in the box's workspace dir so claude/
+  // codex/opencode see /workspace as their cwd (otherwise tmux inherits the
+  // SSH login shell's $HOME and the agents prompt for workspace-trust).
+  return `command -v tmux >/dev/null || { echo "tmux not installed in sandbox"; exit 127; }; exec tmux new-session -A -c ${shellSingle(CLOUD_WORKSPACE_DIR)} -s ${shellSingle(sessionName)} ${shellSingle(fallback)}`;
 }
 
 function defaultSessionName(kind: AttachKind): string {
