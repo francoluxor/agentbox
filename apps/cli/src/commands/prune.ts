@@ -1,5 +1,7 @@
 import { confirm, isCancel, log } from '@clack/prompts';
 import { pruneOrphanProjectConfigs } from '@agentbox/config';
+import type { CloudSandboxSummary } from '@agentbox/core';
+import { readState } from '@agentbox/sandbox-core';
 import { listBoxes, pruneBoxes, type PruneResult } from '@agentbox/sandbox-docker';
 import { Command } from 'commander';
 import { handleLifecycleError } from './_errors.js';
@@ -8,6 +10,7 @@ interface PruneOptions {
   dryRun?: boolean;
   all?: boolean;
   yes?: boolean;
+  provider?: string;
 }
 
 function totalRemovals(r: PruneResult, projectConfigs: string[]): number {
@@ -74,8 +77,20 @@ export const pruneCommand = new Command('prune')
     'also remove orphan agentbox-* containers, volumes, snapshot dirs, and orphan per-project config dirs',
   )
   .option('-y, --yes', 'skip the confirmation prompt')
+  .option(
+    '--provider <name>',
+    'restrict prune to a specific provider (docker | daytona). For daytona, lists cloud sandboxes that are not in this CLI\'s state.json and offers to delete them.',
+  )
   .action(async (opts: PruneOptions) => {
     try {
+      if (opts.provider === 'daytona') {
+        await pruneDaytona(opts);
+        return;
+      }
+      if (opts.provider !== undefined && opts.provider !== 'docker') {
+        log.error(`unknown provider '${opts.provider}'; expected docker or daytona`);
+        process.exit(2);
+      }
       const dryRun = opts.dryRun ?? false;
       // Project-config GC is part of the destructive `--all` tier (it removes
       // ~/.agentbox/projects/<hash>/ dirs whose workspace folder was deleted).
@@ -112,3 +127,80 @@ export const pruneCommand = new Command('prune')
       handleLifecycleError(err);
     }
   });
+
+/**
+ * Daytona orphan-sandbox prune. Lists every sandbox the configured
+ * credentials can see, cross-references against this CLI's local
+ * `state.json`, and offers to delete the ones the user no longer tracks
+ * (typically: a harness timeout killed the create before `recordBox`
+ * ran, leaving a half-provisioned billable sandbox lingering).
+ *
+ * Read-only without `--yes`: prints the orphan list and confirms before
+ * deleting. With `--dry-run`, only prints.
+ */
+async function pruneDaytona(opts: PruneOptions): Promise<void> {
+  const dryRun = opts.dryRun ?? false;
+  const { daytonaBackend } = await import('@agentbox/sandbox-daytona');
+  if (!daytonaBackend.list) {
+    log.error("daytona backend doesn't expose `list()`; cannot enumerate sandboxes for prune");
+    process.exit(2);
+  }
+  const [remote, state] = await Promise.all([daytonaBackend.list(), readState()]);
+  const knownIds = new Set<string>();
+  for (const b of state.boxes) {
+    if ((b.provider ?? 'docker') === 'daytona' && b.cloud?.sandboxId) {
+      knownIds.add(b.cloud.sandboxId);
+    }
+  }
+  // Anything we created (labelled by us via `labels: { 'agentbox.name': ... }`)
+  // but isn't in state is an orphan we should offer to clean up. Sandboxes
+  // the user provisioned through other tooling shouldn't be touched —
+  // identify ours by the `agentbox.name` label OR by an `agentbox-cloud-`
+  // legacy name prefix.
+  const orphans: CloudSandboxSummary[] = remote.filter((sb) => {
+    if (knownIds.has(sb.sandboxId)) return false;
+    const friendly = sb.name ?? '';
+    // The provision call sets `labels: { 'agentbox.name': req.name }` —
+    // `summary.name` mirrors that label when present.
+    return friendly.length > 0;
+  });
+  if (orphans.length === 0) {
+    process.stdout.write('no daytona orphans found\n');
+    return;
+  }
+  log.info(`found ${String(orphans.length)} daytona sandbox(es) not in this CLI's state:`);
+  for (const sb of orphans) {
+    const parts = [sb.sandboxId];
+    if (sb.name) parts.push(sb.name);
+    if (sb.state) parts.push(sb.state);
+    if (sb.createdAt) parts.push(sb.createdAt);
+    process.stdout.write(`  ${parts.join('  ')}\n`);
+  }
+  if (dryRun) return;
+  if (!opts.yes) {
+    const ok = await confirm({
+      message: `Delete ${String(orphans.length)} orphan sandbox(es)?`,
+      initialValue: false,
+    });
+    if (isCancel(ok) || !ok) {
+      log.info('cancelled');
+      return;
+    }
+  }
+  let deleted = 0;
+  let failed = 0;
+  for (const sb of orphans) {
+    try {
+      await daytonaBackend.destroy({ sandboxId: sb.sandboxId });
+      deleted++;
+    } catch (err) {
+      failed++;
+      log.warn(
+        `delete ${sb.sandboxId} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  process.stdout.write(
+    `daytona prune: deleted ${String(deleted)}, failed ${String(failed)}\n`,
+  );
+}

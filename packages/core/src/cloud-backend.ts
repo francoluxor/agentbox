@@ -77,12 +77,35 @@ export interface CloudPreviewUrl {
   token?: string;
 }
 
+/**
+ * Minimal description of an existing cloud sandbox returned by `list()`.
+ * Backends report whatever they have; missing fields are best-effort. The
+ * orchestrator uses the `sandboxId` for cross-reference against the local
+ * `state.json` to detect orphans.
+ */
+export interface CloudSandboxSummary {
+  sandboxId: string;
+  /** User-facing sandbox name (when the backend records one). */
+  name?: string;
+  /** ISO-8601 sandbox creation time, when known. */
+  createdAt?: string;
+  /** Coarse runtime state — same vocabulary as `state()`. */
+  state?: CloudState;
+}
+
 export interface CloudBackend {
   readonly name: string;
 
   provision(req: CloudProvisionRequest): Promise<CloudHandle>;
   /** Resolve an existing sandbox by id; null when it no longer exists. */
   get(sandboxId: string): Promise<CloudHandle | null>;
+  /**
+   * Optional: enumerate every sandbox the configured credentials can see.
+   * Used by `agentbox prune --provider <name>` to surface orphans. Backends
+   * without a list primitive omit it and prune falls back to "nothing to
+   * report".
+   */
+  list?(): Promise<CloudSandboxSummary[]>;
 
   start(h: CloudHandle): Promise<void>;
   stop(h: CloudHandle): Promise<void>;

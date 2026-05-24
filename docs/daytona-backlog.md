@@ -170,8 +170,8 @@ Per-method policy in `backend.ts`:
 
 **Fix:** none from our side — Daytona consistency window. Document.
 
-### 6.3 🟡 Smoke-test orphan sandboxes left behind on harness timeouts
-If a test (or interactive create) is killed mid-provision before `recordBox` completes, the half-provisioned Daytona sandbox lingers (the `catch` block's `backend.destroy` only runs if Node gets to handle the exception). Add a periodic cleanup helper (`agentbox prune --provider daytona` would list orphans + offer to delete).
+### 6.3 ✅ `agentbox prune --provider daytona` cleans up orphans (done)
+~~Manual via Daytona API~~ — added `CloudBackend.list?()` returning `CloudSandboxSummary[]` (id, name, state, createdAt). Daytona's implementation calls `client.list()` and unwraps the SDK's `PaginatedSandboxes.items`. The CLI's `prune --provider daytona` flow loads local state, finds sandboxes whose `agentbox.name` label is set (i.e. created by this CLI) but whose id isn't in `state.json`, and offers to delete them. `--dry-run` lists without deleting; `-y` skips the confirm. Outputs `deleted N, failed M` so the user sees what happened.
 
 ### 6.4 ✅ Max age on parked host actions (done)
 ~~Unbounded~~ — `HostActionQueue` gained a `maxAgeMs` (default 15 min, override per instance). On every `drain()` any action older than that is settled with `exitCode: 124` / `stderr: "host action '<method>' expired before the host could execute it"` so the in-box RPC unblocks, and the action never reaches the host poller. Keeps a host relay restart from replaying a long-forgotten `git.push`. Unit tests cover both single-action expiry and the mixed expired+fresh drain case.

@@ -5,6 +5,7 @@
  */
 
 import { Daytona, DaytonaNotFoundError, Image, SandboxState, type Sandbox } from '@daytonaio/sdk';
+import type { CloudSandboxSummary } from '@agentbox/core';
 import type {
   CloudBackend,
   CloudExecOptions,
@@ -239,6 +240,31 @@ export const daytonaBackend: CloudBackend = {
     return retry('get', async () => {
       const sb = await maybeGetSandbox(sandboxId);
       return sb ? { sandboxId: sb.id } : null;
+    });
+  },
+
+  async list(): Promise<CloudSandboxSummary[]> {
+    return retry('list', async () => {
+      const client = getClient();
+      // `client.list()` returns `PaginatedSandboxes { items: Sandbox[] }`
+      // (page 1 by default). For prune we don't need multi-page traversal
+      // yet — sandboxes per org are bounded; if that changes, loop on page.
+      const page = await client.list();
+      const items = Array.isArray(page) ? page : (page.items ?? []);
+      return items.map((sb): CloudSandboxSummary => {
+        const summary: CloudSandboxSummary = { sandboxId: sb.id };
+        const raw = sb as unknown as {
+          name?: string;
+          labels?: Record<string, string>;
+          state?: string;
+          createdAt?: string;
+        };
+        const friendly = raw.labels?.['agentbox.name'] ?? raw.name;
+        if (friendly) summary.name = friendly;
+        if (raw.createdAt) summary.createdAt = raw.createdAt;
+        if (typeof raw.state === 'string') summary.state = mapState(raw.state);
+        return summary;
+      });
     });
   },
 

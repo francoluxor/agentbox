@@ -41,6 +41,7 @@ export type {
   CloudHandle,
   CloudPreviewUrl,
   CloudProvisionRequest,
+  CloudSandboxSummary,
   CloudState,
   CloudVolumeMount,
 } from './cloud-backend.js';
