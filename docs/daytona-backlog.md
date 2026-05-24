@@ -109,8 +109,8 @@ Implementation: per-agent option added to the `.option(...)` chain + provider-na
 ### 3.8 ✅ `agentbox code` (VS Code / Cursor Remote-SSH) cloud-routed (done)
 ~~Cloud-guarded~~ — `code.ts` now branches on provider. For cloud boxes it mints a fresh 60-min SSH token via `provider.buildAttach(box, 'shell', { noTmux: true })` (which calls `backend.attachArgv` → `sb.createSshAccess(60)`), writes a BEGIN/END-bracketed managed block to `~/.ssh/config` (`apps/cli/src/ssh-config.ts`) mapping a stable alias (`agentbox-cloud-<name>`) to `ssh.app.daytona.io` with the token as `User`, then opens `vscode-remote://ssh-remote+<alias>/workspace` via the existing `code --folder-uri` / `cursor --folder-uri` launcher. `agentbox destroy` removes the alias block. Token expires after 60 min → re-run `agentbox code` to rewrite it. Auto-terminals (`/workspace/.vscode/tasks.json`) is docker-only for now.
 
-### 3.9 🟢 `agentbox open` cloud-guarded
-"Open box's /workspace in Finder" doesn't really map to cloud — the workspace is in the sandbox, not on host disk. Could rsync it down on demand, but probably leave guarded. -> ok we added ssh support for agentbox code, we can use the same to mount a sshfs volume and open it in finder.
+### 3.9 ✅ `agentbox open` cloud-routed via sshfs (done)
+~~Guarded~~ — `open.ts` branches on provider. For cloud boxes it reuses the SSH alias machinery from `agentbox code` (`writeAgentboxSshAlias`) to mint a fresh 60-min token and rewrite the `~/.ssh/config` block, then `sshfs <alias>:/workspace ~/.agentbox/mounts/<box-name>/ -o reconnect -o volname=agentbox-<box> -o noappledouble` and `open` the mount in Finder. Existing stale mounts at the path are auto-unmounted first. `--path/--print` reports the mount path without mounting. `--unmount` tears down an existing mount. sshfs missing → clear `brew install macfuse sshfs` hint. The docker path is unchanged.
 
 ### 3.10 🟢 `agentbox top` filters cloud boxes
 Today `listBoxes`-style aggregation in top.ts filters out cloud entries. Live stats for cloud would need `backend`-level metrics (Daytona SDK doesn't seem to expose CPU/mem stats directly). Defer.

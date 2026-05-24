@@ -1,34 +1,52 @@
+import { log } from '@clack/prompts';
+import { execa } from 'execa';
+import { existsSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import type { BoxRecord } from '@agentbox/core';
 import { openBoxInFinder } from '@agentbox/sandbox-docker';
 import { Command } from 'commander';
 import { resolveBoxOrExit } from '../box-ref.js';
+import { providerForBox } from '../provider/registry.js';
+import { agentboxAliasFor, writeAgentboxSshAlias } from '../ssh-config.js';
 import { runPath } from './path.js';
 import { handleLifecycleError } from './_errors.js';
-import { requireDockerProvider } from './_provider-guard.js';
 
 interface OpenOpts {
   refresh: boolean; // commander gives `--no-refresh` => refresh=false
   includeNodeModules?: boolean;
   print?: boolean;
   path?: boolean;
+  unmount?: boolean;
 }
 
 export const openCommand = new Command('open')
-  .description("Open a box's /workspace in Finder (rsync'd snapshot of the agent's view)")
+  .description("Open a box's /workspace in Finder (docker: rsync'd snapshot; cloud: sshfs mount)")
   .argument(
     '[box]',
     'box ref: project index, id, id prefix, name, or container (default: the only box in this project)',
   )
-  .option('--no-refresh', "skip the rsync; open whatever's already on disk")
+  .option('--no-refresh', "skip the rsync; open whatever's already on disk (docker only)")
   .option(
     '--include-node-modules',
-    'include /workspace/node_modules in the merged export (off by default)',
+    'include /workspace/node_modules in the merged export (docker only; off by default)',
   )
-  .option('--path', 'print the host workspace path instead of launching Finder')
+  .option('--path', 'print the host workspace / mount path instead of launching Finder')
   .option('--print', 'alias of --path')
+  .option(
+    '--unmount',
+    'cloud only: unmount any existing sshfs mount for the box and exit',
+  )
   .action(async (idOrName: string | undefined, opts: OpenOpts) => {
     try {
       const box = await resolveBoxOrExit(idOrName);
-      requireDockerProvider(box, 'open');
+      const provider = await providerForBox(box);
+      const isCloud = (box.provider ?? 'docker') !== 'docker';
+
+      if (isCloud) {
+        await runCloudOpen(box, provider, opts);
+        return;
+      }
 
       if (opts.path || opts.print) {
         await runPath(box, {
@@ -50,3 +68,129 @@ export const openCommand = new Command('open')
       handleLifecycleError(err);
     }
   });
+
+/**
+ * Cloud `open`: mount the sandbox's `/workspace` via sshfs at a per-box host
+ * path (`~/.agentbox/mounts/<box-name>/`) and reveal in Finder. Reuses the
+ * SSH alias `agentbox code` already manages — the alias maps to a fresh
+ * 60-min Daytona SSH token, written into `~/.ssh/config` per call so sshfs
+ * has a live target without baking the token into the mount itself.
+ */
+async function runCloudOpen(
+  box: BoxRecord,
+  provider: { name: string; buildAttach?: NonNullable<Awaited<ReturnType<typeof providerForBox>>['buildAttach']> },
+  opts: OpenOpts,
+): Promise<void> {
+  const mountRoot = join(homedir(), '.agentbox', 'mounts', box.name);
+
+  if (opts.unmount) {
+    const ok = await tryUnmount(mountRoot);
+    if (ok) process.stdout.write(`unmounted ${mountRoot}\n`);
+    else process.stdout.write(`nothing mounted at ${mountRoot}\n`);
+    return;
+  }
+
+  if (opts.path || opts.print) {
+    // Don't mount when we only print — print is meant to be lightweight.
+    process.stdout.write(`${mountRoot}\n`);
+    return;
+  }
+
+  // sshfs is the load-bearing dep; macFUSE + sshfs are typically installed
+  // via `brew install macfuse sshfs`. Fail with a clear hint instead of
+  // a cryptic ENOENT.
+  const sshfsBin = await locateBinary('sshfs');
+  if (!sshfsBin) {
+    throw new Error(
+      'sshfs not found on PATH. Install with `brew install macfuse sshfs` (macOS) or your distro\'s package manager, then retry. Cloud `agentbox open` mounts the sandbox /workspace via sshfs.',
+    );
+  }
+
+  if (!provider.buildAttach) {
+    throw new Error(
+      `cloud provider '${provider.name}' does not support SSH attach — \`agentbox open\` requires it for cloud boxes`,
+    );
+  }
+  // Same SSH alias machinery `agentbox code` uses — mint a fresh 60-min token
+  // and rewrite the alias every call so the user gets a live mount target.
+  const spec = await provider.buildAttach(box, 'shell', { noTmux: true });
+  const userHost = parseUserHost(spec.argv);
+  if (!userHost) {
+    throw new Error(`could not parse <user>@<host> from cloud SSH argv: ${spec.argv.join(' ')}`);
+  }
+  const alias = agentboxAliasFor(box.name);
+  await writeAgentboxSshAlias({ alias, hostname: userHost.host, user: userHost.user });
+
+  // Ensure the mount dir exists. If something's already mounted there (a
+  // stale mount from a previous run) we tear it down before re-mounting —
+  // sshfs would otherwise error with "mountpoint is not empty".
+  if (!existsSync(mountRoot)) {
+    mkdirSync(mountRoot, { recursive: true, mode: 0o755 });
+  } else if (await isMounted(mountRoot)) {
+    log.info(`re-mounting (stale mount detected at ${mountRoot})`);
+    await tryUnmount(mountRoot);
+  }
+
+  log.info(`mounting ${alias}:/workspace at ${mountRoot}`);
+  const mount = await execa(
+    sshfsBin,
+    [
+      `${alias}:/workspace`,
+      mountRoot,
+      // Foreground would block the CLI; default backgrounds the helper.
+      '-o',
+      'reconnect',
+      '-o',
+      // `volname` makes Finder show a friendly label instead of `osxfuseN`.
+      `volname=agentbox-${box.name}`,
+      '-o',
+      'noappledouble',
+    ],
+    { reject: false },
+  );
+  if (mount.exitCode !== 0) {
+    throw new Error(`sshfs mount failed (exit ${String(mount.exitCode)}): ${mount.stderr || mount.stdout}`);
+  }
+  // `open` on macOS reveals the dir in Finder. On non-macOS this is a no-op
+  // / error — degrade silently because the mount path is already printed.
+  await execa('open', [mountRoot], { reject: false });
+  process.stdout.write(`opened ${mountRoot}\n`);
+  process.stdout.write(`unmount later with: agentbox open ${box.name} --unmount\n`);
+}
+
+async function locateBinary(name: string): Promise<string | null> {
+  const r = await execa('which', [name], { reject: false });
+  if (r.exitCode !== 0) return null;
+  const path = (r.stdout ?? '').trim();
+  return path.length > 0 ? path : null;
+}
+
+async function isMounted(path: string): Promise<boolean> {
+  // `mount` prints "on <path>" entries; grep for the mountpoint. macOS and
+  // Linux both report it. Fallback to "false" on any exec error so we don't
+  // wedge on a missing util.
+  const r = await execa('sh', ['-c', `mount | grep -F " on ${path} "`], { reject: false });
+  return r.exitCode === 0;
+}
+
+async function tryUnmount(path: string): Promise<boolean> {
+  // macOS prefers `umount`; some setups need `diskutil unmount`. Try both.
+  if (await isMounted(path)) {
+    const u = await execa('umount', [path], { reject: false });
+    if (u.exitCode === 0) return true;
+    const d = await execa('diskutil', ['unmount', path], { reject: false });
+    return d.exitCode === 0;
+  }
+  return false;
+}
+
+function parseUserHost(argv: readonly string[]): { user: string; host: string } | undefined {
+  for (let i = argv.length - 1; i >= 0; i--) {
+    const v = argv[i];
+    if (!v || v.startsWith('-')) continue;
+    const at = v.indexOf('@');
+    if (at <= 0) continue;
+    return { user: v.slice(0, at), host: v.slice(at + 1) };
+  }
+  return undefined;
+}
