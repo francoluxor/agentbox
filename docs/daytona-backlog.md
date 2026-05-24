@@ -44,10 +44,15 @@ Implementation: host-side staging lives in `packages/sandbox-docker/src/host-sta
 ### 1.4 ✅ Nested-repo monorepos seeded (done)
 ~~Root-only~~ — `seedCloudWorkspace` now also loops over every `kind === 'nested'` entry from `detectGitRepos`. For each, it bundles + clones at `/workspace/<rel>` on the same per-box branch. The clone-then-rm script targets only `args.workspaceDir` so the nested clone wipes just its own subdir without disturbing the root checkout. Matches the docker `seedWorkspace` semantics (one branch per repo, all named `agentbox/<box-name>`).
 
-### 1.5 🟡 Host uncommitted changes carry-over not implemented
-Docker provider runs `git stash create` + tar of untracked files so the in-box workspace starts with the user's local-but-unstaged state. Cloud `seedFromGitBundle` skips this — the sandbox starts from the last committed tip of every branch.
+### 1.5 ✅ Host uncommitted changes carry-over (done)
+~~Skipped~~ — `seedFromGitBundle` now mirrors `collectRepoCarryOver`. For every seeded repo (root + nested):
 
-**Fix:** mirror `collectRepoCarryOver` from `packages/sandbox-docker/src/in-box-git.ts`; fold the stash commit into the bundle and tar the untracked files alongside.
+1. `safeStashCreate` runs `git stash create` on the host — captures every staged + tracked-modified change (including deletes / renames) as a one-off commit without touching the working tree.
+2. The stash SHA is updated into the temp ref `refs/agentbox-carryover/stash` so it rides along with the bundle (the ref is passed explicitly to `git bundle create` so it works with both `--all` and `--depth=N` modes).
+3. `maybeBuildUntrackedTar` tars `git ls-files --others --exclude-standard` (NUL-delimited, `COPYFILE_DISABLE=1` to skip macOS AppleDouble sidecars). Uploaded separately to `/tmp/agentbox-carryover-untracked.tar.gz` (skipped when empty).
+4. In-sandbox script (best-effort, soft-fails on conflict): `git stash apply refs/remotes/origin/agentbox-carryover/stash` to restore tracked changes, then untars the untracked archive over the working tree. Stash ref + tar file are deleted post-apply.
+
+Soft-fail keeps `agentbox create --provider daytona` from blocking when a shallow bundle drops the merge base for an old local modification; an explicit `agentbox: stash apply soft-failed; carry-over may be incomplete` warning surfaces in the create log.
 
 ---
 
