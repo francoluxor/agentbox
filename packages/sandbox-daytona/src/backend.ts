@@ -54,7 +54,7 @@ function retry<T>(
 export const DEFAULT_BOX_IMAGE_REF = 'agentbox/box:dev';
 
 let client: Daytona | null = null;
-function getClient(): Daytona {
+export function getClient(): Daytona {
   if (!client) {
     // Pull DAYTONA_* keys from `.env.local` / `.env` / `~/.agentbox/secrets.env`
     // into process.env first — the SDK reads from process.env and most users
@@ -189,8 +189,30 @@ export const daytonaBackend: CloudBackend = {
         // timeout is too short for that; override with 15 min so a cold build
         // doesn't fail mid-snapshot. Cached snapshots and snapshot-based
         // creates come up in seconds.
-        const sandbox = req.snapshot
-          ? await client.create({ snapshot: req.snapshot, ...baseParams }, { timeout: 900 })
+        // Resolve `req.image` against Daytona's snapshot registry first when
+        // it's set to a non-default value: `agentbox prepare --provider
+        // daytona` registers a named snapshot and writes `box.image:
+        // <name>` into project config; subsequent creates should boot from
+        // that snapshot, not try to pull `<name>:latest` from Docker Hub.
+        // Default ref (agentbox/box:dev) skips the lookup and goes through
+        // resolveImage (Image.fromDockerfile). Explicit `req.snapshot` always
+        // wins (cloud checkpoint path).
+        let snapshotName = req.snapshot;
+        if (!snapshotName && req.image && req.image !== DEFAULT_BOX_IMAGE_REF) {
+          try {
+            const snap = await client.snapshot.get(req.image);
+            if (snap && snap.name) snapshotName = snap.name;
+          } catch {
+            // Not a known snapshot — fall through and treat as a Docker image ref.
+          }
+        }
+        // Daytona rejects `resources` on the snapshot path — the snapshot's
+        // own params encode them. Strip resources only for the snapshot
+        // branch; the image branch keeps them.
+        const snapshotParams: Record<string, unknown> = { ...baseParams };
+        delete snapshotParams.resources;
+        const sandbox = snapshotName
+          ? await client.create({ snapshot: snapshotName, ...snapshotParams }, { timeout: 900 })
           : await client.create(
               { image: resolveImage(req.image), ...baseParams },
               {

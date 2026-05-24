@@ -1,23 +1,31 @@
 /**
  * Stage the host's agent-config trees (`~/.claude`, `~/.codex`,
- * `~/.config/opencode` + `~/.local/share/opencode`) into a filtered tarball
- * any provider can ship into a remote sandbox. This is the cloud-provider
- * counterpart to the rsync-into-named-volume flow `ensureClaudeVolume` /
- * `ensureCodexVolume` / `ensureOpencodeVolume` already do for local Docker
- * boxes — same filters and excludes, but the output is a single .tar.gz the
- * caller uploads with `CloudBackend.uploadFile` and extracts inside the
- * sandbox with `tar -xzf … -C <mountPath>`.
+ * `~/.config/opencode` + `~/.local/share/opencode`) into filtered tarballs any
+ * provider can ship into a remote sandbox.
  *
- * Each `stage<Agent>ForUpload(opts)` returns a `StageResult`:
+ * Per agent we produce **two** tarballs:
+ *
+ *   - **static**: plugins, skills, settings, marketplaces, prompts, config —
+ *     stuff that's stable across re-auths. The cloud path bakes this into the
+ *     published Daytona snapshot once (`agentbox daytona publish-snapshot`),
+ *     so it ships into the sandbox FS at snapshot capture time, never the
+ *     S3-backed FUSE volume.
+ *
+ *   - **credentials**: the renewable OAuth/auth files only (a handful of KB).
+ *     The cloud path uploads these into a per-org `agentbox-credentials`
+ *     volume on every create (cheap) and `agentbox daytona resync` refreshes
+ *     them after a re-auth — without touching the snapshot.
+ *
+ * Each `stage*ForUpload(opts)` returns a `StageResult`:
  *   - `tarballPath`: absolute path to a `.tar.gz`, or `null` when the host has
- *     nothing relevant to stage (no `~/.claude` etc.).
+ *     nothing relevant to stage (no `~/.claude` etc., or no credentials file).
  *   - `cleanup()`: removes the staging dir + the tarball; ALWAYS call after
  *     the upload completes, even on error.
  *   - `warnings`: non-fatal user-facing messages (the codex Keychain landmine
  *     surfaces here).
  *
- * The functions require `rsync` and `tar` on the host. macOS + every common
- * Linux distro ship both.
+ * Requires `rsync` and `tar` on the host. macOS + every common Linux distro
+ * ship both.
  */
 
 import { copyFile, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
@@ -108,6 +116,34 @@ function makeCleanup(paths: string[]): () => Promise<void> {
   };
 }
 
+/**
+ * Stage one file into a tarball whose only entry is that file at the tarball
+ * root. Used for the credentials-only variants.
+ */
+async function stageSingleFileTarball(
+  agent: string,
+  sourcePath: string,
+  tarballEntryName: string,
+): Promise<StageResult> {
+  const stageDir = await mkStageDir(agent);
+  let tarballPath: string | null = null;
+  try {
+    await copyFile(sourcePath, join(stageDir, tarballEntryName));
+    tarballPath = await tarballFromDir(stageDir, agent);
+    return {
+      tarballPath,
+      cleanup: makeCleanup([stageDir, tarballPath]),
+      warnings: [],
+    };
+  } catch (err) {
+    await rm(stageDir, { recursive: true, force: true });
+    if (tarballPath) await rm(tarballPath, { force: true });
+    throw err;
+  }
+}
+
+// ---------- claude ----------
+
 export interface StageClaudeOptions {
   /** Defaults to `homedir()`. Override for tests. */
   hostHome?: string;
@@ -120,60 +156,59 @@ export interface StageClaudeOptions {
   hostWorkspace?: string;
 }
 
+const CLAUDE_RUNTIME_EXCLUDES = [
+  'projects',
+  'sessions',
+  'history.jsonl',
+  'file-history',
+  'shell-snapshots',
+  'backups',
+  'session-env',
+  'paste-cache',
+  'cache',
+  'telemetry',
+  'tasks',
+  'downloads',
+  'chrome',
+  'ide',
+  'debug',
+  'mcp-needs-auth-cache.json',
+  'stats-cache.json',
+];
+
 /**
- * Build a filtered tarball of `~/.claude/` (+ `~/.claude.json` as
- * `_claude.json` at the tarball root) ready to extract into a cloud
- * sandbox's claude-config volume mount.
+ * Filtered tarball of `~/.claude/` (+ `~/.claude.json` as `_claude.json` at
+ * tarball root) **excluding** `.credentials.json`. Extracts into
+ * `/home/vscode/.claude/` on the sandbox FS at snapshot-bake time.
  *
  * Mirrors `ensureClaudeVolume`'s rsync excludes (drops `node_modules`),
  * filters host-path hooks out of `settings.json` / `_claude.json`, coerces
  * install-method to native, aliases the host workspace path to `/workspace`,
- * and pre-trusts `/workspace` so the in-box claude skips the trust dialog.
- * Plugin `installed_plugins.json` and `known_marketplaces.json` get their
- * host-home `installPath` values rewritten to the box's `/home/vscode/.claude/`.
+ * and pre-trusts `/workspace`. Plugin `installed_plugins.json` and
+ * `known_marketplaces.json` get their host-home `installPath` values rewritten
+ * to the box's `/home/vscode/.claude/`.
  */
-export async function stageClaudeForUpload(opts: StageClaudeOptions = {}): Promise<StageResult> {
+export async function stageClaudeStaticForUpload(
+  opts: StageClaudeOptions = {},
+): Promise<StageResult> {
   const hostHome = opts.hostHome ?? homedir();
   const hostClaude = join(hostHome, '.claude');
   if (!(await pathExists(hostClaude))) return emptyResult();
 
-  const stageDir = await mkStageDir('claude');
+  const stageDir = await mkStageDir('claude-static');
   let tarballPath: string | null = null;
   try {
-    // 1. rsync host ~/.claude → stage. --copy-unsafe-links derefences user-
-    //    skill symlinks; --exclude=node_modules drops host-platform binaries
-    //    (fsevents.node, esbuild, ...). Broken symlinks would otherwise abort
-    //    the whole sync under --copy-unsafe-links, so pre-scan and exclude them.
+    // rsync host ~/.claude → stage. --copy-unsafe-links dereferences user
+    // skill symlinks; --exclude=node_modules drops host-platform binaries
+    // (fsevents.node, esbuild, ...). Broken symlinks would abort the whole
+    // sync under --copy-unsafe-links, so pre-scan and exclude them.
     //
-    //    For cloud uploads we additionally drop runtime/history state — the
-    //    Docker provider keeps these via rsync (cheap bind-mount), but over the
-    //    Daytona API a typical `~/.claude` tarball balloons past 100 MB because
-    //    `projects/` and `file-history/` hold per-box session metadata
-    //    accumulated over months. The cloud seed wants credentials + user
-    //    config + skills + plugins; everything else is per-machine runtime that
-    //    the in-box claude regenerates on demand.
-    const CLAUDE_RUNTIME_EXCLUDES = [
-      'projects',
-      'sessions',
-      'history.jsonl',
-      'file-history',
-      'shell-snapshots',
-      'backups',
-      'session-env',
-      'paste-cache',
-      'cache',
-      'telemetry',
-      'tasks',
-      'downloads',
-      'chrome',
-      'ide',
-      'debug',
-      'mcp-needs-auth-cache.json',
-      'stats-cache.json',
-    ];
+    // Drop runtime/history state so the snapshot bake doesn't capture
+    // per-machine session data the in-box claude will regenerate anyway.
     const broken = await findBrokenSymlinks(hostClaude);
     const excludes = [
       '--exclude=node_modules',
+      '--exclude=.credentials.json',
       ...CLAUDE_RUNTIME_EXCLUDES.map((p) => `--exclude=${p}`),
       ...broken.map((r) => `--exclude=/${r}`),
     ];
@@ -185,7 +220,7 @@ export async function stageClaudeForUpload(opts: StageClaudeOptions = {}): Promi
       `${stageDir}/`,
     ]);
 
-    // 2. settings.json: filter host-path hooks; rewrite in place when changed.
+    // settings.json: filter host-path hooks; rewrite in place when changed.
     const settingsPath = join(stageDir, 'settings.json');
     if (await pathExists(settingsPath)) {
       try {
@@ -199,10 +234,12 @@ export async function stageClaudeForUpload(opts: StageClaudeOptions = {}): Promi
       }
     }
 
-    // 3. _claude.json — sourced from $HOME/.claude.json (which lives outside
-    //    ~/.claude). Apply the same chain of filters as ensureClaudeVolume
-    //    uses: host-path hooks, install-method=native, host->/workspace
-    //    project alias, and /workspace trust pre-accept.
+    // _claude.json — sourced from $HOME/.claude.json (which lives outside
+    // ~/.claude). Apply the same filter chain `ensureClaudeVolume` uses:
+    // host-path hooks, install-method=native, host->/workspace project alias,
+    // and /workspace trust pre-accept. The Dockerfile.box bakes a symlink
+    // `~/.claude.json -> ~/.claude/_claude.json` so the in-box claude reads
+    // through to this file at runtime.
     const hostClaudeJson = join(hostHome, '.claude.json');
     let working: unknown;
     if (await pathExists(hostClaudeJson)) {
@@ -213,7 +250,6 @@ export async function stageClaudeForUpload(opts: StageClaudeOptions = {}): Promi
       }
     }
     if (working === undefined || working === null) {
-      // Minimal _claude.json: skips integrity warning + trust dialog.
       working = {
         installMethod: 'native',
         autoUpdates: false,
@@ -230,24 +266,10 @@ export async function stageClaudeForUpload(opts: StageClaudeOptions = {}): Promi
     }
     await writeFile(join(stageDir, '_claude.json'), JSON.stringify(working, null, 2));
 
-    // 3b. .credentials.json — the OAuth token file Claude Code reads alongside
-    //     `_claude.json`. On macOS the host's ~/.claude/.credentials.json is
-    //     typically missing because the token is in the system Keychain, but
-    //     the agentbox Docker provider mirrors a portable copy to
-    //     ~/.agentbox/claude-credentials.json via syncClaudeCredentials. That
-    //     backup is what we ship to the cloud volume. Without this, the in-box
-    //     claude sees `_claude.json` (account info) but no token and bounces
-    //     to the interactive sign-in flow — which inside a tmux-attached SSH
-    //     session manifests as an immediate exit.
-    if (await pathExists(CREDENTIALS_BACKUP_FILE)) {
-      await copyFile(CREDENTIALS_BACKUP_FILE, join(stageDir, '.credentials.json'));
-    }
-
-    // 4. plugins/*.json: rewrite host-home installPath/installLocation values
-    //    to the box's /home/vscode/.claude/plugins/ tree. Without this, claude
-    //    resolves plugin paths to /Users/<you>/... inside the box and the
-    //    marketplace fails to load. Sweep every top-level JSON; the docker
-    //    flow does the same.
+    // plugins/*.json: rewrite host-home installPath/installLocation values to
+    // the box's /home/vscode/.claude/plugins/ tree. Without this, claude
+    // resolves plugin paths to /Users/<you>/... inside the box and the
+    // marketplace fails to load.
     const pluginsDir = join(stageDir, 'plugins');
     if (await pathExists(pluginsDir)) {
       try {
@@ -266,7 +288,7 @@ export async function stageClaudeForUpload(opts: StageClaudeOptions = {}): Promi
       }
     }
 
-    tarballPath = await tarballFromDir(stageDir, 'claude');
+    tarballPath = await tarballFromDir(stageDir, 'claude-static');
     return {
       tarballPath,
       cleanup: makeCleanup([stageDir, tarballPath]),
@@ -278,95 +300,98 @@ export async function stageClaudeForUpload(opts: StageClaudeOptions = {}): Promi
     throw err;
   }
 }
+
+/**
+ * Tarball with **only** `.credentials.json` (sourced from
+ * `~/.agentbox/claude-credentials.json`, the portable backup the Docker
+ * provider's `syncClaudeCredentials` mirrors from the macOS Keychain). The
+ * cloud path extracts this into `/home/vscode/.agentbox-creds/claude/` on the
+ * shared `agentbox-credentials` volume; a baked symlink in the snapshot at
+ * `~/.claude/.credentials.json` resolves through to it at runtime.
+ *
+ * Returns an empty result when no backup exists (the in-box claude falls back
+ * to interactive sign-in).
+ */
+export async function stageClaudeCredentialsForUpload(): Promise<StageResult> {
+  if (!(await pathExists(CREDENTIALS_BACKUP_FILE))) return emptyResult();
+  return stageSingleFileTarball('claude-creds', CREDENTIALS_BACKUP_FILE, '.credentials.json');
+}
+
+// ---------- codex ----------
 
 export interface StageCodexOptions {
   hostHome?: string;
 }
 
+const CODEX_RSYNC_EXCLUDES = [
+  '--exclude=sessions',
+  '--exclude=log',
+  '--exclude=history.jsonl',
+  '--exclude=hooks.json',
+  '--exclude=logs_2.sqlite',
+  '--exclude=logs_2.sqlite-shm',
+  '--exclude=logs_2.sqlite-wal',
+  '--exclude=state_5.sqlite',
+  '--exclude=state_5.sqlite-shm',
+  '--exclude=state_5.sqlite-wal',
+  '--exclude=sqlite',
+  '--exclude=cache',
+  '--exclude=vendor_imports',
+  '--exclude=tmp',
+  // .tmp holds codex plugin sync state — ~100 MB of marketplace cache. Not
+  // the same as `tmp/`; both can exist side by side on a long-running host.
+  '--exclude=.tmp',
+  '--exclude=.codex-global-state.json',
+  '--exclude=.codex-global-state.json.bak',
+  '--exclude=.personality_migration',
+  '--exclude=shell_snapshots',
+  '--exclude=session_index.jsonl',
+  '--exclude=models_cache.json',
+  '--exclude=installation_id',
+  '--exclude=version.json',
+];
+
+const CODEX_KEYCHAIN_WARNING =
+  'codex: ~/.codex/auth.json missing. On macOS the codex CLI defaults to ' +
+  'storing the OAuth token in the system Keychain, which isn\'t reachable ' +
+  'from a remote sandbox. To share creds with cloud boxes either:\n' +
+  '  - add `cli_auth_credentials_store = "file"` to ~/.codex/config.toml ' +
+  'then re-run `codex login`, or\n' +
+  '  - set OPENAI_API_KEY in your environment, or\n' +
+  '  - run `codex login --with-api-key` for a file-backed login.\n' +
+  'Skipping codex seed; in-box codex will prompt for sign-in.';
+
 /**
- * Build a filtered tarball of `~/.codex` for the codex-config volume.
+ * Filtered tarball of `~/.codex/` **excluding** `auth.json`. Extracts into
+ * `/home/vscode/.codex/` on the sandbox FS at snapshot-bake time.
  *
- * Same excludes as `ensureCodexVolume` (`sessions/`, `log/`, `history.jsonl`,
- * `hooks.json`). When `~/.codex` exists but `auth.json` is missing, surface a
- * Keychain landmine warning and stage nothing (caller will skip the upload):
- * the macOS Codex CLI defaults to storing the token in Keychain rather than
- * `auth.json`, and a tarball without `auth.json` would give a signed-in-on-
- * host / signed-out-in-box experience that the user wouldn't expect.
+ * `-L` dereferences EVERY symlink (codex sprouts links into `~/.nvm` for the
+ * `applypatch` argv0 trick and into `~/.agents/skills/*`); produces a
+ * symlink-free archive suitable for the FUSE-backed Daytona volume and the
+ * sandbox FS alike. Broken symlinks would abort rsync under `-L`, so pre-scan
+ * and skip them.
  */
-export async function stageCodexForUpload(opts: StageCodexOptions = {}): Promise<StageResult> {
+export async function stageCodexStaticForUpload(
+  opts: StageCodexOptions = {},
+): Promise<StageResult> {
   const hostHome = opts.hostHome ?? homedir();
   const hostCodex = join(hostHome, '.codex');
   if (!(await pathExists(hostCodex))) return emptyResult();
 
-  const hasAuthJson = await pathExists(join(hostCodex, 'auth.json'));
-  if (!hasAuthJson) {
-    return emptyResult([
-      'codex: ~/.codex/auth.json missing. On macOS the codex CLI defaults to ' +
-        'storing the OAuth token in the system Keychain, which isn\'t reachable ' +
-        'from a remote sandbox. To share creds with cloud boxes either:\n' +
-        '  - add `cli_auth_credentials_store = "file"` to ~/.codex/config.toml ' +
-        'then re-run `codex login`, or\n' +
-        '  - set OPENAI_API_KEY in your environment, or\n' +
-        '  - run `codex login --with-api-key` for a file-backed login.\n' +
-        'Skipping codex seed; in-box codex will prompt for sign-in.',
-    ]);
-  }
-
-  const stageDir = await mkStageDir('codex');
+  const stageDir = await mkStageDir('codex-static');
   let tarballPath: string | null = null;
   try {
-    // Plain `-a` (no `--copy-unsafe-links`): codex sprouts symlinks pointing
-    // outside ~/.codex (`tmp/arg0/*/applypatch -> ~/.nvm/.../codex`, a multi-MB
-    // darwin-arm64 binary, plus `skills/* -> ~/.agents/skills/*`). Following
-    // those would balloon the tarball past 280 MB (observed) AND bake host
-    // platform binaries into a linux sandbox. The docker provider does the same
-    // — see `ensureCodexVolume` in codex.ts. Broken symlinks survive because
-    // `-a` preserves them as symlinks.
-    //
-    // Cloud-only extra excludes vs docker: SQLite state, vendor_imports, tmp,
-    // and shell-snapshot data are big runtime artifacts the in-box codex
-    // regenerates on demand; uploading them via the Daytona API is wasted
-    // bandwidth (~50 MB extra otherwise).
-    // `-L` (--copy-links): dereference EVERY symlink, including user-skill
-    // links like `~/.codex/skills/inngest -> ~/.agents/skills/inngest`. Daytona
-    // volumes are S3-backed FUSE mounts that reject symlink creation
-    // ("Operation not permitted"), so the tarball must be symlink-free.
-    // Broken symlinks would abort rsync under `-L`, so pre-scan and skip them.
     const codexBroken = await findBrokenSymlinks(hostCodex);
     await execa('rsync', [
       '-a',
       '-L',
       ...codexBroken.map((r) => `--exclude=/${r}`),
-      '--exclude=sessions',
-      '--exclude=log',
-      '--exclude=history.jsonl',
-      '--exclude=hooks.json',
-      '--exclude=logs_2.sqlite',
-      '--exclude=logs_2.sqlite-shm',
-      '--exclude=logs_2.sqlite-wal',
-      '--exclude=state_5.sqlite',
-      '--exclude=state_5.sqlite-shm',
-      '--exclude=state_5.sqlite-wal',
-      '--exclude=sqlite',
-      '--exclude=cache',
-      '--exclude=vendor_imports',
-      '--exclude=tmp',
-      // .tmp holds the codex plugin sync state — ~100 MB of marketplace cache.
-      // Not the same as `tmp/`; both can exist side by side on a host that has
-      // run codex for a while.
-      '--exclude=.tmp',
-      '--exclude=.codex-global-state.json',
-      '--exclude=.codex-global-state.json.bak',
-      '--exclude=.personality_migration',
-      '--exclude=shell_snapshots',
-      '--exclude=session_index.jsonl',
-      '--exclude=models_cache.json',
-      '--exclude=installation_id',
-      '--exclude=version.json',
+      '--exclude=auth.json',
+      ...CODEX_RSYNC_EXCLUDES,
       `${hostCodex}/`,
       `${stageDir}/`,
     ]);
-    tarballPath = await tarballFromDir(stageDir, 'codex');
+    tarballPath = await tarballFromDir(stageDir, 'codex-static');
     return {
       tarballPath,
       cleanup: makeCleanup([stageDir, tarballPath]),
@@ -379,27 +404,51 @@ export async function stageCodexForUpload(opts: StageCodexOptions = {}): Promise
   }
 }
 
+/**
+ * Tarball with **only** `auth.json` (sourced from `~/.codex/auth.json`).
+ * Surfaces the macOS Keychain landmine as a warning when the file is missing
+ * — see `CODEX_KEYCHAIN_WARNING`.
+ */
+export async function stageCodexCredentialsForUpload(
+  opts: StageCodexOptions = {},
+): Promise<StageResult> {
+  const hostHome = opts.hostHome ?? homedir();
+  const hostAuth = join(hostHome, '.codex', 'auth.json');
+  if (!(await pathExists(hostAuth))) return emptyResult([CODEX_KEYCHAIN_WARNING]);
+  return stageSingleFileTarball('codex-creds', hostAuth, 'auth.json');
+}
+
+// ---------- opencode ----------
+
 export interface StageOpencodeOptions {
   hostHome?: string;
 }
 
+const OPENCODE_DATA_EXCLUDES = [
+  '--exclude=storage',
+  '--exclude=log',
+  '--exclude=project',
+  '--exclude=cache',
+  '--exclude=bin',
+  '--exclude=repos',
+  '--exclude=snapshot',
+  '--exclude=config',
+  '--exclude=opencode.db',
+  '--exclude=opencode.db-shm',
+  '--exclude=opencode.db-wal',
+];
+
 /**
- * Build a filtered tarball laid out for the opencode-config volume. OpenCode
- * splits state across two XDG dirs on the host (`~/.local/share/opencode` for
- * data + auth.json, `~/.config/opencode` for config). The cloud volume is
- * mounted at the *data* dir; the config dir is relocated to a `config/`
- * subdir of the volume via `OPENCODE_CONFIG_DIR` set in the provision env.
- * So the tarball's layout is:
+ * Filtered tarball of opencode static config. Layout extracts into
+ * `/home/vscode/.local/share/opencode/`:
  *
- *   ./auth.json                ← from ~/.local/share/opencode/auth.json
- *   ./<other data files>       ← from ~/.local/share/opencode/
- *   ./config/<config files>    ← from ~/.config/opencode/
+ *   ./<data files>            ← from ~/.local/share/opencode/ (minus auth.json)
+ *   ./config/<config files>   ← from ~/.config/opencode/
  *
- * Excludes the SQLite session storage / logs / cloned-repo trees / host
- * binaries (`storage`, `log`, `project`, `cache`, `bin`, `repos`, the
- * `opencode.db*` files). Same excludes as `ensureOpencodeVolume`.
+ * `auth.json` is **excluded** — it ships separately via the credentials
+ * variant.
  */
-export async function stageOpencodeForUpload(
+export async function stageOpencodeStaticForUpload(
   opts: StageOpencodeOptions = {},
 ): Promise<StageResult> {
   const hostHome = opts.hostHome ?? homedir();
@@ -409,30 +458,20 @@ export async function stageOpencodeForUpload(
   const hasConfig = await pathExists(hostConfig);
   if (!hasData && !hasConfig) return emptyResult();
 
-  const stageDir = await mkStageDir('opencode');
+  const stageDir = await mkStageDir('opencode-static');
   let tarballPath: string | null = null;
   try {
-    // `-L` (--copy-links): dereference EVERY symlink to produce a symlink-
-    // free tarball. Daytona's FUSE-backed volumes reject symlink creation
-    // ("Operation not permitted"). Broken symlinks would abort rsync under
-    // `-L`, so pre-scan and skip them.
+    // `-L` dereferences every symlink — Daytona's FUSE volumes reject symlink
+    // creation, and the sandbox FS doesn't care either way. Broken symlinks
+    // would abort rsync under `-L`, so pre-scan and skip them.
     if (hasData) {
       const dataBroken = await findBrokenSymlinks(hostData);
       await execa('rsync', [
         '-a',
         '-L',
         ...dataBroken.map((r) => `--exclude=/${r}`),
-        '--exclude=storage',
-        '--exclude=log',
-        '--exclude=project',
-        '--exclude=cache',
-        '--exclude=bin',
-        '--exclude=repos',
-        '--exclude=snapshot',
-        '--exclude=config',
-        '--exclude=opencode.db',
-        '--exclude=opencode.db-shm',
-        '--exclude=opencode.db-wal',
+        '--exclude=auth.json',
+        ...OPENCODE_DATA_EXCLUDES,
         `${hostData}/`,
         `${stageDir}/`,
       ]);
@@ -448,7 +487,7 @@ export async function stageOpencodeForUpload(
         `${configStage}/`,
       ]);
     }
-    tarballPath = await tarballFromDir(stageDir, 'opencode');
+    tarballPath = await tarballFromDir(stageDir, 'opencode-static');
     return {
       tarballPath,
       cleanup: makeCleanup([stageDir, tarballPath]),
@@ -459,4 +498,18 @@ export async function stageOpencodeForUpload(
     if (tarballPath) await rm(tarballPath, { force: true });
     throw err;
   }
+}
+
+/**
+ * Tarball with **only** `auth.json` (sourced from
+ * `~/.local/share/opencode/auth.json`). Returns an empty result when the host
+ * has no opencode auth file.
+ */
+export async function stageOpencodeCredentialsForUpload(
+  opts: StageOpencodeOptions = {},
+): Promise<StageResult> {
+  const hostHome = opts.hostHome ?? homedir();
+  const hostAuth = join(hostHome, '.local', 'share', 'opencode', 'auth.json');
+  if (!(await pathExists(hostAuth))) return emptyResult();
+  return stageSingleFileTarball('opencode-creds', hostAuth, 'auth.json');
 }

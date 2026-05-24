@@ -55,3 +55,21 @@ export {
   type CloudCheckpointManifest,
   type WriteCloudManifestFields,
 } from './checkpoint.js';
+// Re-export host-side agent-config staging from sandbox-docker so cloud
+// providers (sandbox-daytona, future cloud backends) can use them without
+// taking a direct sandbox-docker dep (which would bend the provider-isolation
+// rule). The implementations live in sandbox-docker for historical reasons:
+// they were originally built for the docker rsync-into-volume flow and stayed
+// there when the cloud path adopted them.
+export {
+  stageClaudeStaticForUpload,
+  stageClaudeCredentialsForUpload,
+  stageCodexStaticForUpload,
+  stageCodexCredentialsForUpload,
+  stageOpencodeStaticForUpload,
+  stageOpencodeCredentialsForUpload,
+  type StageClaudeOptions,
+  type StageCodexOptions,
+  type StageOpencodeOptions,
+  type StageResult,
+} from '@agentbox/sandbox-docker';

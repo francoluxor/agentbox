@@ -161,6 +161,38 @@ RUN mkdir -p /home/vscode/.claude \
     && ln -s /home/vscode/.claude/_claude.json /home/vscode/.claude.json \
     && chown -h vscode:vscode /home/vscode/.claude.json
 
+# Cloud-provider credential pivot: ~/.agentbox-creds/<agent>/ is where the
+# per-org `agentbox-credentials` Daytona volume gets mounted at runtime (three
+# subpath mounts: claude/, codex/, opencode/). Three symlinks route the
+# agent-expected credential paths through to it so the in-box agent reads
+# tokens from the volume while the surrounding config sits on the snapshot-
+# baked sandbox FS.
+#
+# These symlinks are dangling at build time — their targets only resolve once
+# the volume is mounted. That's fine: ln succeeds, and the kernel resolves
+# symlinks lazily on open().
+#
+# The Docker provider is unaffected: its named `agentbox-{claude,codex,
+# opencode}-config` volumes mount *over* /home/vscode/.claude etc., obscuring
+# the symlinks; the volume content includes the credential files directly.
+RUN mkdir -p /home/vscode/.agentbox-creds/claude \
+             /home/vscode/.agentbox-creds/codex \
+             /home/vscode/.agentbox-creds/opencode \
+             /home/vscode/.codex \
+             /home/vscode/.local/share/opencode \
+    && ln -s /home/vscode/.agentbox-creds/claude/.credentials.json \
+             /home/vscode/.claude/.credentials.json \
+    && ln -s /home/vscode/.agentbox-creds/codex/auth.json \
+             /home/vscode/.codex/auth.json \
+    && ln -s /home/vscode/.agentbox-creds/opencode/auth.json \
+             /home/vscode/.local/share/opencode/auth.json \
+    && chown -R vscode:vscode /home/vscode/.agentbox-creds \
+                              /home/vscode/.codex \
+                              /home/vscode/.local \
+    && chown -h vscode:vscode /home/vscode/.claude/.credentials.json \
+                              /home/vscode/.codex/auth.json \
+                              /home/vscode/.local/share/opencode/auth.json
+
 # Prepare /home/vscode/.vscode-server and /home/vscode/.cursor-server (+ their
 # extensions subdirs) so the named volumes mounted at runtime — per-box
 # `agentbox-{vscode,cursor}-server-<id>` over the server dirs, then shared

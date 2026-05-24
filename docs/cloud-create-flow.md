@@ -27,7 +27,7 @@ Routed through `daytonaProvider` → `createCloudProvider(daytonaBackend)`
 3. **Provision the sandbox** —
    `backend.provision({ image | snapshot, volumes, env, resources })`.
    `image` is either:
-   - a published snapshot name (`agentbox daytona publish-snapshot` bakes the
+   - a published snapshot name (`agentbox prepare --provider daytona` bakes the
      Dockerfile.box once, ~7 min, and lets every future create skip the build
      → seconds), or
    - `agentbox/box:dev` (`FALLBACK_IMAGE`) → translated by `resolveImage()` to
@@ -37,10 +37,14 @@ Routed through `daytonaProvider` → `createCloudProvider(daytonaBackend)`
    (`packages/sandbox-cloud/src/workspace-seed.ts`). Skipped entirely if you
    booted from a checkpoint snapshot — the snapshot already carries
    `/workspace`.
-5. **Seed agent volumes if fresh** — `seedAgentVolumesIfFresh` checks each
-   volume for `.agentbox-seeded-at`; if missing, tar + upload from host
-   `~/.claude`/`~/.codex`/`~/.config/opencode` and drop the marker. **First
-   box per org pays this cost; every subsequent box skips it.**
+5. **Seed credentials volume if fresh** — `seedAgentVolumesIfFresh` checks
+   the shared `agentbox-credentials` volume's per-agent subpath for
+   `.agentbox-seeded-at`; if missing, tar + upload **only the auth-token
+   files** (`.credentials.json` for claude, `auth.json` for codex/opencode)
+   and drop the marker. Tiny payload (~KBs), seconds to extract. The bulk
+   *static config* (plugins / skills / marketplaces / settings) is **not**
+   shipped here — it's baked into the snapshot at `prepare --provider daytona` time
+   (see [Snapshot bake](#snapshot-bake)).
 6. **Upload env/config files** (`uploadEnvFiles`) — the `.env`/`secrets.toml`/
    etc. the setup wizard collected.
 7. **Launch `agentbox-ctl`** (`launchCloudCtlDaemon`) and **VNC stack**
@@ -92,16 +96,84 @@ the whole dir, uploads, extracts. No bundle, no branch.
 
 | | First time | Subsequent boxes |
 |---|---|---|
-| **Box image build** | ~7 min Dockerfile.box build on Daytona | Reuses the snapshot (built once or via `agentbox daytona publish-snapshot`) — seconds |
-| **Agent credential volumes** | Created + tarred + uploaded from host (`.claude`, `.codex`, `.config/opencode`); marker written | Volumes already exist (org-scoped), marker present → skipped entirely |
+| **Box image build** | ~7 min Dockerfile.box build on Daytona | Reuses the snapshot (built once or via `agentbox prepare --provider daytona`) — seconds |
+| **Agent static config** (plugins/skills/marketplaces/settings) | Already baked into the snapshot — no per-create work | Same — baked once at `prepare --provider daytona` |
+| **Agent credentials volume** (`.credentials.json` / `auth.json`) | Tar + upload + extract (~KBs, seconds) | Marker present → skipped; the volume mount carries the tokens forward |
 | **Workspace bundle** | Always built + uploaded + cloned (per box — each gets a fresh `/workspace` on a fresh branch) | Same — every box reseeds |
 | **Per-agent SSH keys / Daytona auth** | `agentbox daytona login` prompts and writes `~/.agentbox/secrets.env` | Read from `secrets.env` silently |
 | **Host relay** | `ensureRelay` boots the relay daemon | Already running — no-op |
 
-The two "cold once, warm forever" optimizations are the **published snapshot**
-(cuts the Dockerfile build) and the **agent credential volumes** (cuts the
-credential upload). The workspace bundle, by contrast, is a per-box cost by
-design — each box needs its own isolated `/workspace` on its own branch.
+The "cold once, warm forever" optimizations are the **published snapshot**
+(which now bundles the Dockerfile build *and* all agent static config) and the
+**credentials volume** (which keeps the token files alive across boxes so
+re-auth doesn't need a snapshot re-publish). Workspace bundle is a per-box
+cost by design — each box needs its own isolated `/workspace` on its own
+branch.
+
+<a id="snapshot-bake"></a>
+### Snapshot bake (the way static config lands in the box)
+
+`agentbox prepare --provider daytona` (`packages/sandbox-daytona/src/prepare.ts`)
+calls the documented Daytona snapshot API — no sandbox is provisioned. The
+whole build + register happens server-side in one operation:
+
+1. Host-side: stage filtered tarballs of `~/.claude` (minus `.credentials.json`),
+   `~/.codex` (minus `auth.json`), and opencode `data/` + `config/` (minus
+   `auth.json`). See `stage{Claude,Codex,Opencode}StaticForUpload` in
+   `packages/sandbox-docker/src/host-stage.ts`.
+2. Build an `Image` fluently:
+
+   ```ts
+   const image = Image.fromDockerfile(Dockerfile.box)
+     .addLocalFile(claudeTar,   '/tmp/agentbox-seed-claude.tar.gz')
+     .addLocalFile(codexTar,    '/tmp/agentbox-seed-codex.tar.gz')
+     .addLocalFile(opencodeTar, '/tmp/agentbox-seed-opencode.tar.gz')
+     .runCommands(
+       'mkdir -p /home/vscode/.claude /home/vscode/.codex /home/vscode/.local/share/opencode',
+       'tar -xzf /tmp/agentbox-seed-claude.tar.gz   -C /home/vscode/.claude',
+       'tar -xzf /tmp/agentbox-seed-codex.tar.gz    -C /home/vscode/.codex',
+       'tar -xzf /tmp/agentbox-seed-opencode.tar.gz -C /home/vscode/.local/share/opencode',
+       'chown -R vscode:vscode /home/vscode/.claude /home/vscode/.codex /home/vscode/.local',
+       'rm -f /tmp/agentbox-seed-*.tar.gz',
+     );
+   ```
+3. `daytona.snapshot.create({ name, image })` — Daytona uploads the layered
+   build context to object storage, builds the image, and registers the
+   result as an org-scoped named snapshot. Returns when the snapshot is
+   `active`.
+4. The `prepare` CLI command pins `box.image: <name>` into the project
+   config so subsequent `agentbox create --provider daytona` boots from it.
+
+Replaces the old `agentbox daytona publish-snapshot`, which used the
+broken `sandbox._experimental_createSnapshot` API
+(`POST /api/sandbox/<id>/snapshot` now 404s on Daytona's side). See
+https://www.daytona.io/docs/en/snapshots/ for the documented API.
+
+The resulting snapshot carries plugins/skills/marketplaces/settings pre-
+populated. Every subsequent `agentbox create --provider daytona` boots from
+this snapshot and skips the static seed entirely.
+
+Run `agentbox prepare` (no args) at any point to print the current inventory:
+docker's `agentbox/box:dev` image, the three shared docker volumes, and on
+the Daytona side all `agentbox*` snapshots (state / size / age / `(pinned)`
+marker) and `agentbox*` volumes — handy for spotting orphaned legacy volumes
+and confirming the snapshot pinned in the project config still exists.
+
+### Credentials symlinks (the way the per-create credentials volume reaches the agent)
+
+The Dockerfile bakes three symlinks at the agent-expected credential paths:
+
+```
+~/.claude/.credentials.json            -> /home/vscode/.agentbox-creds/claude/.credentials.json
+~/.codex/auth.json                     -> /home/vscode/.agentbox-creds/codex/auth.json
+~/.local/share/opencode/auth.json      -> /home/vscode/.agentbox-creds/opencode/auth.json
+```
+
+At runtime, `agentbox-credentials` (a single per-org Daytona volume) is
+mounted three times via `subpath` (`claude/`, `codex/`, `opencode/`) under
+`/home/vscode/.agentbox-creds/`. The dangling symlinks resolve through to
+the mounted credential files. `agentbox daytona resync` re-uploads into the
+same volume after a host re-auth — no snapshot republish needed.
 
 If you want to skip even the workspace seed, use
 `agentbox create --provider daytona --checkpoint <name>`: the snapshot already
@@ -233,7 +305,7 @@ for different purposes and reached through different mechanisms. They are
 |---|---|---|
 | **What it captures** | Just the Dockerfile.box runtime (Node, Playwright, Chromium, agent CLIs, ctl, VNC stack). **No `/workspace`.** | Everything in the box at capture time, **including `/workspace`** (installed deps, generated files, dev DB seed, etc.) |
 | **Scope** | Org-wide; **shared across all projects** | Org-wide registry but **prefixed by project hash** (`agentbox-ckpt-<hash>_<mn>-<name>`) so two projects can't collide |
-| **Created by** | `agentbox daytona publish-snapshot [--name X]` (one-off, manual; rebuilds ~7 min) | `agentbox checkpoint create [--name X] [--set-default]` (per-box, anytime) |
+| **Created by** | `agentbox daytona prepare --provider daytona [--name X]` (one-off, manual; rebuilds ~7 min) | `agentbox checkpoint create [--name X] [--set-default]` (per-box, anytime) |
 | **Stored as** | Daytona snapshot `agentbox-box-prebuilt-<ts>` (or whatever `--name` you pass) | Daytona snapshot `agentbox-ckpt-<projectHash>_<mn>-<name>` + host manifest |
 | **Consumed via config** | `box.image: <name>` (project or user config) | `box.defaultCheckpointDaytona: <name>` (or per-box `--checkpoint <name>`) |
 | **Daytona SDK call** | `client.create({ image: "<name>", … })` | `client.create({ snapshot: "<name>", … })` |
@@ -242,7 +314,7 @@ for different purposes and reached through different mechanisms. They are
 ### How they compose
 
 ```
-Dockerfile.box  --(publish-snapshot)-->  base snapshot      (one-off, org-wide)
+Dockerfile.box  --(prepare --provider daytona)-->  base snapshot      (one-off, org-wide)
                                                 │
                                                 ▼ box.image
                        agentbox create  --(provision + seed /workspace)-->  fresh box
@@ -291,7 +363,7 @@ local Docker daemon. Subsequent creates short-circuit on `imageExists` and
 reuse the cached image. The user is never told to do anything — first
 create just takes longer.
 
-### Daytona: **NOT** auto-built — explicit `publish-snapshot` required
+### Daytona: **NOT** auto-built — explicit `prepare --provider daytona` required
 
 On a fresh `--provider daytona` install with no `box.image` set:
 
@@ -311,7 +383,7 @@ AgentBox-side guarantee, and any tweak to the build context invalidates it.
 To opt into the base snapshot, two manual steps performed once per org:
 
 ```bash
-agentbox daytona publish-snapshot --name agentbox-box   # ~7 min, one-off
+agentbox daytona prepare --provider daytona --name agentbox-box   # ~7 min, one-off
 agentbox config set --user box.image agentbox-box       # or --project
 ```
 
@@ -335,5 +407,5 @@ A few constraints that make auto-publish a worse default than docker's:
   pipeline + cross-org snapshot access in Daytona.
 
 A worthwhile UX improvement (not yet built): after the first Dockerfile
-build, hint `agentbox daytona publish-snapshot` in the success log so users
+build, hint `agentbox prepare --provider daytona` in the success log so users
 discover it before paying the cold cost twice.

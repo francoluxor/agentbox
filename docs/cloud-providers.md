@@ -66,24 +66,57 @@ the host workspace into the sandbox:
    repoint `origin` to the real upstream, checkout per-box branch
    `agentbox/<box-name>`, `git stash apply` carry-over, untar untracked.
 
-### 2.2 Per-agent credential volumes
+### 2.2 Agent state split: snapshot bake + credentials volume
 
-Daytona volumes (`agentbox-claude-config`, `agentbox-codex-config`,
-`agentbox-opencode-config`) are mounted at provision time and seeded once
-per org from the host's `~/.claude`, `~/.codex`, `~/.config/opencode`.
-Subsequent boxes find the `.agentbox-seeded-at` marker and skip the
-upload. Refresh is explicit via `agentbox daytona resync [--agent ...]`.
+Agent state lives in two distinct places:
 
-Key wrinkles around Daytona's FUSE-mounted volumes:
+**Static config** (plugins, skills, marketplaces, settings, `_claude.json`,
+codex `config.toml` + `prompts/`, opencode `config/`) is **layered into a
+published Daytona snapshot** at `agentbox prepare --provider daytona` time
+via the documented snapshot API — see `prepareDaytona` in
+`packages/sandbox-daytona/src/prepare.ts`. It builds an `Image` fluently
+(`Image.fromDockerfile(Dockerfile.box).addLocalFile(...).runCommands(...)`)
+and calls `daytona.snapshot.create({ name, image })`. Daytona handles the
+build + register in one server-side operation; the resulting snapshot
+already contains `/home/vscode/.claude/`, `/home/vscode/.codex/`, and
+`/home/vscode/.local/share/opencode/` populated from the host's filtered
+config. Subsequent boxes boot from this snapshot — no per-create extract.
 
-- `chmod` / `chown` / `utime` all EPERM. We pass
-  `--no-same-permissions --no-same-owner -m` to every `tar -xzf` that
-  lands inside a volume mount.
+**Renewable credentials** (`.credentials.json` for claude, `auth.json` for
+codex/opencode) live on a single per-org Daytona volume,
+`agentbox-credentials`, mounted three times via `subpath` at
+`/home/vscode/.agentbox-creds/{claude,codex,opencode}/`. The Dockerfile bakes
+three symlinks (`~/.claude/.credentials.json` → the cred volume path, etc.)
+so the agents find their tokens through the mount. `agentbox daytona resync
+[--agent ...]` re-uploads after a host re-auth; the snapshot stays untouched.
+
+Why split: Daytona's volumes are S3-backed FUSE mounts. Many-small-file
+writes serialize on per-file S3 round-trips, so extracting a 22 MB
+`~/.claude` (~2.5k files) into the volume took 10+ minutes empirically. The
+snapshot is regular ext4 — bulk writes complete in seconds. The credentials
+payload is tiny (handful of KB) so the FUSE penalty is irrelevant there.
+
+Key wrinkles around Daytona's FUSE-mounted volumes (still relevant for the
+credentials extract path):
+
+- `chmod` / `chown` / `utime` all EPERM. The credentials extract uses
+  `tar -xzf` into a local-fs staging dir followed by `cp -r` into the mount
+  (plain `cp`, no `-p`, doesn't call chmod/utime).
 - `rename(2)` returns ENOSYS. We use `cp -f` + `rm -f` instead.
 - `symlink(2)` returns EPERM. Host-side staging uses `rsync -L` to
   dereference symlinks before tar.
 - macOS `bsdtar` emits `._<name>` AppleDouble sidecars unless
   `COPYFILE_DISABLE=1` is set on the tar exec. We set it everywhere.
+
+**Migration note**: the legacy per-agent volumes (`agentbox-claude-config`,
+`agentbox-codex-config`, `agentbox-opencode-config`) are abandoned. Delete
+them via the Daytona dashboard if you want to reclaim the space. Anyone who
+published a snapshot before the static-bake change must re-run
+`agentbox prepare --provider daytona` to capture the baked content. Run
+`agentbox prepare` (no args) to print the current inventory of base images,
+snapshots, and shared volumes across both providers — including the legacy
+per-agent volumes (`agentbox-{claude,codex,opencode}-config`) the daytona
+path no longer uses, as a visible reminder to clean them up.
 
 ### 2.3 Comms: the bridge relay
 

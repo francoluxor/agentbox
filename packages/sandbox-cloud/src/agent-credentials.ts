@@ -1,24 +1,35 @@
 /**
- * Seed Claude / Codex / OpenCode credentials into a cloud sandbox via a
- * per-agent shared volume. Mirrors the Docker provider's host->volume rsync
- * model: the host's `~/.claude` / `~/.codex` / `~/.config/opencode` (+
- * `~/.local/share/opencode`) is the source of truth; on first cloud box per
- * host/org we stage a filtered tarball, upload via `backend.uploadFile`, and
- * extract into the mounted volume. A `.agentbox-seeded-at` marker in the
- * volume records the timestamp so subsequent boxes skip the upload.
+ * Cloud-provider **credentials volume** management — the per-create half of
+ * the agent state split. The other half (static config: plugins, skills,
+ * settings, marketplaces, codex `config.toml`, opencode `config/`) is
+ * layered into the published Daytona snapshot at
+ * `agentbox prepare --provider daytona` time via the documented
+ * `daytona.snapshot.create({ name, image })` API + `Image.fromDockerfile(...)
+ * .addLocalFile(...).runCommands(...)` (see
+ * `packages/sandbox-daytona/src/prepare.ts`).
  *
- * Re-seeding is **explicit only** — vanilla `agentbox create` never overwrites
- * a seeded volume. The `agentbox resync` command (or the host login flow)
- * passes `force: true` to refresh after the user re-authenticates on the host.
+ * What lives here is the runtime side: credentials (`.credentials.json` for
+ * claude, `auth.json` for codex/opencode) live on a single per-org
+ * `agentbox-credentials` Daytona volume, mounted three times via `subpath`
+ * at `/home/vscode/.agentbox-creds/{claude,codex,opencode}/`. Symlinks
+ * baked into the box image route the agent-expected paths
+ * (`~/.claude/.credentials.json` etc.) through to the volume.
+ *
+ * `seedAgentVolumesIfFresh` runs at every `agentbox create --provider
+ * daytona`: it probes the per-agent marker file in the credentials volume
+ * and uploads a tiny credentials-only tarball when missing. Re-seeding is
+ * **explicit only** — vanilla create never overwrites credentials it
+ * already finds. `agentbox daytona resync` passes `force: true` to refresh
+ * after a host re-auth.
  */
 
 import {
-  CLAUDE_FORWARDED_ENV_KEYS,
-  CODEX_FORWARDED_ENV_KEYS,
-  OPENCODE_FORWARDED_ENV_KEYS,
-  stageClaudeForUpload,
-  stageCodexForUpload,
-  stageOpencodeForUpload,
+  stageClaudeStaticForUpload,
+  stageClaudeCredentialsForUpload,
+  stageCodexStaticForUpload,
+  stageCodexCredentialsForUpload,
+  stageOpencodeStaticForUpload,
+  stageOpencodeCredentialsForUpload,
   type StageResult,
 } from '@agentbox/sandbox-docker';
 import type { CloudBackend, CloudHandle, CloudVolumeMount } from '@agentbox/core';
@@ -27,48 +38,67 @@ import type { CloudBackend, CloudHandle, CloudVolumeMount } from '@agentbox/core
 export type CloudAgentKind = 'claude' | 'codex' | 'opencode';
 
 /**
- * Per-agent metadata: the canonical Daytona volume name we use, the in-box
- * absolute mount path, and the staging function. The volume names match the
- * Docker shared-volume names so users running both providers can mentally
- * map docker volume → daytona volume.
- *
- * NB: the volume names are deliberately *the same* as the Docker
- * `SHARED_CLAUDE_VOLUME` / `SHARED_CODEX_VOLUME` / `SHARED_OPENCODE_VOLUME`
- * — they live in disjoint namespaces (Docker engine vs Daytona org-scoped
- * volume registry), so the collision is by design.
+ * Single per-org volume that holds all three agents' credentials. Mounted
+ * three times via `subpath` so each agent's tokens get their own dir without
+ * the volumes-API churn of registering three separate volumes.
+ */
+const CREDENTIALS_VOLUME = 'agentbox-credentials';
+
+/**
+ * Per-agent metadata. `staticMountPath` is where the snapshot-baked static
+ * config lives in the sandbox FS; `credentialsMountPath` is where the
+ * credentials volume's per-agent subpath gets attached at runtime.
+ * `credentialsSubpath` is the subdir inside the shared volume.
  */
 interface AgentSpec {
   kind: CloudAgentKind;
-  volumeName: string;
-  mountPath: string;
-  stage: (opts: { hostWorkspace?: string }) => Promise<StageResult>;
+  /** Where stage*Static tarballs extract (sandbox FS, snapshot-captured). */
+  staticMountPath: string;
+  /** Where the credentials-volume subpath gets mounted at runtime. */
+  credentialsMountPath: string;
+  /** Subdir of the shared credentials volume for this agent. */
+  credentialsSubpath: string;
+  stageStatic: (opts: { hostWorkspace?: string }) => Promise<StageResult>;
+  stageCredentials: () => Promise<StageResult>;
 }
 
 const AGENT_SPECS: AgentSpec[] = [
   {
     kind: 'claude',
-    volumeName: 'agentbox-claude-config',
-    mountPath: '/home/vscode/.claude',
-    stage: (opts) => stageClaudeForUpload({ hostWorkspace: opts.hostWorkspace }),
+    staticMountPath: '/home/vscode/.claude',
+    credentialsMountPath: '/home/vscode/.agentbox-creds/claude',
+    credentialsSubpath: 'claude/',
+    stageStatic: (opts) => stageClaudeStaticForUpload({ hostWorkspace: opts.hostWorkspace }),
+    stageCredentials: () => stageClaudeCredentialsForUpload(),
   },
   {
     kind: 'codex',
-    volumeName: 'agentbox-codex-config',
-    mountPath: '/home/vscode/.codex',
-    // codex has no workspace-aliased state.
-    stage: () => stageCodexForUpload(),
+    staticMountPath: '/home/vscode/.codex',
+    credentialsMountPath: '/home/vscode/.agentbox-creds/codex',
+    credentialsSubpath: 'codex/',
+    stageStatic: () => stageCodexStaticForUpload(),
+    stageCredentials: () => stageCodexCredentialsForUpload(),
   },
   {
     kind: 'opencode',
-    volumeName: 'agentbox-opencode-config',
-    mountPath: '/home/vscode/.local/share/opencode',
-    stage: () => stageOpencodeForUpload(),
+    staticMountPath: '/home/vscode/.local/share/opencode',
+    credentialsMountPath: '/home/vscode/.agentbox-creds/opencode',
+    credentialsSubpath: 'opencode/',
+    stageStatic: () => stageOpencodeStaticForUpload(),
+    stageCredentials: () => stageOpencodeCredentialsForUpload(),
   },
 ];
 
+import {
+  CLAUDE_FORWARDED_ENV_KEYS,
+  CODEX_FORWARDED_ENV_KEYS,
+  OPENCODE_FORWARDED_ENV_KEYS,
+} from '@agentbox/sandbox-docker';
+
 /**
- * Marker filename inside each agent's mount path that records when we last
- * seeded the volume from the host. Single ISO-8601 timestamp on disk.
+ * Marker filename inside each agent's credentials subpath that records when
+ * we last seeded the credentials. Single ISO-8601 timestamp on disk. Absent
+ * marker = first time → upload.
  */
 const SEED_MARKER = '.agentbox-seeded-at';
 
@@ -77,26 +107,27 @@ export interface EnsureAgentVolumesResult {
   /** Volume mounts ready for `CloudProvisionRequest.volumes`. */
   mounts: CloudVolumeMount[];
   /**
-   * Env vars to merge into the sandbox env at provision time. Currently:
+   * Env vars to merge into the sandbox env at provision time. Includes
    * `OPENCODE_CONFIG_DIR` (so the in-box opencode reads its config from the
-   * `config/` subdir of the mounted volume rather than `~/.config/opencode`).
+   * snapshot-baked `config/` subdir of its data dir) and any forwarded
+   * provider API keys present in the host env.
    */
   env: Record<string, string>;
   /**
-   * The agents we ensured volumes for. Pass this back into
+   * Agents we successfully reserved credentials mounts for. Pass back into
    * `seedAgentVolumesIfFresh` so it doesn't redo the kind list.
    */
   agents: CloudAgentKind[];
 }
 
 /**
- * Ensure a Daytona (or other cloud backend) volume exists for each of the
- * three agents and return the list of `{ volumeId, mountPath }` ready to
- * thread into `CloudProvisionRequest.volumes`. Backends that don't implement
- * `ensureVolume` get an empty mount list (and a one-line log).
+ * Reserve the shared `agentbox-credentials` volume and return three subpath
+ * mounts ready to thread into `CloudProvisionRequest.volumes`. Backends that
+ * don't implement `ensureVolume` get an empty mount list (and a one-line log)
+ * — the in-box agents fall back to interactive login.
  *
- * Idempotent: every call is a fast lookup for already-created volumes. Safe
- * to call on every `create`.
+ * Idempotent: every call is a fast lookup for the already-created volume.
+ * Safe to call on every `create`.
  */
 export async function ensureAgentVolumesForCloud(
   backend: CloudBackend,
@@ -107,37 +138,40 @@ export async function ensureAgentVolumesForCloud(
     log(
       `cloud backend '${backend.name}' has no volume primitive — agent credentials will not persist across boxes`,
     );
-    return { mounts: [], env: {}, agents: [] };
+    return { mounts: [], env: buildForwardedEnv([]), agents: [] };
   }
 
-  const mounts: CloudVolumeMount[] = [];
-  const agents: CloudAgentKind[] = [];
-  for (const spec of AGENT_SPECS) {
-    try {
-      const { volumeId } = await backend.ensureVolume(spec.volumeName);
-      mounts.push({ volumeId, mountPath: spec.mountPath });
-      agents.push(spec.kind);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log(`ensureVolume(${spec.volumeName}) failed (skipping): ${msg}`);
-    }
+  let volumeId: string;
+  try {
+    const ensured = await backend.ensureVolume(CREDENTIALS_VOLUME);
+    volumeId = ensured.volumeId;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`ensureVolume(${CREDENTIALS_VOLUME}) failed (skipping credentials seed): ${msg}`);
+    return { mounts: [], env: buildForwardedEnv([]), agents: [] };
   }
 
-  // The in-box opencode reads its config dir from $OPENCODE_CONFIG_DIR; the
-  // Docker provider points it at the volume's `config/` subdir (see
-  // buildOpencodeMounts), and we do the same here so the config files the
-  // host shipped in the opencode tarball are actually loaded.
+  const mounts: CloudVolumeMount[] = AGENT_SPECS.map((spec) => ({
+    volumeId,
+    mountPath: spec.credentialsMountPath,
+    subpath: spec.credentialsSubpath,
+  }));
+  const agents = AGENT_SPECS.map((s) => s.kind);
+  return { mounts, env: buildForwardedEnv(agents), agents };
+}
+
+function buildForwardedEnv(agents: CloudAgentKind[]): Record<string, string> {
   const env: Record<string, string> = {};
+  // OpenCode reads its config dir from $OPENCODE_CONFIG_DIR; the snapshot
+  // bake puts the config files at <data dir>/config/ to match what the
+  // Docker provider does (see buildOpencodeMounts).
   if (agents.includes('opencode')) {
     env['OPENCODE_CONFIG_DIR'] = '/home/vscode/.local/share/opencode/config';
   }
-  // Forward provider API keys from the host process env into the sandbox at
-  // provision time — same set the Docker provider forwards per-agent. For
-  // opencode users authenticated via env-var (ANTHROPIC_API_KEY etc.) rather
-  // than a stored auth.json, this is the only way the in-box agent finds its
-  // credentials. Claude / codex users on file-based OAuth don't need these,
-  // but a host that has them set should still propagate them so behavior
-  // matches the docker provider 1:1.
+  // Forward provider API keys from the host process env into the sandbox.
+  // For agents authenticated via env-var (ANTHROPIC_API_KEY etc.) rather
+  // than a stored auth file, this is the only way the in-box agent finds
+  // its credentials. Mirrors the Docker provider's per-agent forwarding.
   const forwardedKeys = new Set<string>([
     ...CLAUDE_FORWARDED_ENV_KEYS,
     ...CODEX_FORWARDED_ENV_KEYS,
@@ -147,8 +181,7 @@ export async function ensureAgentVolumesForCloud(
     const v = process.env[k];
     if (typeof v === 'string' && v.length > 0) env[k] = v;
   }
-
-  return { mounts, env, agents };
+  return env;
 }
 
 export interface SeedAgentVolumesOptions {
@@ -156,73 +189,70 @@ export interface SeedAgentVolumesOptions {
   agents?: CloudAgentKind[];
   /**
    * The host-absolute workspace path being mounted at `/workspace` inside
-   * the box. Threaded into `stageClaudeForUpload` so `_claude.json`'s
-   * `projects[<hostWorkspace>]` gets aliased to `projects['/workspace']`.
+   * the box. Currently unused by the credentials-only seed (no `_claude.json`
+   * involved), but kept on the interface for symmetry with the bake step
+   * and forward compat with future credential-side rewrites.
    */
   hostWorkspace?: string;
   /**
    * When true, ignore the in-volume seed marker and re-upload. Used by
-   * `agentbox resync` and by the host-login flow. Default: false (vanilla
-   * create never overwrites a seeded volume).
+   * `agentbox daytona resync` and by the host-login flow. Default: false
+   * (vanilla create never overwrites a seeded volume).
    */
   force?: boolean;
   onLog?: (line: string) => void;
 }
 
 /**
- * For each enabled agent: probe the in-volume `<mountPath>/.agentbox-seeded-at`
- * marker via `backend.exec`. If absent (or `force: true`), stage a filtered
- * tarball of the host's agent config, upload via `backend.uploadFile`, and
- * extract inside the sandbox.
+ * For each enabled agent: probe the credentials-subpath
+ * `<credentialsMountPath>/.agentbox-seeded-at` marker via `backend.exec`. If
+ * absent (or `force: true`), stage a credentials-only tarball, upload via
+ * `backend.uploadFile`, extract inside the sandbox into the credentials
+ * mount.
  *
  * Idempotent and safe to call on every `create`. Warnings from staging (e.g.
- * codex Keychain landmine) are forwarded via `onLog`.
+ * codex Keychain landmine) are forwarded via `onLog`. The payload is a
+ * single small file per agent, so the FUSE-volume pathology that plagues
+ * the static seed is irrelevant here.
  */
 export async function seedAgentVolumesIfFresh(
   backend: CloudBackend,
   handle: CloudHandle,
   opts: SeedAgentVolumesOptions = {},
 ): Promise<void> {
-  const log = opts.onLog ?? (() => {});
   const wanted = new Set<CloudAgentKind>(opts.agents ?? AGENT_SPECS.map((s) => s.kind));
   const specs = AGENT_SPECS.filter((s) => wanted.has(s.kind));
-
-  // Seed each enabled agent in parallel. The three uploads + extracts are
-  // independent (distinct volumes, distinct remote tar paths) — running them
-  // sequentially adds wall-time on a slow uplink without any safety benefit.
-  // Errors per agent are logged via `onLog` but never thrown: a failed seed
-  // mustn't take down the whole `create` (the in-box agent falls back to
-  // interactive login if its volume comes up empty).
-  await Promise.all(specs.map((spec) => seedOne(backend, handle, spec, opts, log)));
+  await Promise.all(specs.map((spec) => seedCredentialsOne(backend, handle, spec, opts)));
 }
 
-async function seedOne(
+async function seedCredentialsOne(
   backend: CloudBackend,
   handle: CloudHandle,
   spec: AgentSpec,
   opts: SeedAgentVolumesOptions,
-  log: (line: string) => void,
 ): Promise<void> {
+  const log = opts.onLog ?? (() => {});
+
   if (!opts.force) {
-    const probe = await backend.exec(handle, `test -f ${spec.mountPath}/${SEED_MARKER}`);
+    const probe = await backend.exec(
+      handle,
+      `test -f ${spec.credentialsMountPath}/${SEED_MARKER}`,
+    );
     if (probe.exitCode === 0) {
-      log(`${spec.kind}: volume already seeded — mounting only`);
+      log(`${spec.kind}: credentials already seeded — mounting only`);
       return;
     }
   }
 
-  log(`${spec.kind}: staging host config`);
-  const staged = await spec.stage({ hostWorkspace: opts.hostWorkspace });
+  log(`${spec.kind}: staging host credentials`);
+  const staged = await spec.stageCredentials();
   for (const w of staged.warnings) log(w);
   try {
     if (staged.tarballPath === null) {
-      log(`${spec.kind}: nothing to seed`);
+      log(`${spec.kind}: no credentials to seed`);
       return;
     }
 
-    // Diagnostic: tarball size and timing land on stderr so a non-TTY caller
-    // can still see real progress (clack's spinner is TTY-only and otherwise
-    // swallows the per-step messages).
     let tarSize = 0;
     try {
       const { statSync } = await import('node:fs');
@@ -230,63 +260,42 @@ async function seedOne(
     } catch {
       /* best-effort */
     }
-    const sizeMB = (tarSize / 1024 / 1024).toFixed(2);
-    log(`${spec.kind}: uploading ${sizeMB} MB tarball`);
-    process.stderr.write(`[agent-creds] ${spec.kind}: uploading ${sizeMB} MB...\n`);
+    const sizeKB = (tarSize / 1024).toFixed(1);
+    log(`${spec.kind}: uploading ${sizeKB} KB credentials tarball`);
+    process.stderr.write(`[agent-creds] ${spec.kind}: uploading ${sizeKB} KB...\n`);
     const t0 = Date.now();
-    const remoteTar = `/tmp/agentbox-${spec.kind}-seed.tar.gz`;
+    const remoteTar = `/tmp/agentbox-${spec.kind}-creds.tar.gz`;
     await backend.uploadFile(handle, staged.tarballPath, remoteTar);
     const upDt = ((Date.now() - t0) / 1000).toFixed(1);
     process.stderr.write(`[agent-creds] ${spec.kind}: upload done in ${upDt}s\n`);
-    log(`${spec.kind}: upload done in ${upDt}s`);
 
-    // Daytona's volumes are S3-backed FUSE mounts that reject chmod/utime.
-    // tar's `--no-same-permissions` / `--no-same-owner` only affect *which*
-    // mode/owner is restored — tar still calls chmod on every directory it
-    // creates during the delayed-set-stat pass, so extracting straight into
-    // the mount aborts with "./<dir>: Cannot change mode … Operation not
-    // permitted".
-    //
-    // Two-step instead: tar into a local-fs staging dir (chmod works there),
-    // then `cp -r` the contents into the mount. Plain `cp` (no `-p`, no
-    // `--preserve`) creates files/dirs via `open(O_CREAT, mode)` / `mkdir`
-    // and never calls chmod/utime, so the FUSE rejection never trips. UID
-    // defaults to the exec user (uid 1000 on the agentbox image), so no
-    // chown is needed — which would also fail on the FUSE mount.
-    const stageDir = `/tmp/agentbox-seed-${spec.kind}`;
+    // Daytona volumes are S3-backed FUSE and reject chmod/utime. The
+    // credentials payload is one small file, so we extract straight into
+    // the mount with `cp` (not tar — tar would chmod the parent dir during
+    // delayed-set-stat and abort with EPERM). Two-step: tar into a local-fs
+    // staging dir, then cp the file across.
+    const stageDir = `/tmp/agentbox-creds-stage-${spec.kind}`;
     const extractCmd =
       `set -e; ` +
       `rm -rf ${stageDir}; ` +
       `mkdir -p ${stageDir}; ` +
       `tar -xzf ${remoteTar} -C ${stageDir}; ` +
-      `cp -r ${stageDir}/. ${spec.mountPath}/; ` +
+      `cp -r ${stageDir}/. ${spec.credentialsMountPath}/; ` +
       `rm -rf ${stageDir}; ` +
-      `date -u +%FT%TZ > ${spec.mountPath}/${SEED_MARKER}; ` +
+      `date -u +%FT%TZ > ${spec.credentialsMountPath}/${SEED_MARKER}; ` +
       `rm -f ${remoteTar}`;
-    // Daytona's S3-backed FUSE volumes make per-small-file cp very slow — the
-    // claude tarball (plugins/skills/many JSONs) regularly takes minutes to
-    // land. Stretch the per-attempt timeout so legit slow extracts complete.
-    //
-    // Disable retries: this pipeline is *not* safely idempotent under retry.
-    // If the SDK abandons attempt 1 on its 120s timeout, the in-box cp keeps
-    // running; a retry's `rm -rf ${stageDir}` then yanks files out from
-    // under the still-live cp, and two cps race writing to the same mount.
-    // Empirically, retries make the wedge worse, never better.
-    const extract = await backend.exec(handle, extractCmd, {
-      attemptTimeoutMs: 900_000,
-      noRetry: true,
-    });
+    const extract = await backend.exec(handle, extractCmd);
     if (extract.exitCode !== 0) {
       const msg =
-        `${spec.kind}: extract failed (exit ${String(extract.exitCode)}); ` +
+        `${spec.kind}: credentials extract failed (exit ${String(extract.exitCode)}); ` +
         `agent falls back to interactive login. ` +
         `stdout: ${extract.stdout.slice(-200)} stderr: ${extract.stderr.slice(-200)}`;
       log(msg);
       process.stderr.write(`[agent-creds] ${msg}\n`);
       return;
     }
-    log(`${spec.kind}: seeded ✓`);
-    process.stderr.write(`[agent-creds] ${spec.kind}: seeded\n`);
+    log(`${spec.kind}: credentials seeded ✓`);
+    process.stderr.write(`[agent-creds] ${spec.kind}: credentials seeded\n`);
   } finally {
     await staged.cleanup();
   }
@@ -294,16 +303,18 @@ async function seedOne(
 
 /**
  * Spec for a single agent — for callers that need the mount path or volume
- * name outside the create flow (e.g. `agentbox resync`).
+ * name outside the create flow.
  */
 export function agentSpecsForCloud(): Array<{
   kind: CloudAgentKind;
-  volumeName: string;
-  mountPath: string;
+  staticMountPath: string;
+  credentialsMountPath: string;
+  credentialsSubpath: string;
 }> {
   return AGENT_SPECS.map((s) => ({
     kind: s.kind,
-    volumeName: s.volumeName,
-    mountPath: s.mountPath,
+    staticMountPath: s.staticMountPath,
+    credentialsMountPath: s.credentialsMountPath,
+    credentialsSubpath: s.credentialsSubpath,
   }));
 }

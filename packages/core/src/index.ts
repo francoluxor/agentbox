@@ -32,6 +32,8 @@ export type {
   ExecOptions,
   ExecResult,
   InspectedBox,
+  PrepareOptions,
+  PrepareResult,
   Provider,
   ProviderCheckpoint,
 } from './provider.js';

@@ -7,10 +7,16 @@
 import type { Provider } from '@agentbox/core';
 import { createCloudProvider } from '@agentbox/sandbox-cloud';
 import { daytonaBackend, DEFAULT_BOX_IMAGE_REF } from './backend.js';
+import { prepareDaytona } from './prepare.js';
 
-export const daytonaProvider: Provider = createCloudProvider(daytonaBackend, {
+const cloudProvider = createCloudProvider(daytonaBackend, {
   defaultResources: { cpu: 2, memory: 4, disk: 8 },
 });
+
+export const daytonaProvider: Provider = {
+  ...cloudProvider,
+  prepare: prepareDaytona,
+};
 
 export { daytonaBackend, DEFAULT_BOX_IMAGE_REF };
 export { resolveDockerfileContext, type DockerfileContext } from './dockerfile-context.js';
@@ -21,3 +27,9 @@ export { ensureDaytonaEnvLoaded } from './env-loader.js';
 // lives at the `./cli` subpath export.
 export { ensureDaytonaCredentials } from './credentials.js';
 export type { EnsureDaytonaCredentialsOptions } from './credentials.js';
+export {
+  getDaytonaStatus,
+  type DaytonaStatus,
+  type DaytonaSnapshotSummary,
+  type DaytonaVolumeSummary,
+} from './status.js';

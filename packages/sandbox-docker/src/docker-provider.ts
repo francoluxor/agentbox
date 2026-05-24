@@ -14,6 +14,8 @@ import type {
   ExecOptions,
   ExecResult,
   InspectedBox,
+  PrepareOptions,
+  PrepareResult,
   Provider,
 } from '@agentbox/core';
 import { createBox, type CreateBoxOptions } from './create.js';
@@ -22,6 +24,7 @@ import { execInBox, inspectContainerStatus } from './docker.js';
 import { boxResourceStats } from './stats.js';
 import { detectEngine } from './host-export.js';
 import { portlessGetUrl } from './portless.js';
+import { DEFAULT_BOX_IMAGE, buildImage, imageExists } from './image.js';
 
 /**
  * Docker-specific knobs the CLI passes through `CreateBoxRequest.providerOptions`.
@@ -141,5 +144,22 @@ export const dockerProvider: Provider = {
       );
     }
     return `http://127.0.0.1:${String(box.webHostPort)}`;
+  },
+
+  async prepare(opts: PrepareOptions): Promise<PrepareResult> {
+    // Docker uses the rsync-into-named-volume flow at create time, so the
+    // base image stays generic — no agent-config layering. `prepare` here is
+    // just an explicit handle on the build step `agentbox create` does
+    // lazily on first use. Idempotent: skip if the image is already built
+    // unless force.
+    const ref = DEFAULT_BOX_IMAGE;
+    if (!opts.force && (await imageExists(ref))) {
+      opts.onLog?.(`docker image ${ref} already built — skipping (use --force to rebuild)`);
+      return {};
+    }
+    opts.onLog?.(`building docker image ${ref}…`);
+    await buildImage({ ref, onProgress: opts.onLog });
+    opts.onLog?.(`docker image ${ref} built`);
+    return {};
   },
 };

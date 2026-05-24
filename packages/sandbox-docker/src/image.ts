@@ -47,6 +47,40 @@ export async function imageExists(ref: string): Promise<boolean> {
   return result.exitCode === 0;
 }
 
+export interface ImageInfo {
+  /** Image ref (e.g. `agentbox/box:dev`). */
+  ref: string;
+  /** True when the engine has the image locally. */
+  exists: boolean;
+  /** Image size in bytes, when known. */
+  sizeBytes?: number;
+  /** ISO-8601 creation time, when known. */
+  createdAt?: string;
+}
+
+/**
+ * Read-only inspect of a Docker image. Used by `agentbox prepare` (no-args
+ * status mode) to surface base-image state. Never throws — returns
+ * `{ exists: false }` on any error so the status command works even when
+ * the docker daemon is unreachable.
+ */
+export async function imageInfo(ref: string = DEFAULT_BOX_IMAGE): Promise<ImageInfo> {
+  const result = await execa(
+    'docker',
+    ['image', 'inspect', '--format', '{{.Size}}|{{.Created}}', ref],
+    { reject: false },
+  );
+  if (result.exitCode !== 0) return { ref, exists: false };
+  const [sizeStr, createdAt] = result.stdout.trim().split('|');
+  const sizeBytes = sizeStr ? Number.parseInt(sizeStr, 10) : NaN;
+  return {
+    ref,
+    exists: true,
+    sizeBytes: Number.isFinite(sizeBytes) ? sizeBytes : undefined,
+    createdAt: createdAt && createdAt.length > 0 ? createdAt : undefined,
+  };
+}
+
 export interface BuildImageOptions {
   ref?: string;
   dockerfile?: string;

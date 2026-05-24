@@ -19,6 +19,7 @@ import { openCommand } from '../src/commands/open.js';
 import { urlCommand } from '../src/commands/url.js';
 import { screenCommand } from '../src/commands/screen.js';
 import { pauseCommand } from '../src/commands/pause.js';
+import { prepareCommand } from '../src/commands/prepare.js';
 import { pruneCommand } from '../src/commands/prune.js';
 import { relayCommand } from '../src/commands/relay.js';
 import { shellCommand } from '../src/commands/shell.js';
@@ -58,6 +59,7 @@ function buildProgram(): Command {
     stopCommand,
     startCommand,
     destroyCommand,
+    prepareCommand,
     pruneCommand,
     checkpointCommand,
     configCommand,

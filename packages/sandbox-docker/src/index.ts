@@ -126,7 +126,14 @@ export {
   type SeedWorkspaceOptions,
   type WorktreeBindSpec,
 } from './in-box-git.js';
-export { DEFAULT_BOX_IMAGE, ensureImage } from './image.js';
+export {
+  DEFAULT_BOX_IMAGE,
+  ensureImage,
+  imageExists,
+  imageInfo,
+  type ImageInfo,
+} from './image.js';
+export { volumeExists } from './docker.js';
 export {
   clearRelayNotice,
   DEFAULT_RELAY_PORT,
@@ -148,9 +155,12 @@ export {
   type StopRelayResult,
 } from './relay.js';
 export {
-  stageClaudeForUpload,
-  stageCodexForUpload,
-  stageOpencodeForUpload,
+  stageClaudeStaticForUpload,
+  stageClaudeCredentialsForUpload,
+  stageCodexStaticForUpload,
+  stageCodexCredentialsForUpload,
+  stageOpencodeStaticForUpload,
+  stageOpencodeCredentialsForUpload,
   type StageClaudeOptions,
   type StageCodexOptions,
   type StageOpencodeOptions,

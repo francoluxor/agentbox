@@ -10,7 +10,10 @@ import type {
   CloudState,
 } from '@agentbox/core';
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
-import { seedAgentVolumesIfFresh, ensureAgentVolumesForCloud } from '../src/agent-credentials.js';
+import {
+  ensureAgentVolumesForCloud,
+  seedAgentVolumesIfFresh,
+} from '../src/agent-credentials.js';
 
 interface ExecCall {
   cmd: string;
@@ -22,7 +25,7 @@ interface UploadCall {
 }
 
 function makeMockBackend(opts: {
-  /** Map of seed-marker paths that the mock pretends already exist. */
+  /** Seed-marker paths that the mock pretends already exist. */
   existingMarkers?: Set<string>;
   /** Volume ids returned from ensureVolume, keyed by name. */
   volumeIds?: Map<string, string>;
@@ -58,15 +61,12 @@ function makeMockBackend(opts: {
     },
     async exec(_h, cmd: string): Promise<CloudExecResult> {
       execCalls.push({ cmd });
-      // Marker-probe shape: `test -f <mountPath>/<marker>`. Return 0 when we
-      // pretend the marker exists, 1 otherwise.
       const m = /^test -f (.+\/\.agentbox-seeded-at)$/.exec(cmd);
       if (m) {
         return existing.has(m[1]!)
           ? { exitCode: 0, stdout: '', stderr: '' }
           : { exitCode: 1, stdout: '', stderr: '' };
       }
-      // Treat every other exec (the seed install script) as a success.
       return { exitCode: 0, stdout: '', stderr: '' };
     },
     async uploadFile(_h, localPath: string, remotePath: string): Promise<void> {
@@ -88,38 +88,43 @@ function makeMockBackend(opts: {
 }
 
 describe('ensureAgentVolumesForCloud', () => {
-  it('returns three mount specs and OPENCODE_CONFIG_DIR when backend has volumes', async () => {
+  it('returns three subpath mounts of the shared credentials volume', async () => {
     const { backend } = makeMockBackend({});
     const res = await ensureAgentVolumesForCloud(backend);
     expect(res.agents).toEqual(['claude', 'codex', 'opencode']);
     expect(res.mounts).toHaveLength(3);
-    expect(res.mounts.map((m) => m.mountPath)).toContain('/home/vscode/.claude');
-    expect(res.mounts.map((m) => m.mountPath)).toContain('/home/vscode/.codex');
-    expect(res.mounts.map((m) => m.mountPath)).toContain(
-      '/home/vscode/.local/share/opencode',
-    );
+
+    // All three mounts share the same volumeId (single shared volume).
+    const volumeIds = new Set(res.mounts.map((m) => m.volumeId));
+    expect(volumeIds.size).toBe(1);
+    expect([...volumeIds][0]).toBe('mock-agentbox-credentials');
+
+    // Each mount targets the per-agent cred dir with the expected subpath.
+    const byPath = new Map(res.mounts.map((m) => [m.mountPath, m] as const));
+    expect(byPath.get('/home/vscode/.agentbox-creds/claude')?.subpath).toBe('claude/');
+    expect(byPath.get('/home/vscode/.agentbox-creds/codex')?.subpath).toBe('codex/');
+    expect(byPath.get('/home/vscode/.agentbox-creds/opencode')?.subpath).toBe('opencode/');
+
     expect(res.env['OPENCODE_CONFIG_DIR']).toBe('/home/vscode/.local/share/opencode/config');
   });
 
   it('returns empty mounts when backend has no volume primitive', async () => {
     const { backend } = makeMockBackend({});
-    // Remove ensureVolume to simulate a backend without volumes.
     delete (backend as { ensureVolume?: unknown }).ensureVolume;
     const logs: string[] = [];
     const res = await ensureAgentVolumesForCloud(backend, { onLog: (l) => logs.push(l) });
     expect(res.mounts).toEqual([]);
     expect(res.agents).toEqual([]);
-    expect(res.env).toEqual({});
+    // Forwarded env keys still get included when any host env var is set; only
+    // OPENCODE_CONFIG_DIR (gated on opencode being in the agents list) is
+    // unconditionally absent.
+    expect(res.env['OPENCODE_CONFIG_DIR']).toBeUndefined();
     expect(logs.some((l) => l.includes('has no volume primitive'))).toBe(true);
   });
 });
 
-describe('seedAgentVolumesIfFresh', () => {
-  // Use a fake HOME so the stage* helpers see no ~/.claude / ~/.codex /
-  // ~/.local/share/opencode and short-circuit to "nothing to stage". This
-  // keeps the test hermetic: we're verifying the marker-check + dispatch
-  // logic, not the staging mechanics (which need real rsync/tar and are
-  // covered by manual e2e).
+describe('seedAgentVolumesIfFresh (credentials-only)', () => {
+  // Fake HOME with no agent dirs → stage* helpers return null tarballPath.
   let fakeHome: string;
   const originalHome = process.env['HOME'];
 
@@ -134,63 +139,63 @@ describe('seedAgentVolumesIfFresh', () => {
     await rm(fakeHome, { recursive: true, force: true });
   });
 
-  it('skips agents whose marker already exists in the volume', async () => {
+  it('skips agents whose credentials marker already exists', async () => {
     const { backend, uploadCalls, execCalls } = makeMockBackend({
       existingMarkers: new Set([
-        '/home/vscode/.claude/.agentbox-seeded-at',
-        '/home/vscode/.codex/.agentbox-seeded-at',
-        '/home/vscode/.local/share/opencode/.agentbox-seeded-at',
+        '/home/vscode/.agentbox-creds/claude/.agentbox-seeded-at',
+        '/home/vscode/.agentbox-creds/codex/.agentbox-seeded-at',
+        '/home/vscode/.agentbox-creds/opencode/.agentbox-seeded-at',
       ]),
     });
     const logs: string[] = [];
     await seedAgentVolumesIfFresh(backend, { sandboxId: 's' }, {
       onLog: (l) => logs.push(l),
     });
-    // No uploads, three marker-probe execs.
     expect(uploadCalls).toEqual([]);
     expect(execCalls.filter((c) => c.cmd.startsWith('test -f ')).length).toBe(3);
-    // No extract execs (which use 'tar -xzf' or 'set -e').
     expect(execCalls.some((c) => c.cmd.includes('tar -xzf'))).toBe(false);
-    expect(logs.every((l) => l.includes('already seeded') || l.includes('mounting only'))).toBe(
-      true,
-    );
+    expect(
+      logs.every((l) => l.includes('already seeded') || l.includes('mounting only')),
+    ).toBe(true);
   });
 
-  it('does not upload when host has no agent state to stage', async () => {
-    // fakeHome contains no ~/.claude / ~/.codex / opencode dirs, so the stage
-    // helpers return null tarballPath. Markers are absent so the code reaches
-    // the staging step, but staging short-circuits.
+  // Tests below pass `agents: ['codex', 'opencode']` to exclude claude — the
+  // claude credentials stage reads from `~/.agentbox/claude-credentials.json`
+  // via STATE_DIR which is captured at module-load time, before the
+  // beforeAll() hook can redirect HOME. Excluding claude keeps the dispatch
+  // tests hermetic.
+
+  it('does not upload when host has no credentials to stage (codex/opencode)', async () => {
     const { backend, uploadCalls } = makeMockBackend({});
-    await seedAgentVolumesIfFresh(backend, { sandboxId: 's' });
+    await seedAgentVolumesIfFresh(backend, { sandboxId: 's' }, {
+      agents: ['codex', 'opencode'],
+    });
     expect(uploadCalls).toEqual([]);
   });
 
-  it('attempts upload + extract when marker absent and host has codex state with auth.json', async () => {
-    // Materialize a tiny ~/.codex/auth.json on the fake HOME so
-    // stageCodexForUpload produces a real tarball. The mock exec returns 0
-    // for the install script, so we should see exactly one upload + one
-    // tar-extract exec for codex (and zero for claude/opencode because their
-    // host dirs don't exist).
+  it('uploads codex auth.json + extracts into the codex cred dir when marker absent', async () => {
     const codexDir = join(fakeHome, '.codex');
     await mkdir(codexDir, { recursive: true });
     await writeFile(join(codexDir, 'auth.json'), '{"token":"redacted"}\n');
+    // config.toml is static content — should NOT trigger a credentials seed.
     await writeFile(join(codexDir, 'config.toml'), 'model = "gpt-5"\n');
 
     const { backend, uploadCalls, execCalls } = makeMockBackend({});
-    await seedAgentVolumesIfFresh(backend, { sandboxId: 's' });
+    await seedAgentVolumesIfFresh(backend, { sandboxId: 's' }, {
+      agents: ['codex', 'opencode'],
+    });
+
     expect(uploadCalls).toHaveLength(1);
-    expect(uploadCalls[0]!.remotePath).toBe('/tmp/agentbox-codex-seed.tar.gz');
-    // The install command for codex extracts into /home/vscode/.codex.
+    expect(uploadCalls[0]!.remotePath).toBe('/tmp/agentbox-codex-creds.tar.gz');
     expect(
       execCalls.some(
-        (c) => c.cmd.includes('tar -xzf') && c.cmd.includes('/home/vscode/.codex'),
+        (c) =>
+          c.cmd.includes('tar -xzf') &&
+          c.cmd.includes('/home/vscode/.agentbox-creds/codex'),
       ),
     ).toBe(true);
-    // No upload for the other two agents (no host state).
-    expect(uploadCalls.some((c) => c.remotePath.includes('claude'))).toBe(false);
     expect(uploadCalls.some((c) => c.remotePath.includes('opencode'))).toBe(false);
 
-    // Cleanup the codex dir before the next test so it doesn't leak.
     await rm(codexDir, { recursive: true, force: true });
   });
 
@@ -198,11 +203,14 @@ describe('seedAgentVolumesIfFresh', () => {
     const codexDir = join(fakeHome, '.codex');
     await mkdir(codexDir, { recursive: true });
     await writeFile(join(codexDir, 'config.toml'), 'model = "gpt-5"\n');
-    // intentionally NO auth.json — simulates the macOS Keychain default.
+    // intentionally NO auth.json
 
     const { backend, uploadCalls } = makeMockBackend({});
     const logs: string[] = [];
-    await seedAgentVolumesIfFresh(backend, { sandboxId: 's' }, { onLog: (l) => logs.push(l) });
+    await seedAgentVolumesIfFresh(backend, { sandboxId: 's' }, {
+      agents: ['codex', 'opencode'],
+      onLog: (l) => logs.push(l),
+    });
     expect(uploadCalls.some((c) => c.remotePath.includes('codex'))).toBe(false);
     expect(
       logs.some((l) => /auth\.json missing|cli_auth_credentials_store/i.test(l)),
@@ -211,3 +219,4 @@ describe('seedAgentVolumesIfFresh', () => {
     await rm(codexDir, { recursive: true, force: true });
   });
 });
+

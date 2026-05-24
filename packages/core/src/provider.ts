@@ -104,6 +104,50 @@ export interface ProviderCheckpoint {
   remove(projectRoot: string, ref: string): Promise<void>;
 }
 
+/**
+ * Options for `Provider.prepare` — the provider-neutral "bake the base image"
+ * step (`agentbox prepare --provider <name>`). Each provider interprets these
+ * within its own image-build primitive; common to all is "this is the one-time
+ * setup that lets subsequent `create`s skip the slow build path".
+ */
+export interface PrepareOptions {
+  /**
+   * User-facing snapshot/image name. Providers may default this (e.g. the
+   * daytona provider uses `agentbox-base-<timestamp>` when omitted). Docker
+   * ignores it — the local image tag is hard-coded.
+   */
+  name?: string;
+  /**
+   * Host-absolute workspace path being prepared for. Threaded into
+   * `stageClaudeStaticForUpload`'s `_claude.json` rewrite so the baked
+   * snapshot's `projects[<hostWorkspace>]` aliases to `projects['/workspace']`.
+   * Defaults to `process.cwd()` in the CLI entry.
+   */
+  hostWorkspace?: string;
+  /**
+   * When true, rebuild even if an existing prepared image/snapshot is
+   * detected. Docker's prepare is otherwise idempotent (skips when
+   * `imageExists('agentbox/box:dev')`); daytona always builds a fresh
+   * snapshot under a new name when not given one.
+   */
+  force?: boolean;
+  /**
+   * Progress sink for the build-side log stream (Docker BuildKit output,
+   * Daytona's `onLogs` chunks). Wired to the CLI spinner / latest.log.
+   */
+  onLog?: (line: string) => void;
+}
+
+/** Result of `Provider.prepare`. */
+export interface PrepareResult {
+  /**
+   * For providers that produce a named snapshot the user should pin via
+   * `box.image: <name>`, this is the registered name. Docker leaves it
+   * undefined (the local image tag isn't config-pinned).
+   */
+  snapshotName?: string;
+}
+
 export interface Provider {
   readonly name: ProviderName;
 
@@ -156,4 +200,12 @@ export interface Provider {
    */
   downloadDirContents?(box: BoxRecord, boxSrc: string, hostDst: string): Promise<{ finalPath: string }>;
   checkpoint?: ProviderCheckpoint;
+  /**
+   * One-time "build the base image" hook for `agentbox prepare --provider`.
+   * Docker builds the local Dockerfile.box image; daytona builds a layered
+   * Image (Dockerfile.box + host agent static config) and registers it as a
+   * named snapshot. Optional — providers without an image-build primitive
+   * omit it and the CLI surfaces a clear "prepare not supported" error.
+   */
+  prepare?(opts: PrepareOptions): Promise<PrepareResult>;
 }
