@@ -33,6 +33,7 @@ import {
 } from '@agentbox/sandbox-docker';
 import { Command } from 'commander';
 import { resolveBoxOrExit, resolveBoxOrShift } from '../box-ref.js';
+import { submitQueueJob } from '../lib/queue/submit.js';
 import {
   ATTACH_IN_HELP,
   INLINE_HELP,
@@ -53,6 +54,35 @@ import { handleLifecycleError } from './_errors.js';
 /** Ref shown in the detach notice: the per-project index `n` when set, else the name. */
 function reattachRef(r: { projectIndex?: number; name: string }): string {
   return typeof r.projectIndex === 'number' ? String(r.projectIndex) : r.name;
+}
+
+function parseMaxRunningOption(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`--max-running: expected a positive integer, got "${raw}"`);
+  }
+  return n;
+}
+
+function pickCodexCreateOpts(opts: CodexCreateOptions): import('@agentbox/relay').QueueJobCreateOpts {
+  return {
+    workspace: opts.workspace,
+    name: opts.name,
+    hostSnapshot: opts.hostSnapshot,
+    snapshot: opts.snapshot,
+    image: opts.image,
+    withPlaywright: opts.withPlaywright,
+    withEnv: opts.withEnv,
+    vnc: opts.vnc,
+    sharedDockerCache: opts.sharedDockerCache,
+    portless: opts.portless,
+    sessionName: opts.sessionName,
+    memory: opts.memory,
+    cpus: opts.cpus,
+    pidsLimit: opts.pidsLimit,
+    disk: opts.disk,
+  };
 }
 
 /** Host-side URL for the relay (loopback for the wrapper's SSE subscription). */
@@ -120,10 +150,14 @@ interface CodexCreateOptions {
   verbose?: boolean;
   /** Raw `--attach-in <mode>` value; validated by `parseAttachInOption`. */
   attachIn?: string;
-  /** -i / --inline: shortcut for `--attach-in same`. */
+  /** --inline: shortcut for `--attach-in same` (long-form only — `-i` is `--initial-prompt`). */
   inline?: boolean;
   /** Commander parses `-b, --no-attach` as `attach: false` (defaults true). */
   attach?: boolean;
+  /** `-i, --initial-prompt <text>`: seed codex with this user turn; runs in background. */
+  initialPrompt?: string;
+  /** Per-invocation override of `queue.maxConcurrent`. */
+  maxRunning?: string;
 }
 
 function buildCodexCliOverrides(opts: CodexCreateOptions): Partial<UserConfig> {
@@ -252,8 +286,16 @@ export const codexCommand = new Command('codex')
     'bypass the spinner and stream raw provider output to stderr. The same content always lands in ~/.agentbox/logs/codex.log.',
   )
   .option('--attach-in <mode>', ATTACH_IN_HELP)
-  .option('-i, --inline', INLINE_HELP)
+  .option('--inline', INLINE_HELP)
   .option('-b, --no-attach', NO_ATTACH_HELP)
+  .option(
+    '-i, --initial-prompt <text>',
+    'seed the codex session with this initial user turn and run in background (no attach). Jobs go through the host-wide queue (queue.maxConcurrent).',
+  )
+  .option(
+    '--max-running <n>',
+    'per-invocation override of queue.maxConcurrent; only honored when `-i` is set',
+  )
   .argument(
     '[codex-args...]',
     "extra args passed to codex inside the box; place after `--`, e.g. `agentbox codex -- -m gpt-5.4`",
@@ -278,6 +320,29 @@ export const codexCommand = new Command('codex')
         : providerDefault.length > 0
           ? providerDefault
           : undefined;
+
+    if (opts.initialPrompt && opts.initialPrompt.length > 0) {
+      if (isCloud) {
+        log.error('-i / --initial-prompt is currently docker-only (cloud sessions only start on attach).');
+        cmdLog.close();
+        process.exit(2);
+      }
+      const maxRunningOverride = parseMaxRunningOption(opts.maxRunning);
+      const result = await submitQueueJob({
+        agent: 'codex',
+        boxName: opts.name ?? '',
+        providerName,
+        prompt: opts.initialPrompt,
+        agentArgs: codexArgs,
+        createOpts: pickCodexCreateOpts(opts),
+        maxRunningOverride,
+      });
+      outro(
+        `job ${result.job.id} queued (${String(result.runningCount)}/${String(result.maxConcurrent)} running); log: ${result.job.logPath}`,
+      );
+      cmdLog.close();
+      return;
+    }
 
     if (isCloud) {
       const provider = await providerForCreate({ flag: opts.provider, config: cfg.effective });
