@@ -17,6 +17,7 @@ import { cpCommand } from './commands/cp.js';
 import { createCommand } from './commands/create.js';
 import { dashboardCommand } from './commands/dashboard.js';
 import { daytonaCommand } from '@agentbox/sandbox-daytona/cli';
+import { dockerCommand } from './commands/docker.js';
 import { hetznerCommand } from '@agentbox/sandbox-hetzner/cli';
 import { destroyCommand } from './commands/destroy.js';
 import { downloadCommand } from './commands/download.js';
@@ -37,6 +38,7 @@ import { unpauseCommand } from './commands/unpause.js';
 import { updateCommand } from './commands/update.js';
 import { urlCommand } from './commands/url.js';
 import { waitCommand } from './commands/wait.js';
+import { rewriteProviderPrefix } from './provider/argv-prefix.js';
 
 const program = new Command();
 
@@ -76,6 +78,7 @@ program.addCommand(configCommand);
 program.addCommand(relayCommand);
 program.addCommand(daytonaCommand);
 program.addCommand(hetznerCommand);
+program.addCommand(dockerCommand);
 program.addCommand(updateCommand);
 
 program.configureHelp({ visibleCommands: () => [] });
@@ -83,7 +86,7 @@ program.addHelpText('after', () => '\n' + buildGroupedHelp(program));
 
 await applyEngineOverrideAtStartup();
 
-program.parseAsync(process.argv).catch((err: unknown) => {
+program.parseAsync(rewriteProviderPrefix(process.argv)).catch((err: unknown) => {
   console.error(err);
   process.exit(1);
 });

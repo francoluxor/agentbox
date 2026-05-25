@@ -11,6 +11,8 @@ import { cpCommand } from '../src/commands/cp.js';
 import { createCommand } from '../src/commands/create.js';
 import { dashboardCommand } from '../src/commands/dashboard.js';
 import { daytonaCommand } from '@agentbox/sandbox-daytona/cli';
+import { dockerCommand } from '../src/commands/docker.js';
+import { hetznerCommand } from '@agentbox/sandbox-hetzner/cli';
 import { destroyCommand } from '../src/commands/destroy.js';
 import { downloadCommand } from '../src/commands/download.js';
 import { listCommand } from '../src/commands/list.js';
@@ -65,6 +67,8 @@ function buildProgram(): Command {
     configCommand,
     relayCommand,
     daytonaCommand,
+    hetznerCommand,
+    dockerCommand,
     updateCommand,
   ]) {
     program.addCommand(cmd);

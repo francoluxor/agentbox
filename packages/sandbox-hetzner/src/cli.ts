@@ -211,6 +211,8 @@ const firewallSub = new Command('firewall')
   .addCommand(firewallShowSub);
 
 export const hetznerCommand = new Command('hetzner')
-  .description('Hetzner Cloud VPS provider — credential and firewall management')
+  .description(
+    'Hetzner Cloud VPS provider — credentials, firewall, plus sugar for `--provider hetzner` (e.g. `agentbox hetzner create|claude|codex|opencode`)',
+  )
   .addCommand(loginSub, { isDefault: true })
   .addCommand(firewallSub);

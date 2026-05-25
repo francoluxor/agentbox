@@ -169,6 +169,8 @@ const resyncSub = new Command('resync')
 // (Dockerfile.box + addLocalFile + runCommands) — no sandbox involved.
 
 export const daytonaCommand = new Command('daytona')
-  .description('Daytona cloud-provider credential management')
+  .description(
+    'Daytona cloud provider — credentials, plus sugar for `--provider daytona` (e.g. `agentbox daytona create|claude|codex|opencode`)',
+  )
   .addCommand(loginSub, { isDefault: true })
   .addCommand(resyncSub);

@@ -3,6 +3,7 @@ import { checkpointCommand } from '../src/commands/checkpoint.js';
 import { claudeCommand } from '../src/commands/claude.js';
 import { createCommand } from '../src/commands/create.js';
 import { daytonaCommand } from '@agentbox/sandbox-daytona/cli';
+import { dockerCommand } from '../src/commands/docker.js';
 import { destroyCommand } from '../src/commands/destroy.js';
 import { statusCommand } from '../src/commands/status.js';
 import { runInspect } from '../src/commands/inspect.js';
@@ -98,6 +99,13 @@ describe('lifecycle CLI surface', () => {
     expect(subs).toContain('login');
     const login = daytonaCommand.commands.find((c) => c.name() === 'login')!;
     expect(login.options.map((o) => o.long)).toContain('--status');
+  });
+
+  it('docker is registered as a provider-prefix group (no real subcommands)', () => {
+    expect(dockerCommand.name()).toBe('docker');
+    expect(dockerCommand.commands).toHaveLength(0);
+    // description names the sugar so `agentbox docker --help` is self-documenting.
+    expect(dockerCommand.description()).toMatch(/--provider docker/);
   });
 
   it('checkpoint has ls (default) / create / set-default / rm subcommands, aliased as checkpoints', () => {
