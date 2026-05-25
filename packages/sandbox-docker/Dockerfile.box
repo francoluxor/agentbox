@@ -97,6 +97,13 @@ RUN setcap cap_net_bind_service=+ep "$(readlink -f "$(command -v node)")"
 RUN npm install -g corepack@latest \
     && corepack enable pnpm yarn
 
+# Pre-create the corepack download cache owned by `vscode`. Without this,
+# the first corepack-driven install (e.g. the setup wizard's verification
+# step) hits ENOENT on /home/vscode/.cache/node/corepack/v1 because nothing
+# else creates ~/.cache for the runtime user.
+RUN mkdir -p /home/vscode/.cache/node/corepack \
+    && chown -R vscode:vscode /home/vscode/.cache
+
 # Host repos are bind-mounted in at their identical absolute path (worktree
 # pointer files contain absolute paths to <main>/.git/worktrees/<name>, so both
 # sides have to resolve the same path), and the host owns those `.git/` dirs.

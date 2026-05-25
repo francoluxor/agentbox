@@ -122,6 +122,10 @@ npm install -g corepack@latest
 corepack enable pnpm yarn
 done_ "corepack (pnpm + yarn shims)"
 
+step "corepack cache dir (vscode-owned, prevents first-use ENOENT)"
+sudo -u vscode -H mkdir -p /home/vscode/.cache/node/corepack
+done_ "corepack cache dir (vscode-owned, prevents first-use ENOENT)"
+
 step "git system-wide safe.directory"
 git config --system --add safe.directory '*'
 done_ "git system-wide safe.directory"
