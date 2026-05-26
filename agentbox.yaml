@@ -52,7 +52,7 @@
 # create.
 carry:
   - src: ~/.agentbox/claude-credentials.json
-    dest: ~/.claude/.credentials.json
+    dest: ~/.agentbox/claude-credentials.json
     mode: 0o600
     optional: true
   - src: ~/.codex/auth.json
@@ -104,3 +104,7 @@ tasks:
       chmod +x ~/.local/bin/agentbox
       ~/.local/bin/agentbox --version
     needs: [build]
+
+  portless:
+    command: portless proxy start --no-tls -p 1355
+    needs: [install]
