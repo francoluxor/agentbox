@@ -43,18 +43,26 @@ export const MOUSE_ENABLE_SEQ = '\x1b[?1000h\x1b[?1002h\x1b[?1006h';
 const MOUSE_MODES = [1000, 1002, 1003, 1005, 1006, 1015];
 export const MOUSE_DISABLE_SEQ = MOUSE_MODES.map((n) => `\x1b[?${String(n)}l`).join('');
 
-// modifyOtherKeys=2 — ask the outer terminal to disambiguate modifier+key combos
-// (Shift+Enter, Ctrl+Enter, …) by sending CSI-u sequences like `\x1b[13;2u`
-// instead of collapsing them to plain `\r`. The in-box tmux already enables
-// `extended-keys on` + `terminal-features ",*:extkeys"` (see buildTmuxSessionArgs
-// in packages/sandbox-docker/src/claude.ts), which makes tmux emit this very
-// sequence to its outer terminal. In the wrapped-pty attach path that request
-// reaches the host terminal directly; in the dashboard it doesn't — the inner
-// PTY's output flows only into @xterm/headless (this file, constructor below)
-// and the compositor renders a cell grid from the parsed state, so tmux's
-// `\x1b[>4;2m` never reaches the user's real terminal. The compositor emits it
-// itself on start (and the reset on teardown) to put the host in the right mode.
-export const EXT_KEYS_ENABLE_SEQ = '\x1b[>4;2m';
+// modifyOtherKeys=1 — ask the outer terminal to disambiguate modifier+key combos
+// that have no legacy encoding (notably Shift+Enter / Ctrl+Enter, which would
+// otherwise collapse to plain `\r`). Mode 1 (not 2) is deliberate: mode 2 also
+// rewrites Ctrl+letter as CSI sequences, which would break the dashboard's
+// `Ctrl-a` leader chord (see LEADER = 0x01 in input.ts). Mode 1 preserves the
+// legacy Ctrl+letter bytes and only escapes keys that would otherwise be
+// ambiguous, so Shift+Enter arrives as `\x1b[27;2;13~` (or `\x1b[13;2u`
+// depending on the terminal) and Ctrl+a still arrives as `\x01`.
+//
+// Why the dashboard has to emit this at all: the in-box tmux already runs with
+// `extended-keys on` (see buildTmuxSessionArgs in
+// packages/sandbox-docker/src/claude.ts), which decodes either CSI form when
+// tmux receives it. In the wrapped-pty attach path tmux's own output reaches
+// the host terminal, which is enough to coax most terminals into emitting the
+// extended encodings. In the dashboard the inner PTY's output flows only into
+// @xterm/headless (this file, constructor below) and the compositor renders a
+// cell grid from the parsed state — so any mode-set request from tmux is
+// consumed by the headless parser and never reaches the user's real terminal.
+// The compositor emits it itself on start (and the reset on teardown).
+export const EXT_KEYS_ENABLE_SEQ = '\x1b[>4;1m';
 export const EXT_KEYS_DISABLE_SEQ = '\x1b[>4m';
 
 const BLANK: CellLike = {
