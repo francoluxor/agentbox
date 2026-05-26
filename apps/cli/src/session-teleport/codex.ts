@@ -54,15 +54,20 @@ export async function resolveCodexTeleport(
 
   let picked: CodexSessionFile;
   if (opts.mode.kind === 'resume') {
-    const matches = all.filter((s) => s.uuid === opts.mode.id || s.uuid.startsWith(opts.mode.id));
+    // Alias to a local const so the narrowed type survives into the
+    // `.filter` callback. TS can't keep narrowing on a property access
+    // (`opts.mode`) across closures because the property could in principle
+    // be mutated between the check and each callback invocation.
+    const mode = opts.mode;
+    const matches = all.filter((s) => s.uuid === mode.id || s.uuid.startsWith(mode.id));
     if (matches.length === 0) {
       throw new TeleportError(
-        `Codex session "${opts.mode.id}" not found under ${sessionsRoot}.`,
+        `Codex session "${mode.id}" not found under ${sessionsRoot}.`,
       );
     }
     if (matches.length > 1) {
       throw new TeleportError(
-        `Codex session id "${opts.mode.id}" matched multiple files; pass the full uuid.`,
+        `Codex session id "${mode.id}" matched multiple files; pass the full uuid.`,
       );
     }
     picked = matches[0]!;

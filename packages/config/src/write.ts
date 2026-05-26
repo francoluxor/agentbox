@@ -50,6 +50,7 @@ export async function setConfigValue(
   const path = await configPathFor(scope, cwd);
   const current = await readExistingDoc(path);
   setLeaf(current, key, coerced);
+  stampSchema(current);
   // Re-parse to validate the merged document; any change that produces an
   // invalid file (shouldn't be possible here, but defence-in-depth) throws.
   parseUserConfig(stringifyYaml(current), path);
@@ -79,6 +80,7 @@ export async function unsetConfigValue(
   const current = await readExistingDoc(path);
   const existed = unsetLeaf(current, key);
   if (!existed) return { path, existed: false };
+  stampSchema(current);
   await atomicWriteYaml(path, current);
   if (scope === 'project') {
     const root = (await findProjectRoot(cwd)).root;
@@ -255,6 +257,18 @@ async function readExistingDoc(path: string): Promise<Partial<UserConfig>> {
     throw err;
   }
   return parseUserConfig(text, path);
+}
+
+/**
+ * Stamp `schema: 1` on a doc that hasn't been stamped yet. Idempotent — a
+ * doc already carrying any `schema` value is left alone. Future schema
+ * bumps live here.
+ */
+const CURRENT_CONFIG_SCHEMA = 1;
+function stampSchema(doc: Partial<UserConfig>): void {
+  if (typeof doc.schema !== 'number') {
+    doc.schema = CURRENT_CONFIG_SCHEMA;
+  }
 }
 
 function setLeaf(doc: Partial<UserConfig>, key: string, value: unknown): void {
