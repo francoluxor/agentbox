@@ -625,10 +625,15 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
   }
   const relayEnv: Record<string, string> = relayUp
     ? {
-        // host.docker.internal resolves to the host (where the relay node
-        // process is running). The matching `--add-host` is set in runBox.
-        AGENTBOX_RELAY_URL: `http://host.docker.internal:8787`,
+        // The in-box ctl client always talks to its own in-box relay/forwarder
+        // on AGENTBOX_BOX_RELAY_PORT (default 8788). For docker boxes the
+        // forwarder transparently proxies to the host relay at
+        // host.docker.internal:8787 (the matching `--add-host` is set in
+        // runBox). This keeps :8787 inside the box free for a nested
+        // agentbox to claim its own host relay.
+        AGENTBOX_RELAY_URL: `http://127.0.0.1:8788`,
         AGENTBOX_RELAY_TOKEN: relayToken,
+        AGENTBOX_HOST_RELAY_URL: `http://host.docker.internal:8787`,
       }
     : {};
 

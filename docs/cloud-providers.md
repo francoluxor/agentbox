@@ -122,8 +122,10 @@ path no longer uses, as a visible reminder to clean them up.
 ### 2.3 Comms: the bridge relay
 
 Cloud boxes ship the same `@agentbox/relay` binary as docker, but in
-**box mode**. Inside the sandbox the relay binds `0.0.0.0:8787`; Daytona
-mints a signed preview URL pointing at that port, which the host's
+**box mode**. Inside the sandbox the relay binds `0.0.0.0:8788`
+(`DEFAULT_BOX_RELAY_PORT`; override `AGENTBOX_BOX_RELAY_PORT`); the host
+relay stays on `:8787` outside the box. Daytona mints a signed preview URL
+pointing at the in-box port, which the host's
 `CloudBoxPoller` (`packages/relay/src/cloud-poller.ts`) long-polls. The
 poller drains events + parked host actions through `/bridge/poll`, runs
 `executeCloudAction` for each (`packages/relay/src/host-actions.ts`),

@@ -1,4 +1,13 @@
 export const DEFAULT_RELAY_PORT = 8787;
+/**
+ * In-box relay port — distinct from {@link DEFAULT_RELAY_PORT} so a nested
+ * agentbox run (developing agentbox inside a box) can bind its own host
+ * relay on 8787 inside the outer box without colliding with the in-box
+ * supervisor's relay. ctl always binds this port — as a real `mode: 'box'`
+ * relay in cloud sandboxes, or a transparent forwarder to the host relay in
+ * docker boxes. Override with `AGENTBOX_BOX_RELAY_PORT`.
+ */
+export const DEFAULT_BOX_RELAY_PORT = 8788;
 export const RELAY_CONTAINER_NAME = 'agentbox-relay';
 export const RELAY_NETWORK_NAME = 'agentbox-net';
 export const RELAY_IMAGE_REF = 'agentbox/relay:dev';

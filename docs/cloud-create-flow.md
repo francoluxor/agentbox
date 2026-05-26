@@ -51,7 +51,7 @@ Routed through `daytonaProvider` → `createCloudProvider(daytonaBackend)`
    (`launchCloudDockerdDaemon`, best-effort — mirrors the docker provider's
    always-on dockerd), and **VNC stack** (`launchCloudVncDaemon`, best-effort).
 8. **Mint preview URLs** — webproxy (8080), per-`expose.port` service URLs
-   from `agentbox.yaml`, and the **bridge URL on 8787** so the host's
+   from `agentbox.yaml`, and the **bridge URL on 8788** so the host's
    `CloudBoxPoller` can reach the in-box relay.
 9. **Register with host relay** (`registerBoxWithRelay`) → spawns the
    `CloudBoxPoller` for this box.
