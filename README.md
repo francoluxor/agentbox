@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/github/stars/madarco/agentbox" />
 </h1>
 
-Run multiple agents in parallel, with a single command, on your PC, self-hosted
+Run multiple agents in parallel, with a single command, on your PC, self-hosted, or in the cloud
 <br>
 
 <p align="center">
