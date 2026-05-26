@@ -21,6 +21,16 @@ registered worktree; the `-- <args>` slot is for extra flags only (e.g.
 treat them as refspecs and fails with `refs/remotes/origin/HEAD cannot be
 resolved to branch`.
 
+For GitHub PR work, use `agentbox-ctl git pr <op> [args...]` — same model,
+relay shells to host `gh`. Ops: `create`, `view`, `list`, `comment`,
+`review`, `merge`, `close`, `reopen`, `checkout`. `view` / `list` are
+read-only and run silently; everything else asks the user to confirm in
+the host wrapper (deny → exit 10). `merge` refuses the
+`AGENTBOX_PROMPT=off` bypass unless `AGENTBOX_GH_FORCE=1`; `checkout` is
+disabled by default (opt-in via `AGENTBOX_GH_PR_CHECKOUT=allow` because
+it switches the host main repo's branch). If `gh` isn't installed on the
+host, the command exits 127 with a clear message.
+
 For ad-hoc file transfers between this box and the host, use
 `agentbox-ctl cp toHost <boxPath> <hostPath>` and
 `agentbox-ctl cp fromHost <hostPath> <boxPath>` or `agentbox-ctl download claude` / `download env` /

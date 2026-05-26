@@ -45,6 +45,18 @@ export {
   type PromptResolution,
 } from './prompts.js';
 export { BoxNotices } from './notices.js';
+export {
+  assertGhReady,
+  checkoutGuards,
+  GH_PR_OPS,
+  GH_PR_READ_ONLY_OPS,
+  isGhPrOp,
+  refuseCheckoutByDefault,
+  refuseMergeBypass,
+  runHostGh,
+  type GhPrOp,
+  type GhPrRpcParams,
+} from './gh.js';
 export { BoxStatusStore, isValidBoxStatus, type BoxStatusSnapshot } from './status-store.js';
 export {
   createRelayServer,

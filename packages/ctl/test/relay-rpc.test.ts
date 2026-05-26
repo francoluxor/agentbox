@@ -57,6 +57,48 @@ describe('postRpc env handling', () => {
  * point AGENTBOX_RELAY_URL at it, assert postRpcAndExit forwards the
  * stdout/stderr and returns the exit code from the parsed result.
  */
+describe('agentbox-ctl git pr * wire shape', () => {
+  it('postRpc body matches { method: "gh.pr.create", params: { path, args } }', async () => {
+    const { createServer } = await import('node:http');
+    let receivedBody = '';
+    const server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (c: Buffer) => (body += c.toString('utf8')));
+      req.on('end', () => {
+        receivedBody = body;
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ exitCode: 0, stdout: '', stderr: '' }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    const prevUrl = process.env.AGENTBOX_RELAY_URL;
+    const prevTok = process.env.AGENTBOX_RELAY_TOKEN;
+    process.env.AGENTBOX_RELAY_URL = `http://127.0.0.1:${String(port)}`;
+    process.env.AGENTBOX_RELAY_TOKEN = 'stub';
+    try {
+      await postRpc(
+        'gh.pr.create',
+        { path: '/workspace', args: ['--title', 'T', '--body', 'B'] },
+        { errorPrefix: 'agentbox-ctl git pr' },
+      );
+      const parsed = JSON.parse(receivedBody) as { method: string; params: unknown };
+      expect(parsed.method).toBe('gh.pr.create');
+      expect(parsed.params).toEqual({
+        path: '/workspace',
+        args: ['--title', 'T', '--body', 'B'],
+      });
+    } finally {
+      if (prevUrl === undefined) delete process.env.AGENTBOX_RELAY_URL;
+      else process.env.AGENTBOX_RELAY_URL = prevUrl;
+      if (prevTok === undefined) delete process.env.AGENTBOX_RELAY_TOKEN;
+      else process.env.AGENTBOX_RELAY_TOKEN = prevTok;
+      await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())));
+    }
+  });
+});
+
 describe('postRpc end-to-end (in-process relay stub)', () => {
   it('forwards stdout/stderr and returns the parsed exitCode', async () => {
     const { createServer } = await import('node:http');

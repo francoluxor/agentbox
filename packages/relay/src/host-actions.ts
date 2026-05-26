@@ -20,6 +20,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CloudBackend, CloudHandle } from '@agentbox/core';
 import { findBox, readState } from '@agentbox/sandbox-core';
+import {
+  assertGhReady,
+  checkoutGuards,
+  GH_PR_READ_ONLY_OPS,
+  isGhPrOp,
+  refuseCheckoutByDefault,
+  refuseMergeBypass,
+  runHostGh,
+  type GhPrRpcParams,
+} from './gh.js';
 import { askPrompt, type PendingPrompts, type PromptSubscribers } from './prompts.js';
 import type {
   CheckpointRpcParams,
@@ -135,11 +145,109 @@ export async function executeCloudAction(
   if (action.method === 'browser.open.mirror') {
     return runBrowserOpenMirror(action, deps);
   }
+  if (action.method.startsWith('gh.pr.')) {
+    return runGhPrRpc(action, deps);
+  }
   return {
     exitCode: 1,
     stdout: '',
     stderr: `host executor for '${action.method}' is not yet supported for cloud boxes\n`,
   };
+}
+
+/**
+ * Cloud `gh.pr.<op>` executor. Simpler than `runGitRpc` because nothing
+ * needs to round-trip into the sandbox — `gh` only needs the host repo
+ * (already at the right remote in `lookup.workspacePath`).
+ *
+ * Mirrors the docker handler's confirmation matrix exactly: `view` / `list`
+ * are silent, write ops go through `askPrompt`, `checkout` is opt-in via
+ * `AGENTBOX_GH_PR_CHECKOUT=allow`, and `merge` refuses `AGENTBOX_PROMPT=off`
+ * bypass unless `AGENTBOX_GH_FORCE=1`. When no SSE subscriber is attached,
+ * write-op behavior is gated by `AGENTBOX_GH_NO_SUB` (`deny` default,
+ * `allow`, or `prompt`) — same shape as `AGENTBOX_GIT_PUSH_NO_SUB`.
+ */
+async function runGhPrRpc(
+  action: HostAction,
+  deps: CloudActionExecutorDeps,
+): Promise<HostActionResult> {
+  const op = action.method.slice('gh.pr.'.length);
+  if (!isGhPrOp(op)) {
+    return {
+      exitCode: 64,
+      stdout: '',
+      stderr: `unknown gh.pr.* op: ${op}\n`,
+    };
+  }
+  // Env-only refusals first — cheap, deterministic, no fs/process calls.
+  const mergeBypass = refuseMergeBypass(op);
+  if (mergeBypass) return mergeBypass;
+  const checkoutOptIn = refuseCheckoutByDefault(op);
+  if (checkoutOptIn) return checkoutOptIn;
+
+  const params = (action.params ?? {}) as GhPrRpcParams;
+  const args = Array.isArray(params.args)
+    ? params.args.filter((a): a is string => typeof a === 'string')
+    : [];
+
+  const ghReady = await assertGhReady();
+  if (ghReady) return ghReady;
+
+  const lookup = await lookupCloudBox(deps.boxId);
+
+  if (op === 'checkout') {
+    // The cloud host repo isn't bind-mounted by anything; the only "branch
+    // we must not stomp" concern is the host's own current branch, which is
+    // a generic dirty-tree / "already on this branch" question gh itself
+    // surfaces. We still refuse a dirty tree.
+    const guard = await checkoutGuards(lookup.workspacePath, []);
+    if (guard) return guard;
+  }
+
+  if (!GH_PR_READ_ONLY_OPS.has(op) && deps.prompts && deps.subscribers) {
+    const detail = args.join(' ').slice(0, 200);
+    const ctx = {
+      kind: 'confirm' as const,
+      message: `Allow gh pr ${op} from cloud box ${deps.boxName ?? deps.boxId}?`,
+      detail,
+      defaultAnswer: 'n' as const,
+      context: {
+        command: `gh pr ${op}`,
+        cwd: params.path,
+        argv: args,
+      },
+    };
+    const hasSubscriber = deps.subscribers.forBox(deps.boxId).length > 0;
+    if (!hasSubscriber && process.env['AGENTBOX_PROMPT'] !== 'off') {
+      const noSubMode = (process.env['AGENTBOX_GH_NO_SUB'] ?? 'deny').toLowerCase();
+      if (noSubMode === 'deny') {
+        return {
+          exitCode: 10,
+          stdout: '',
+          stderr:
+            'denied automatically — no attached wrapper to confirm. Attach `agentbox claude` (or similar) and retry, or set AGENTBOX_GH_NO_SUB=allow.\n',
+        };
+      }
+      if (noSubMode === 'allow') {
+        deps.log?.(`gh.pr.${op} auto-approved (no subscribers, AGENTBOX_GH_NO_SUB=allow)`);
+        // fall through
+      } else {
+        const verdict = await askPrompt(deps.prompts, deps.subscribers, deps.boxId, ctx, {
+          ttlMs: 5 * 60 * 1000,
+        });
+        if (verdict.answer !== 'y') {
+          return { exitCode: 10, stdout: '', stderr: 'denied by user\n' };
+        }
+      }
+    } else {
+      const verdict = await askPrompt(deps.prompts, deps.subscribers, deps.boxId, ctx);
+      if (verdict.answer !== 'y') {
+        return { exitCode: 10, stdout: '', stderr: 'denied by user\n' };
+      }
+    }
+  }
+
+  return runHostGh(['pr', op, ...args], lookup.workspacePath);
 }
 
 /**

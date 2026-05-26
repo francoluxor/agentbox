@@ -343,3 +343,218 @@ describe('relay prompt flow', () => {
     expect(res.status).toBe(400);
   });
 });
+
+/**
+ * `/rpc gh.pr.<op>` covers a fan of nine ops dispatched through a single
+ * helper (handleGhPrRpc) that:
+ *   - refuses unknown ops with 400,
+ *   - applies env-only guards (merge bypass, checkout opt-in) before any
+ *     fs/process work,
+ *   - resolves the worktree,
+ *   - probes for `gh` (assertGhReady),
+ *   - askPrompts on write ops,
+ *   - shells `gh pr <op>` in the host repo cwd.
+ *
+ * We stub `gh` via a tempdir on PATH so tests are deterministic on machines
+ * without the real CLI; the stub records its argv into a side file so we can
+ * assert what was invoked.
+ */
+describe('relay /rpc gh.pr.* flow', () => {
+  let handle: RelayServerHandle;
+  let stubDir: string;
+  let stubLog: string;
+  let prevPath: string | undefined;
+  let prevPrompt: string | undefined;
+  let prevForce: string | undefined;
+  let prevCheckout: string | undefined;
+
+  beforeEach(async () => {
+    const { mkdtemp, writeFile, chmod } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    stubDir = await mkdtemp(join(tmpdir(), 'gh-stub-'));
+    stubLog = join(stubDir, 'invocations.log');
+    const script = `#!/usr/bin/env bash
+echo "$@" >> ${JSON.stringify(stubLog)}
+case "$1" in
+  --version) echo "gh stub 0.0.0"; exit 0 ;;
+  auth)
+    if [ "$2" = "status" ]; then exit 0; fi ;;
+  pr)
+    shift
+    echo "stub: gh pr $*"
+    exit 0
+    ;;
+esac
+exit 0
+`;
+    const stubPath = join(stubDir, 'gh');
+    await writeFile(stubPath, script, 'utf8');
+    await chmod(stubPath, 0o755);
+    prevPath = process.env.PATH;
+    process.env.PATH = `${stubDir}:${prevPath ?? ''}`;
+    prevPrompt = process.env.AGENTBOX_PROMPT;
+    prevForce = process.env.AGENTBOX_GH_FORCE;
+    prevCheckout = process.env.AGENTBOX_GH_PR_CHECKOUT;
+    delete process.env.AGENTBOX_PROMPT;
+    delete process.env.AGENTBOX_GH_FORCE;
+    delete process.env.AGENTBOX_GH_PR_CHECKOUT;
+    const gh = await import('../src/gh.js');
+    gh._resetGhReadyCacheForTests();
+    handle = await startRelayServer({ port: 0, host: '127.0.0.1' });
+  });
+
+  afterEach(async () => {
+    await handle.close();
+    const { rm } = await import('node:fs/promises');
+    await rm(stubDir, { recursive: true, force: true });
+    if (prevPath === undefined) delete process.env.PATH;
+    else process.env.PATH = prevPath;
+    if (prevPrompt === undefined) delete process.env.AGENTBOX_PROMPT;
+    else process.env.AGENTBOX_PROMPT = prevPrompt;
+    if (prevForce === undefined) delete process.env.AGENTBOX_GH_FORCE;
+    else process.env.AGENTBOX_GH_FORCE = prevForce;
+    if (prevCheckout === undefined) delete process.env.AGENTBOX_GH_PR_CHECKOUT;
+    else process.env.AGENTBOX_GH_PR_CHECKOUT = prevCheckout;
+    const gh = await import('../src/gh.js');
+    gh._resetGhReadyCacheForTests();
+  });
+
+  async function registerWithWorktree(): Promise<void> {
+    // The worktree paths don't need to exist on disk: handleGhPrRpc only uses
+    // hostMainRepo as a cwd for `gh`, and our stub ignores cwd.
+    const r = await fetchJson(handle, 'POST', '/admin/register-box', {
+      body: {
+        boxId: 'b1',
+        token: 't1',
+        name: 'box-one',
+        worktrees: [
+          { containerPath: '/workspace', hostMainRepo: stubDir, branch: 'agentbox/box-one' },
+        ],
+      },
+    });
+    expect(r.status).toBe(204);
+  }
+
+  it('rejects unknown gh.pr.* op with 400', async () => {
+    await register(handle, 'b1', 't1', 'box-one');
+    const r = await fetchJson(handle, 'POST', '/rpc', {
+      token: 't1',
+      body: { method: 'gh.pr.bogus' },
+    });
+    expect(r.status).toBe(400);
+    const body = r.body as { error?: string };
+    expect(body.error).toContain('unknown gh.pr.*');
+  });
+
+  it('gh.pr.checkout refused by default (env-gated)', async () => {
+    await registerWithWorktree();
+    const r = await fetchJson(handle, 'POST', '/rpc', {
+      token: 't1',
+      body: { method: 'gh.pr.checkout', params: { path: '/workspace', args: ['123'] } },
+    });
+    expect(r.status).toBe(500);
+    const body = r.body as { exitCode: number; stderr: string };
+    expect(body.exitCode).toBe(13);
+    expect(body.stderr).toMatch(/disabled by default/);
+  });
+
+  it('gh.pr.merge with AGENTBOX_PROMPT=off but no GH_FORCE refuses bypass', async () => {
+    await registerWithWorktree();
+    process.env.AGENTBOX_PROMPT = 'off';
+    const r = await fetchJson(handle, 'POST', '/rpc', {
+      token: 't1',
+      body: { method: 'gh.pr.merge', params: { path: '/workspace', args: ['42', '--squash'] } },
+    });
+    expect(r.status).toBe(500);
+    const body = r.body as { exitCode: number; stderr: string };
+    expect(body.exitCode).toBe(10);
+    expect(body.stderr).toMatch(/AGENTBOX_GH_FORCE=1/);
+  });
+
+  it('gh.pr.view (read-only) runs gh without an askPrompt entry', async () => {
+    await registerWithWorktree();
+    const r = await fetchJson(handle, 'POST', '/rpc', {
+      token: 't1',
+      body: { method: 'gh.pr.view', params: { path: '/workspace', args: ['7'] } },
+    });
+    expect(r.status).toBe(200);
+    const body = r.body as { exitCode: number; stdout: string };
+    expect(body.exitCode).toBe(0);
+    expect(body.stdout).toContain('stub: gh pr view 7');
+    expect(handle.prompts.size()).toBe(0);
+  });
+
+  it('gh.pr.create denial via /admin/prompts/answer returns exit 10', async () => {
+    await registerWithWorktree();
+    const rpcPromise = fetchJson(handle, 'POST', '/rpc', {
+      token: 't1',
+      body: {
+        method: 'gh.pr.create',
+        params: { path: '/workspace', args: ['--title', 'T', '--body', 'B'] },
+      },
+    });
+    let pendingId: string | null = null;
+    for (let i = 0; i < 50 && pendingId === null; i++) {
+      const list = handle.prompts.forBox('b1');
+      if (list.length > 0) pendingId = list[0]!.id;
+      else await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(pendingId).not.toBeNull();
+
+    const answer = await fetchJson(handle, 'POST', '/admin/prompts/answer', {
+      body: { id: pendingId, answer: 'n' },
+    });
+    expect(answer.status).toBe(204);
+
+    const rpc = await rpcPromise;
+    expect(rpc.status).toBe(500);
+    const body = rpc.body as { exitCode: number; stderr: string };
+    expect(body.exitCode).toBe(10);
+    expect(body.stderr).toMatch(/denied by user/);
+  });
+
+  it('gh.pr.create with AGENTBOX_PROMPT=off runs gh and forwards args', async () => {
+    await registerWithWorktree();
+    process.env.AGENTBOX_PROMPT = 'off';
+    const r = await fetchJson(handle, 'POST', '/rpc', {
+      token: 't1',
+      body: {
+        method: 'gh.pr.create',
+        params: { path: '/workspace', args: ['--title', 'T', '--body', 'B', '--draft'] },
+      },
+    });
+    expect(r.status).toBe(200);
+    const body = r.body as { exitCode: number; stdout: string };
+    expect(body.exitCode).toBe(0);
+    expect(body.stdout).toContain('stub: gh pr create --title T --body B --draft');
+  });
+
+  it('gh.pr.view returns 500 with exit 64 when no worktree is registered', async () => {
+    await register(handle, 'b1', 't1', 'box-one');
+    const r = await fetchJson(handle, 'POST', '/rpc', {
+      token: 't1',
+      body: { method: 'gh.pr.view', params: { path: '/workspace' } },
+    });
+    expect(r.status).toBe(500);
+    const body = r.body as { exitCode: number; stderr: string };
+    expect(body.exitCode).toBe(64);
+    expect(body.stderr).toMatch(/no worktree registered/);
+  });
+
+  it('reports gh-not-installed when gh is missing from PATH', async () => {
+    await registerWithWorktree();
+    // Drop the stub from PATH; assertGhReady should now find no gh.
+    process.env.PATH = '/nonexistent-bin-dir';
+    const gh = await import('../src/gh.js');
+    gh._resetGhReadyCacheForTests();
+    const r = await fetchJson(handle, 'POST', '/rpc', {
+      token: 't1',
+      body: { method: 'gh.pr.view', params: { path: '/workspace' } },
+    });
+    expect(r.status).toBe(500);
+    const body = r.body as { exitCode: number; stderr: string };
+    expect(body.exitCode).toBe(127);
+    expect(body.stderr).toMatch(/gh not installed/);
+  });
+});

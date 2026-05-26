@@ -3,6 +3,17 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { executeCloudAction } from './host-actions.js';
 import { HostActionQueue } from './host-action-queue.js';
 import { BoxNotices } from './notices.js';
+import {
+  assertGhReady,
+  checkoutGuards,
+  GH_PR_READ_ONLY_OPS,
+  isGhPrOp,
+  refuseCheckoutByDefault,
+  refuseMergeBypass,
+  runHostGh,
+  type GhPrOp,
+  type GhPrRpcParams,
+} from './gh.js';
 import { askPrompt, isPromptAnswerBody, PendingPrompts, PromptSubscribers } from './prompts.js';
 import { BoxRegistry, EventBuffer } from './registry.js';
 import { BoxStatusStore, isValidBoxStatus } from './status-store.js';
@@ -386,6 +397,23 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
           return;
         }
         const result = await handleCpRpc(reg, body.method, params);
+        const status = result.exitCode === 0 ? 200 : 500;
+        send(res, status, result);
+        return;
+      }
+      if (body.method.startsWith('gh.pr.')) {
+        const op = body.method.slice('gh.pr.'.length);
+        if (!isGhPrOp(op)) {
+          send(res, 400, { error: `unknown gh.pr.* op: ${op}` });
+          return;
+        }
+        const result = await handleGhPrRpc(
+          op,
+          reg,
+          body.params as GhPrRpcParams | undefined,
+          prompts,
+          subscribers,
+        );
         const status = result.exitCode === 0 ? 200 : 500;
         send(res, status, result);
         return;
@@ -903,6 +931,74 @@ async function handleGitRpc(
     }
   }
   return runHostCommand(argv);
+}
+
+/**
+ * gh.pr.<op>: shell to the host's `gh` CLI (with the user's gh auth) to drive
+ * a PR operation requested from inside the box. Read-only ops (`view`,
+ * `list`) bypass the confirm prompt; everything else surfaces an
+ * `askPrompt` to the host wrapper before running. `merge` and `checkout`
+ * have additional opt-in env guards — see `refuseMergeBypass` and
+ * `refuseCheckoutByDefault` in `./gh.ts`.
+ *
+ * Runs `gh` with `cwd = worktree.hostMainRepo` so `gh` infers the repo from
+ * the host repo's `git remote -v`. The box's worktree branch is registered
+ * (used to refuse `checkout` against the active per-box branch).
+ */
+async function handleGhPrRpc(
+  op: GhPrOp,
+  reg: BoxRegistration,
+  params: GhPrRpcParams | undefined,
+  prompts: PendingPrompts,
+  subscribers: PromptSubscribers,
+): Promise<GitRpcResult> {
+  // Env-only refusals first — cheap, deterministic, no fs/process calls.
+  const mergeBypass = refuseMergeBypass(op);
+  if (mergeBypass) return mergeBypass;
+  const checkoutOptIn = refuseCheckoutByDefault(op);
+  if (checkoutOptIn) return checkoutOptIn;
+
+  const containerPath = params?.path ?? '/workspace';
+  const worktree = resolveWorktree(reg, containerPath);
+  if (!worktree) {
+    return {
+      exitCode: 64,
+      stdout: '',
+      stderr: `no worktree registered for box ${reg.boxId} matching ${containerPath}`,
+    };
+  }
+  const ghReady = await assertGhReady();
+  if (ghReady) return ghReady;
+
+  const args = Array.isArray(params?.args)
+    ? params.args.filter((a): a is string => typeof a === 'string')
+    : [];
+
+  if (op === 'checkout') {
+    const branches = (reg.worktrees ?? []).map((w) => w.branch);
+    const guard = await checkoutGuards(worktree.hostMainRepo, branches);
+    if (guard) return guard;
+  }
+
+  if (!GH_PR_READ_ONLY_OPS.has(op)) {
+    const detail = args.join(' ').slice(0, 200);
+    const verdict = await askPrompt(prompts, subscribers, reg.boxId, {
+      kind: 'confirm',
+      message: `Allow gh pr ${op} from box ${reg.name}?`,
+      detail,
+      defaultAnswer: 'n',
+      context: {
+        command: `gh pr ${op}`,
+        cwd: containerPath,
+        argv: args,
+      },
+    });
+    if (verdict.answer !== 'y') {
+      return { exitCode: 10, stdout: '', stderr: 'denied by user\n' };
+    }
+  }
+
+  return runHostGh(['pr', op, ...args], worktree.hostMainRepo);
 }
 
 /**

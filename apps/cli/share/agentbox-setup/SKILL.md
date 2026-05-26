@@ -14,7 +14,7 @@ Run `agentbox checkpoint --set-default` (similar to `docker commit`) to save any
 
 Some special folders:
 
-- **Host main repo's `.git/`** — If the box bind-mounted RW at its identical absolute host path. In-box commits land on the host's branch refs (visible to `git log` on the host immediately); the box itself carries no SSH/git creds, so `git push` goes through the host relay (`agentbox-ctl git push`). The host's **working tree is never written to** — only refs/objects under `.git/`.
+- **Host main repo's `.git/`** — If the box bind-mounted RW at its identical absolute host path. In-box commits land on the host's branch refs (visible to `git log` on the host immediately); the box itself carries no SSH/git creds, so `git push` goes through the host relay (`agentbox-ctl git push`). The host's **working tree is never written to** — only refs/objects under `.git/`. GitHub PR ops (`agentbox-ctl git pr create|view|list|comment|review|merge|close|reopen|checkout`) flow the same way through host `gh`; write ops require host confirmation (deny → exit 10), `merge` and `checkout` have additional opt-in guards.
 - **`~/.claude`** — and similar home folders for coding agents are seeded from the host's `~/.claude` on each create so auth, skills, and plugins persist without leaking the host's home dir.
 - **`agentbox.yaml`** — read by `agentbox-ctl` from `/workspace`. Tasks and services declared here are what the supervisor will run.
 

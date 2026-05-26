@@ -84,4 +84,38 @@ describe('executeCloudAction routing', () => {
     // box already opened it in-sandbox, the mirror is purely best-effort).
     expect(result.exitCode).toBe(0);
   });
+
+  it('gh.pr.bogus returns exit 64 (unknown op)', async () => {
+    const result = await executeCloudAction(action('gh.pr.bogus'), makeDeps());
+    expect(result.exitCode).toBe(64);
+    expect(result.stderr).toContain('unknown gh.pr.*');
+  });
+
+  it('gh.pr.checkout refused by default (env-gated)', async () => {
+    const prev = process.env['AGENTBOX_GH_PR_CHECKOUT'];
+    delete process.env['AGENTBOX_GH_PR_CHECKOUT'];
+    try {
+      const result = await executeCloudAction(action('gh.pr.checkout', { args: ['1'] }), makeDeps());
+      expect(result.exitCode).toBe(13);
+      expect(result.stderr).toContain('disabled by default');
+    } finally {
+      if (prev !== undefined) process.env['AGENTBOX_GH_PR_CHECKOUT'] = prev;
+    }
+  });
+
+  it('gh.pr.merge with AGENTBOX_PROMPT=off but no GH_FORCE refuses bypass', async () => {
+    const prevPrompt = process.env['AGENTBOX_PROMPT'];
+    const prevForce = process.env['AGENTBOX_GH_FORCE'];
+    process.env['AGENTBOX_PROMPT'] = 'off';
+    delete process.env['AGENTBOX_GH_FORCE'];
+    try {
+      const result = await executeCloudAction(action('gh.pr.merge', { args: ['1'] }), makeDeps());
+      expect(result.exitCode).toBe(10);
+      expect(result.stderr).toContain('AGENTBOX_GH_FORCE=1');
+    } finally {
+      if (prevPrompt !== undefined) process.env['AGENTBOX_PROMPT'] = prevPrompt;
+      else delete process.env['AGENTBOX_PROMPT'];
+      if (prevForce !== undefined) process.env['AGENTBOX_GH_FORCE'] = prevForce;
+    }
+  });
 });
