@@ -1,0 +1,49 @@
+# yaml-language-server: $schema=https://agentbox.dev/schema/agentbox.schema.json
+#
+# AgentBox monorepo (this very project) — TypeScript + pnpm + turbo.
+#
+# This package is a CLI (`agentbox`) plus a handful of supporting libraries.
+# There is no web app, no database, no port to expose. The in-box workflow
+# is: edit code → `pnpm test` / `pnpm typecheck` / `pnpm build` →
+# `node apps/cli/dist/index.js …` (per CLAUDE.md). So this file only
+# declares two tasks — install deps and produce a populated `dist/` — and
+# no services.
+#
+# Notes / quirks encountered while generating this file:
+# - pnpm monorepo (`pnpm-workspace.yaml`, `pnpm@9.15.0` pinned via
+#   `packageManager`). `corepack enable` is needed for that pin.
+# - The host's `node_modules` is never copied in (macOS-native binaries),
+#   so the first install in a fresh box is real. Subsequent restarts hit
+#   the `.agentbox-installed` marker fast-path.
+# - A `pnpm dev` service was tried first (turbo's parallel `tsup --watch`
+#   per package) and abandoned: the CLI bundles `@agentbox/*` libs via
+#   `noExternal` and the 10 parallel watchers all `clean: true` their
+#   `dist/`, so the CLI's first build races and tsup exits on failure.
+#   Plus, the watcher isn't actually needed — verification runs
+#   `pnpm build` explicitly. If you ever need it back, run
+#   `pnpm exec turbo run dev --concurrency=12` by hand (default
+#   concurrency is 10 but there are 10 dev tasks, so turbo refuses to
+#   start without the bump).
+
+tasks:
+  # Idempotent dep install. Re-runs on every supervisor restart, so guard
+  # the slow path with a marker inside node_modules (kept across
+  # pause/stop/start, captured by `agentbox-ctl checkpoint`).
+  install:
+    command: |
+      set -e
+      MARKER=node_modules/.agentbox-installed
+      if [ -f "$MARKER" ]; then
+        echo "deps already installed (marker present) — skipping"
+        exit 0
+      fi
+      corepack enable >/dev/null 2>&1 || true
+      pnpm install --frozen-lockfile || pnpm install
+      touch "$MARKER"
+
+  # One-shot build so every package has a populated `dist/` for the
+  # `node apps/cli/dist/index.js …` verification path documented in
+  # CLAUDE.md. Idempotent: turbo skips unchanged inputs on rerun.
+  build:
+    command: pnpm build
+    needs: [install]
