@@ -18,6 +18,13 @@ export interface ResolvedCarryEntry {
   kind: 'file' | 'dir' | 'missing';
   bytes?: number;
   mode?: number;
+  /**
+   * Numeric uid that should own the carried file inside the box. Mirrors
+   * the field on `@agentbox/core`'s `ResolvedCarryEntry`. `resolveOne()`
+   * below already forwards `item.user` into the result; this field made
+   * the contract explicit so `carry-prompt.ts` can render the flag.
+   */
+  user?: number;
   optional: boolean;
   symlinkInfo?: 'safe' | 'outside-home';
 }
