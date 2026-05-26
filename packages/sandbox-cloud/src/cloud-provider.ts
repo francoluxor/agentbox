@@ -300,8 +300,10 @@ export function createCloudProvider(
           AGENTBOX_BOX_ID: id,
           AGENTBOX_BOX_NAME: name,
           AGENTBOX_BOX_KIND: 'cloud',
-          // In-sandbox relay is on the box's loopback at the default port.
-          AGENTBOX_RELAY_URL: `http://127.0.0.1:${String(8787)}`,
+          // In-sandbox relay is on the box's loopback at the in-box port.
+          // 8788 is distinct from the host relay's 8787 so a nested agentbox
+          // run inside the box can claim :8787 without colliding.
+          AGENTBOX_RELAY_URL: `http://127.0.0.1:${String(8788)}`,
           AGENTBOX_RELAY_TOKEN: relayToken,
           AGENTBOX_BRIDGE_TOKEN: bridgeToken,
           ...agentVolumes.env,
@@ -362,7 +364,7 @@ export function createCloudProvider(
           handle,
           boxId: id,
           boxName: name,
-          relayUrl: `http://127.0.0.1:${String(8787)}`,
+          relayUrl: `http://127.0.0.1:${String(8788)}`,
           relayToken,
           bridgeToken,
         });
@@ -447,11 +449,11 @@ export function createCloudProvider(
         }
 
         // The bridge preview URL is critical: it's how the host CloudBoxPoller
-        // reaches the in-sandbox relay. The ctl daemon binds 0.0.0.0:8787 in
+        // reaches the in-sandbox relay. The ctl daemon binds 0.0.0.0:8788 in
         // box mode (cloud), so the Daytona preview proxy can route to it.
         let relayPreview: { url: string; token?: string } | undefined;
         try {
-          relayPreview = await backend.previewUrl(handle, 8787);
+          relayPreview = await backend.previewUrl(handle, 8788);
         } catch {
           relayPreview = undefined;
         }
@@ -581,7 +583,7 @@ export function createCloudProvider(
       }
       let relayPreview: { url: string; token?: string } | undefined;
       try {
-        relayPreview = await backend.previewUrl(h, 8787);
+        relayPreview = await backend.previewUrl(h, 8788);
       } catch {
         relayPreview = box.cloud?.relayPreviewUrl
           ? { url: box.cloud.relayPreviewUrl, token: box.cloud.relayPreviewToken }
@@ -635,7 +637,7 @@ export function createCloudProvider(
         handle: h,
         boxId: box.id,
         boxName: box.name,
-        relayUrl: `http://127.0.0.1:${String(8787)}`,
+        relayUrl: `http://127.0.0.1:${String(8788)}`,
         relayToken: box.relayToken ?? '',
         bridgeToken: box.cloud?.bridgeToken,
       });

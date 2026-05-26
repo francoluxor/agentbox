@@ -232,7 +232,7 @@ The relay runs as its own Docker container (`agentbox-relay`) on a user-defined 
 
 Each box is attached to `agentbox-net` and gets two env vars:
 
-- `AGENTBOX_RELAY_URL` — `http://agentbox-relay:8787` (resolved via docker DNS)
+- `AGENTBOX_RELAY_URL` — `http://127.0.0.1:8788` (the ctl daemon's in-box relay/forwarder; the host relay it ultimately routes to lives on `:8787`)
 - `AGENTBOX_RELAY_TOKEN` — a 32-byte per-box bearer token generated at create time
 
 The token is registered with the relay before the box starts, so the in-box supervisor can post events immediately on boot.
