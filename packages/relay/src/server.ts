@@ -349,22 +349,29 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
       }
       if (body.method === 'git.push' || body.method === 'git.fetch') {
         // Only `push` mutates the user's remote; fetch is read-only and noisy.
+        // Per-box `agentbox/<name>` branches are the box's own scratch branch
+        // — pushes to them are the whole point of agentbox, so they bypass
+        // the y/N gate. Any other branch still prompts.
         if (body.method === 'git.push') {
           const params = body.params as GitRpcParams | undefined;
-          const verdict = await askPrompt(prompts, subscribers, reg.boxId, {
-            kind: 'confirm',
-            message: `Allow git push from box ${reg.name}?`,
-            detail: `${params?.remote ?? 'origin'} ${(params?.args ?? []).join(' ')}`.trim(),
-            defaultAnswer: 'n',
-            context: {
-              command: 'git push',
-              cwd: params?.path,
-              argv: params?.args,
-            },
-          });
-          if (verdict.answer !== 'y') {
-            send(res, 500, { exitCode: 10, stdout: '', stderr: 'denied by user\n' });
-            return;
+          const worktree = resolveWorktree(reg, params?.path ?? '/workspace');
+          const isAgentboxBranch = worktree?.branch.startsWith('agentbox/') ?? false;
+          if (!isAgentboxBranch) {
+            const verdict = await askPrompt(prompts, subscribers, reg.boxId, {
+              kind: 'confirm',
+              message: `Allow git push from box ${reg.name}?`,
+              detail: `${params?.remote ?? 'origin'} ${(params?.args ?? []).join(' ')}`.trim(),
+              defaultAnswer: 'n',
+              context: {
+                command: 'git push',
+                cwd: params?.path,
+                argv: params?.args,
+              },
+            });
+            if (verdict.answer !== 'y') {
+              send(res, 500, { exitCode: 10, stdout: '', stderr: 'denied by user\n' });
+              return;
+            }
           }
         }
         const result = await handleGitRpc(reg, body.method, body.params as GitRpcParams | undefined);

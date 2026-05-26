@@ -566,7 +566,10 @@ async function runGitRpc(action: HostAction, deps: CloudActionExecutorDeps): Pro
   // prompt the Docker provider already uses. The wrapper's SSE subscriber on
   // /admin/prompts/stream surfaces it as a footer y/N; `askPrompt` returns
   // auto-`y` when AGENTBOX_PROMPT=off (matches Docker behavior).
-  if (action.method === 'git.push' && deps.prompts && deps.subscribers) {
+  // Per-box `agentbox/<name>` branches bypass the gate — pushing to them is
+  // the box's whole job; the prompt would only ever ask about other branches.
+  const isAgentboxBranch = branch.startsWith('agentbox/');
+  if (action.method === 'git.push' && !isAgentboxBranch && deps.prompts && deps.subscribers) {
     // Cloud-specific fallback: when no SSE subscriber is attached the prompt
     // would block indefinitely (the user has nothing to answer in). Choose
     // up-front whether to auto-deny (default) or auto-approve based on env
