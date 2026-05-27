@@ -17,7 +17,7 @@ import {
 } from '@agentbox/sandbox-docker';
 import { resolveBoxOrExit } from '../box-ref.js';
 import { providerForBox } from '../provider/registry.js';
-import { agentboxAliasFor, writeAgentboxSshAlias } from '../ssh-config.js';
+import { agentboxAliasFor, parseSshTarget, writeAgentboxSshAlias } from '../ssh-config.js';
 import { handleLifecycleError } from './_errors.js';
 
 interface CodeOptions {
@@ -219,8 +219,8 @@ async function prepareCloudAttach(box: BoxRecord, opts: PrepareCloudOptions): Pr
   // (Remote-SSH starts its own session). `noTmux` skips the tmux wrap so
   // argv is the plain `ssh ... <user>@<host>` form.
   const spec = await p.buildAttach(box, 'shell', { noTmux: true });
-  const userHost = parseUserHost(spec.argv);
-  if (!userHost) {
+  const target = parseSshTarget(spec.argv);
+  if (!target) {
     throw new Error(
       `could not parse <user>@<host> from cloud SSH argv: ${spec.argv.join(' ')}`,
     );
@@ -229,26 +229,13 @@ async function prepareCloudAttach(box: BoxRecord, opts: PrepareCloudOptions): Pr
   const alias = agentboxAliasFor(box.name);
   await writeAgentboxSshAlias({
     alias,
-    hostname: userHost.host,
-    user: userHost.user,
+    hostname: target.host,
+    user: target.user,
+    identityFile: target.identityFile,
   });
   log.info(`updated ~/.ssh/config alias ${alias}`);
 
   return `vscode-remote://ssh-remote+${alias}/workspace`;
-}
-
-function parseUserHost(argv: readonly string[]): { user: string; host: string } | undefined {
-  // `attachArgv` returns argv where the last element is `<token>@<host>` (the
-  // SSH connect target). Walk from the end so options at the front don't get
-  // mistaken for the target.
-  for (let i = argv.length - 1; i >= 0; i--) {
-    const v = argv[i];
-    if (!v || v.startsWith('-')) continue;
-    const at = v.indexOf('@');
-    if (at <= 0) continue;
-    return { user: v.slice(0, at), host: v.slice(at + 1) };
-  }
-  return undefined;
 }
 
 async function runWaitReadyDocker(container: string, timeoutMs: string): Promise<WaitReadyReply> {

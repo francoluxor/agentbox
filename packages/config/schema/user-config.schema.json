@@ -25,7 +25,8 @@
         "memory": { "type": "integer", "minimum": 0 },
         "cpus": { "type": "integer", "minimum": 0 },
         "pidsLimit": { "type": "integer", "minimum": 0 },
-        "disk": { "type": "string" }
+        "disk": { "type": "string" },
+        "bundleDepth": { "type": "integer", "minimum": 0 }
       }
     },
     "checkpoint": {

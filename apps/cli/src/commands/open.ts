@@ -8,7 +8,7 @@ import { openBoxInFinder } from '@agentbox/sandbox-docker';
 import { Command } from 'commander';
 import { resolveBoxOrExit } from '../box-ref.js';
 import { providerForBox } from '../provider/registry.js';
-import { agentboxAliasFor, writeAgentboxSshAlias } from '../ssh-config.js';
+import { agentboxAliasFor, parseSshTarget, writeAgentboxSshAlias } from '../ssh-config.js';
 import { runPath } from './path.js';
 import { handleLifecycleError } from './_errors.js';
 
@@ -114,12 +114,17 @@ async function runCloudOpen(
   // Same SSH alias machinery `agentbox code` uses — mint a fresh 60-min token
   // and rewrite the alias every call so the user gets a live mount target.
   const spec = await provider.buildAttach(box, 'shell', { noTmux: true });
-  const userHost = parseUserHost(spec.argv);
-  if (!userHost) {
+  const target = parseSshTarget(spec.argv);
+  if (!target) {
     throw new Error(`could not parse <user>@<host> from cloud SSH argv: ${spec.argv.join(' ')}`);
   }
   const alias = agentboxAliasFor(box.name);
-  await writeAgentboxSshAlias({ alias, hostname: userHost.host, user: userHost.user });
+  await writeAgentboxSshAlias({
+    alias,
+    hostname: target.host,
+    user: target.user,
+    identityFile: target.identityFile,
+  });
 
   // Ensure the mount dir exists. If something's already mounted there (a
   // stale mount from a previous run) we tear it down before re-mounting —
@@ -184,13 +189,3 @@ async function tryUnmount(path: string): Promise<boolean> {
   return false;
 }
 
-function parseUserHost(argv: readonly string[]): { user: string; host: string } | undefined {
-  for (let i = argv.length - 1; i >= 0; i--) {
-    const v = argv[i];
-    if (!v || v.startsWith('-')) continue;
-    const at = v.indexOf('@');
-    if (at <= 0) continue;
-    return { user: v.slice(0, at), host: v.slice(at + 1) };
-  }
-  return undefined;
-}

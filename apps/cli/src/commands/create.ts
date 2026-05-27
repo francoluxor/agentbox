@@ -54,6 +54,8 @@ interface CreateOptions {
   cpus?: string;
   pidsLimit?: string;
   disk?: string;
+  /** --bundle-depth <n>: cap commits in the cloud-seed git bundle. 0 = full history. */
+  bundleDepth?: number;
   /** -v / --verbose: also stream raw build / provision output to stderr. */
   verbose?: boolean;
 }
@@ -66,6 +68,7 @@ function buildCliOverrides(opts: CreateOptions): Partial<UserConfig> {
   if (opts.withEnv === true) box.withEnv = true;
   if (opts.vnc === false) box.vnc = false;
   if (opts.sharedDockerCache === true) box.dockerCacheShared = true;
+  if (opts.bundleDepth !== undefined) box.bundleDepth = opts.bundleDepth;
   const out: Partial<UserConfig> = {};
   if (Object.keys(box).length > 0) out.box = box;
   if (opts.portless !== undefined) out.portless = { enabled: opts.portless };
@@ -154,6 +157,15 @@ export const createCommand = new Command('create')
   .option('--cpus <n>', 'CPU count cap (fractional ok, e.g. 1.5); unset = unlimited')
   .option('--pids-limit <n>', 'max process count (PIDs cgroup); unset = unlimited')
   .option('--disk <size>', 'best-effort container writable-layer size (e.g. 10g); no-op on overlay2/macOS')
+  .option(
+    '--bundle-depth <n>',
+    'cap commits shipped in the cloud-seed git bundle (daytona, hetzner). 0 = full history. Unset = adaptive (200 commits, re-bundle at 100 if >20 MB). Ignored for docker.',
+    (v) => {
+      const n = Number.parseInt(v, 10);
+      if (!Number.isInteger(n) || n < 0) throw new Error(`--bundle-depth: expected a non-negative integer, got "${v}"`);
+      return n;
+    },
+  )
   .option('-y, --yes', 'skip prompts, accept defaults')
   .option(
     '--carry-yes',
@@ -293,6 +305,7 @@ export const createCommand = new Command('create')
         carry: carryEntries,
         vnc: { enabled: cfg.effective.box.vnc },
         limits: resolveLimits(cfg.effective.box, opts),
+        bundleDepth: cfg.effective.box.bundleDepth,
         projectRoot,
         onLog: (line) => {
           s.message(line);
