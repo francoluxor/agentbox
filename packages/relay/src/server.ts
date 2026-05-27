@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { executeCloudAction } from './host-actions.js';
+import { executeCloudAction, refreshCloudPreviewUrl } from './host-actions.js';
 import { HostActionQueue } from './host-action-queue.js';
 import { BoxNotices } from './notices.js';
 import {
@@ -17,6 +17,7 @@ import {
 import { askPrompt, isPromptAnswerBody, PendingPrompts, PromptSubscribers } from './prompts.js';
 import { BoxRegistry, EventBuffer } from './registry.js';
 import { BoxStatusStore, isValidBoxStatus } from './status-store.js';
+import { DEFAULT_BOX_RELAY_PORT } from './types.js';
 import type {
   BoxRegistration,
   BoxWorktree,
@@ -425,6 +426,18 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
         send(res, status, result);
         return;
       }
+      if (body.method === 'git.clone' || body.method === 'gh.repo.clone') {
+        // Clone bundle-ship-back machinery is deferred to a follow-up PR
+        // (see docs/plans/gh-and-git-shims-host-only.md → Deferred follow-ups).
+        // The shim + ctl plumbing is in place so the next iteration only has
+        // to land the relay-side host clone + bundle + box transfer.
+        send(res, 501, {
+          exitCode: 64,
+          stdout: '',
+          stderr: `${body.method}: not yet implemented (deferred; see docs/plans/gh-and-git-shims-host-only.md). Run \`gh\` / \`git\` on the host directly for now.\n`,
+        });
+        return;
+      }
       if (
         body.method === 'download.workspace' ||
         body.method === 'download.env' ||
@@ -635,6 +648,13 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
                     });
                   }
                 }
+              : undefined,
+            // Self-heal a dead preview transport (hetzner SSH `-L` after a
+            // ControlMaster death). The relay strips the `cloud:` prefix
+            // the cloud-provider tags onto BoxRecord.container — what the
+            // backend's `get(sandboxId)` expects is the bare sandbox id.
+            recoverPreviewUrl: reg.backend
+              ? async () => refreshCloudPreviewUrl(reg.backend!, reg.boxId, DEFAULT_BOX_RELAY_PORT)
               : undefined,
             logger: log,
           });
