@@ -18,6 +18,14 @@ export interface SshAliasOptions {
   hostname: string;
   /** Ephemeral Daytona token (used as the SSH User). Rotates every call. */
   user: string;
+  /**
+   * Per-box private key path for providers that authenticate by identity
+   * file (Hetzner). Omit for token-in-User auth (Daytona) — without this
+   * field VSCode's Remote-SSH would try ~/.ssh/id_* defaults and fail with
+   * "permission denied" against a Hetzner VPS that only trusts the per-box
+   * key under `~/.agentbox/boxes/<id>/ssh/id_ed25519`.
+   */
+  identityFile?: string;
 }
 
 function sshConfigPath(): string {
@@ -69,17 +77,27 @@ function buildBlock(opts: SshAliasOptions): string {
   // `UserKnownHostsFile /dev/null` + `LogLevel ERROR` is the Vagrant / dev-tool
   // convention: many sandboxes sit behind one DNS name, so pinning a host key
   // locally generates noise + false-positive HostKeyVerificationFailed errors.
-  return [
+  const lines: string[] = [
     beginMarker(opts.alias),
     `Host ${opts.alias}`,
     `  HostName ${opts.hostname}`,
     `  User ${opts.user}`,
+  ];
+  if (opts.identityFile) {
+    // `IdentitiesOnly yes` stops ssh-agent from offering unrelated keys
+    // first — some sshd configs cap auth attempts and would lock us out
+    // before the right key is tried.
+    lines.push(`  IdentityFile ${opts.identityFile}`);
+    lines.push(`  IdentitiesOnly yes`);
+  }
+  lines.push(
     `  StrictHostKeyChecking accept-new`,
     `  UserKnownHostsFile /dev/null`,
     `  LogLevel ERROR`,
     endMarker(opts.alias),
     '',
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 export async function writeAgentboxSshAlias(opts: SshAliasOptions): Promise<void> {
@@ -92,6 +110,41 @@ export async function writeAgentboxSshAlias(opts: SshAliasOptions): Promise<void
   await fs.writeFile(path, next, { mode: 0o600 });
   // Re-assert mode in case the file existed with broader perms.
   await fs.chmod(path, 0o600);
+}
+
+export interface SshTarget {
+  user: string;
+  host: string;
+  /** Path from `-i <path>` if the argv carries one (Hetzner). Undefined for
+   *  Daytona where auth is via token-in-User. */
+  identityFile?: string;
+}
+
+/**
+ * Pluck the SSH connect target (and identity file, if any) out of an argv
+ * returned by a provider's `attachArgv` / `buildAttach`. The argv shape is
+ * `ssh [-i <path>] [-o ...] <user>@<host> [command...]` — we walk from the
+ * end to find the user@host token and scan forward for `-i`.
+ */
+export function parseSshTarget(argv: readonly string[]): SshTarget | undefined {
+  let target: { user: string; host: string } | undefined;
+  for (let i = argv.length - 1; i >= 0; i--) {
+    const v = argv[i];
+    if (!v || v.startsWith('-')) continue;
+    const at = v.indexOf('@');
+    if (at <= 0) continue;
+    target = { user: v.slice(0, at), host: v.slice(at + 1) };
+    break;
+  }
+  if (!target) return undefined;
+  let identityFile: string | undefined;
+  for (let i = 0; i < argv.length - 1; i++) {
+    if (argv[i] === '-i') {
+      identityFile = argv[i + 1];
+      break;
+    }
+  }
+  return { ...target, identityFile };
 }
 
 export async function removeAgentboxSshAlias(alias: string): Promise<void> {
