@@ -68,6 +68,14 @@ export interface CreateBoxRequest {
   carry?: ResolvedCarryEntry[];
   vnc?: { enabled: boolean };
   limits?: CreateBoxLimits;
+  /**
+   * Cap on commits shipped in the cloud-seed git bundle (daytona, hetzner).
+   * `undefined` → adaptive default (last 200 commits, re-bundle at 100 if the
+   * result exceeds 20 MB). `0` → full history (`git bundle create --all`).
+   * `> 0` → fixed shallow depth, adaptive size check disabled.
+   * Ignored by the docker provider (it bind-mounts `.git/`, no bundle).
+   */
+  bundleDepth?: number;
   /** Provider-specific knobs (docker: sharedCache/portless; daytona: resources/region). */
   providerOptions?: Record<string, unknown>;
   onLog?: (line: string) => void;

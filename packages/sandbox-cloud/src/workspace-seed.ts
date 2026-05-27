@@ -1,5 +1,5 @@
 import { execa } from 'execa';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CloudBackend, CloudHandle } from '@agentbox/core';
@@ -11,14 +11,16 @@ import { bashScript, quoteShellArgv } from './shell.js';
  * what `seedWorkspace` does for the Docker provider, adapted for the cloud
  * channel (`backend.uploadFile` + `backend.exec`):
  *
- *   - Git workspace: `git bundle create --all` on the host, upload the bundle,
- *     `git clone` it inside the sandbox, repoint `origin`, check out the
- *     per-box branch `agentbox/<box-name>`. Repeats for every nested repo
- *     (1st-level subdir with its own `.git/`) so monorepos seed correctly.
+ *   - Git workspace: `git clone --no-checkout [--depth=N] file://hostRepo`
+ *     into a host-side temp dir, tar the resulting `.git/`, upload, extract
+ *     into `/workspace`, repoint `origin`, `git checkout -B agentbox/<box>`
+ *     to materialize the working tree. Repeats per nested repo for monorepos.
  *   - Non-git workspace: tar the host workspace, upload, extract.
  *
- * Host-uncommitted-carry-over (stash + untracked) is the remaining gap
- * tracked in Phase 6.
+ * Why clone-and-tar instead of `git bundle`? `git bundle create` has no
+ * `--depth` flag in any released git version (verified 2.39 and 2.52), and
+ * the portable detours all produce bundles with unsatisfiable prerequisites.
+ * Shipping a shallow clone is the only way to cap commit count portably.
  */
 export interface SeedCloudWorkspaceArgs {
   backend: CloudBackend;
@@ -29,11 +31,19 @@ export interface SeedCloudWorkspaceArgs {
   branch: string;
   /** In-sandbox destination; defaults to `/workspace`. */
   workspaceDir?: string;
+  /**
+   * Commit cap for the host-side shallow `git clone`. `undefined` (the
+   * common case) → adaptive default: clone the last `DEFAULT_BUNDLE_DEPTH`
+   * commits and, if the resulting tar exceeds `LARGE_BUNDLE_THRESHOLD_BYTES`,
+   * redo at `LARGE_BUNDLE_DEPTH`. `0` → full history (no `--depth`). `> 0` →
+   * fixed shallow depth, no adaptive rebuild. Applied per repo.
+   */
+  bundleDepth?: number;
   onLog?: (line: string) => void;
 }
 
 export interface SeedCloudWorkspaceResult {
-  /** True when a git repo was found at the workspace root and a bundle was used. */
+  /** True when a git repo was found at the workspace root and a clone was used. */
   fromGit: boolean;
   /** Resolved branch (matches `branch` arg). */
   branch: string;
@@ -53,29 +63,33 @@ export async function seedCloudWorkspace(
   if (root) {
     log(
       nested.length > 0
-        ? `seeding /workspace from git bundle (+${String(nested.length)} nested repo${nested.length === 1 ? '' : 's'})`
-        : 'seeding /workspace from git bundle',
+        ? `seeding /workspace from shallow git clone (+${String(nested.length)} nested repo${nested.length === 1 ? '' : 's'})`
+        : 'seeding /workspace from shallow git clone',
     );
-    await seedFromGitBundle({
+    await seedFromGitClone({
       backend: args.backend,
       handle: args.handle,
       hostRepo: root.hostMainRepo,
       branch: args.branch,
       workspaceDir,
+      bundleDepth: args.bundleDepth,
+      onLog: log,
     });
-    // Each nested repo gets its own bundle + clone at /workspace/<rel>. We
-    // do these after the root clone because the root clone wipes
-    // /workspace; a nested dir created during the root checkout (if
-    // tracked) would be replaced when we clone over it.
+    // Each nested repo gets its own clone at /workspace/<rel>. We do these
+    // after the root clone because the root extract wipes /workspace; a
+    // nested dir created during the root checkout (if tracked) would be
+    // replaced when we extract over it.
     for (const r of nested) {
       const sub = `${workspaceDir}/${r.relPathFromWorkspace}`;
-      log(`seeding nested repo ${r.relPathFromWorkspace} from git bundle`);
-      await seedFromGitBundle({
+      log(`seeding nested repo ${r.relPathFromWorkspace} from shallow git clone`);
+      await seedFromGitClone({
         backend: args.backend,
         handle: args.handle,
         hostRepo: r.hostMainRepo,
         branch: args.branch,
         workspaceDir: sub,
+        bundleDepth: args.bundleDepth,
+        onLog: log,
       });
     }
     return { fromGit: true, branch: args.branch };
@@ -91,36 +105,51 @@ export async function seedCloudWorkspace(
   return { fromGit: false, branch: args.branch };
 }
 
-interface SeedFromGitBundleArgs {
+interface SeedFromGitCloneArgs {
   backend: CloudBackend;
   handle: CloudHandle;
   hostRepo: string;
   branch: string;
   workspaceDir: string;
+  /** See `SeedCloudWorkspaceArgs.bundleDepth`. */
+  bundleDepth?: number;
+  onLog?: (line: string) => void;
 }
 
 /**
  * Temporary host ref used to carry the `git stash create` commit into the
- * bundle so the in-sandbox repo can apply it. Lives only for the duration
- * of one `git bundle create` invocation — set, bundle, delete. Lands inside
- * the cloned repo as `refs/remotes/origin/<this name>`, which we delete
- * after applying the stash so it doesn't pollute branch lists.
+ * shallow clone so the in-sandbox repo can apply it. Created before clone,
+ * fetched into the clone under `refs/remotes/origin/<...>` with an explicit
+ * refspec, then deleted from the host repo in `finally`.
  */
 const STASH_CARRYOVER_REF = 'refs/agentbox-carryover/stash';
 const REMOTE_UNTRACKED_TAR = '/tmp/agentbox-carryover-untracked.tar.gz';
 
-async function seedFromGitBundle(args: SeedFromGitBundleArgs): Promise<void> {
-  const stage = await mkdtemp(join(tmpdir(), 'agentbox-bundle-'));
-  const bundlePath = join(stage, 'workspace.bundle');
+/**
+ * Adaptive cap on the host-side shallow clone. Default keeps cold cloud
+ * creates fast on big monorepos: clone the last 200 commits; if the tarred
+ * `.git/` still exceeds 20 MB, redo at 100. Explicit `bundleDepth` skips
+ * the adaptive rebuild (the user picked a number; trust it).
+ */
+const DEFAULT_BUNDLE_DEPTH = 200;
+const LARGE_BUNDLE_DEPTH = 100;
+const LARGE_BUNDLE_THRESHOLD_BYTES = 20 * 1024 * 1024;
+
+async function seedFromGitClone(args: SeedFromGitCloneArgs): Promise<void> {
+  const log = args.onLog ?? (() => {});
+  const stage = await mkdtemp(join(tmpdir(), 'agentbox-clone-'));
+  const cloneDir = join(stage, 'clone');
+  const tarPath = join(stage, 'workspace.tar.gz');
   const untrackedTarPath = join(stage, 'untracked.tar.gz');
   // Per-repo carry-over (mirrors `collectRepoCarryOver` from sandbox-docker):
   //   - `git stash create` captures every staged + tracked-modified change
   //     (including deletes/renames) as a one-off commit.
   //   - untracked files get tarred separately because `stash create` (no -u
   //     option) doesn't capture them.
-  // The stash commit travels in the bundle via a temp ref the host owns
-  // for the duration of `git bundle create`. The untracked tar uploads on
-  // the side and the in-sandbox script untars it after the clone.
+  // The stash commit rides into the shallow clone via an explicit-refspec
+  // fetch after the initial clone (HEAD-only clone doesn't pull arbitrary
+  // refs). The untracked tar uploads on the side and the in-sandbox script
+  // untars it after `git checkout` materializes the working tree.
   const stashSha = await safeStashCreate(args.hostRepo);
   const untrackedSize = await maybeBuildUntrackedTar(args.hostRepo, untrackedTarPath);
   let stashRefCreated = false;
@@ -133,53 +162,67 @@ async function seedFromGitBundle(args: SeedFromGitBundleArgs): Promise<void> {
       );
       stashRefCreated = ref.exitCode === 0;
     }
-    // Default: `--all` captures every ref + full history so the sandbox gets
-    // a real clone with the user's local commits and tags. Monorepos with
-    // deep history make that a slow + big upload — opt out via
-    // `AGENTBOX_BUNDLE_DEPTH=N` to ship only the last N commits of HEAD
-    // (shallow clone semantics; `git push` from inside the box still works
-    // because the remote knows the merge base). 0 / empty / non-numeric →
-    // full history. The stash ref (if any) is included explicitly so it
-    // rides along with either bundle mode.
-    const depthRaw = process.env['AGENTBOX_BUNDLE_DEPTH'];
-    const depth = depthRaw ? Number.parseInt(depthRaw, 10) : NaN;
-    const bundleArgs: string[] = ['-C', args.hostRepo, 'bundle', 'create', bundlePath];
-    if (Number.isFinite(depth) && depth > 0) {
-      bundleArgs.push(`--depth=${String(depth)}`, 'HEAD');
-    } else {
-      bundleArgs.push('--all');
-    }
-    if (stashRefCreated) bundleArgs.push(STASH_CARRYOVER_REF);
-    await execa('git', bundleArgs);
-    if (stashRefCreated) {
-      await execa('git', ['-C', args.hostRepo, 'update-ref', '-d', STASH_CARRYOVER_REF], {
-        reject: false,
-      });
-      stashRefCreated = false;
+    // Pick the initial depth.
+    //   - undefined → adaptive default (200, may rebuild at 100 if >20 MB)
+    //   - 0         → full history (no `--depth` flag)
+    //   - N > 0     → fixed shallow depth, no rebuild
+    // Shallow history is fine here because `git push` from inside the box
+    // travels through the host relay's bundle pull-back, which resolves the
+    // merge base against the host repo's full history.
+    const configured = args.bundleDepth;
+    const adaptive = configured === undefined;
+    const initialDepth: number | null = adaptive
+      ? DEFAULT_BUNDLE_DEPTH
+      : configured === 0
+        ? null
+        : configured;
+    log(
+      adaptive
+        ? `clone: depth=${String(DEFAULT_BUNDLE_DEPTH)} (default, adaptive)`
+        : initialDepth === null
+          ? 'clone: depth=full (configured)'
+          : `clone: depth=${String(initialDepth)} (configured)`,
+    );
+    await runShallowClone(args.hostRepo, cloneDir, initialDepth, stashRefCreated);
+    await tarCloneDir(cloneDir, tarPath);
+    if (adaptive && initialDepth !== null) {
+      const size = await safeFileSize(tarPath);
+      if (size > LARGE_BUNDLE_THRESHOLD_BYTES) {
+        const mb = (size / (1024 * 1024)).toFixed(1);
+        log(
+          `clone tar exceeded ${String(LARGE_BUNDLE_THRESHOLD_BYTES / (1024 * 1024))} MB at depth ${String(DEFAULT_BUNDLE_DEPTH)} (${mb} MB), rebuilding at depth ${String(LARGE_BUNDLE_DEPTH)}`,
+        );
+        await rm(cloneDir, { recursive: true, force: true });
+        await rm(tarPath, { force: true });
+        await runShallowClone(args.hostRepo, cloneDir, LARGE_BUNDLE_DEPTH, stashRefCreated);
+        await tarCloneDir(cloneDir, tarPath);
+      }
     }
     const remoteUrl = await readOriginUrl(args.hostRepo);
-    const remoteBundle = '/tmp/agentbox-workspace.bundle';
-    await args.backend.uploadFile(args.handle, bundlePath, remoteBundle);
+    const remoteTar = '/tmp/agentbox-workspace.tar.gz';
+    await args.backend.uploadFile(args.handle, tarPath, remoteTar);
     if (untrackedSize > 0) {
       await args.backend.uploadFile(args.handle, untrackedTarPath, REMOTE_UNTRACKED_TAR);
     }
     const setOrigin = remoteUrl
       ? `git -C ${quoteShellArgv([args.workspaceDir])} remote set-url origin ${quoteShellArgv([remoteUrl])}`
       : ': # no host origin to copy';
-    // Clone from the bundle (the bundle stands in for a remote), then repoint
-    // `origin` to the real upstream so future fetch/push target the actual
-    // remote — `git push` itself will travel back through the host relay in a
-    // later phase. Finally check out the per-box branch from current HEAD.
+    // Extract the shallow clone's .git over the destination, then repoint
+    // `origin` from the file:// placeholder to the real upstream so future
+    // fetch/push target the actual remote (`git push` itself travels back
+    // through the host relay). `git checkout -B <branch>` then materializes
+    // the working tree from HEAD (the clone was `--no-checkout`, so the
+    // tarball only carried `.git/`).
     // /workspace lives at the root in the snapshot — root-owned by default
     // (Dockerfile.box never chowns it). The sandbox runs non-root, so the
     // dir ops need sudo. The devcontainers/base image grants passwordless
     // sudo to `vscode`; SUDO is a no-op when sudo isn't needed/available.
     const SUDO = `if command -v sudo >/dev/null 2>&1; then SUDO='sudo -n'; else SUDO=''; fi`;
-    // The stash apply step is best-effort — applying onto a possibly
-    // shallow clone can hit "needs merge" conflicts in pathological cases
-    // (e.g. host had local changes against a commit that's now outside
-    // the depth window). Soft-failure is better than blocking provision;
-    // any unapplied changes can be re-derived from the host as a fallback.
+    // Stash apply is best-effort — applying onto a possibly shallow clone
+    // can hit "needs merge" conflicts in pathological cases (e.g. host had
+    // local changes against a commit outside the depth window). Soft-fail
+    // is better than blocking provision; any unapplied changes can be
+    // re-derived from the host as a fallback.
     const carryOverSteps: string[] = stashSha
       ? [
           `if git -C ${quoteShellArgv([args.workspaceDir])} rev-parse --verify ${quoteShellArgv([`refs/remotes/origin/agentbox-carryover/stash`])} >/dev/null 2>&1; then ` +
@@ -202,41 +245,88 @@ async function seedFromGitBundle(args: SeedFromGitBundleArgs): Promise<void> {
       // Move out of any cwd we might inherit from Daytona's executeCommand
       // before we delete /workspace. The agentbox image bakes WORKDIR
       // /workspace; if the shell's cwd is /workspace when we `rm -rf` it,
-      // the next process inherits a stale cwd FD and git-clone's child
-      // (index-pack) fails with "Unable to read current working directory".
+      // the next process inherits a stale cwd FD and tar's children fail
+      // with "Unable to read current working directory".
       `cd /tmp`,
       SUDO,
-      // rm -rf only the directory we're about to clone into — for nested
+      // rm -rf only the directory we're about to extract into — for nested
       // repos this is just `/workspace/<rel>`, so the root clone (already
       // at `/workspace`) is preserved.
       `$SUDO rm -rf ${quoteShellArgv([args.workspaceDir])}`,
       `$SUDO mkdir -p ${quoteShellArgv([args.workspaceDir])}`,
       `$SUDO chown "$(id -un):$(id -gn)" ${quoteShellArgv([args.workspaceDir])}`,
-      `git clone ${quoteShellArgv([remoteBundle, args.workspaceDir])}`,
+      `tar -C ${quoteShellArgv([args.workspaceDir])} -xzf ${quoteShellArgv([remoteTar])}`,
       setOrigin,
-      `git -C ${quoteShellArgv([args.workspaceDir])} fetch ${quoteShellArgv([remoteBundle])} --tags '+refs/heads/*:refs/remotes/bundle/*' || true`,
       `git -C ${quoteShellArgv([args.workspaceDir])} checkout -B ${quoteShellArgv([args.branch])}`,
       ...carryOverSteps,
-      `rm -f ${quoteShellArgv([remoteBundle])}`,
+      `rm -f ${quoteShellArgv([remoteTar])}`,
     ].join('\n');
     // Daytona's executeCommand shells out via dash (`/bin/sh`), which rejects
     // bash idioms like `set -o pipefail`. Wrap in `bash -c` so the script
     // runs in bash regardless of what `/bin/sh` points at.
     const r = await args.backend.exec(args.handle, bashScript(script));
     if (r.exitCode !== 0) {
-      throw new Error(`workspace seed (bundle) failed: ${r.stderr || r.stdout}`);
+      throw new Error(`workspace seed (clone) failed: ${r.stderr || r.stdout}`);
     }
   } finally {
-    // Defensive cleanup — in the happy path the stashRefCreated flag was
-    // flipped off after we deleted the ref. If we threw between updates,
-    // the ref may still be on the host; delete it so re-runs don't accrue
-    // refs/agentbox-carryover/* entries.
+    // Defensive cleanup of the temp stash ref on host. If we threw between
+    // updates, the ref may still be present; delete it so re-runs don't
+    // accrue refs/agentbox-carryover/* entries.
     if (stashRefCreated) {
       await execa('git', ['-C', args.hostRepo, 'update-ref', '-d', STASH_CARRYOVER_REF], {
         reject: false,
       });
     }
     await rm(stage, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Shallow `git clone --no-checkout` into `cloneDir`. `depth === null` → full
+ * history (no `--depth` flag). When the host carries a stash ref, that ref
+ * is explicitly fetched into the new clone under `refs/remotes/origin/...`
+ * with a matching `--depth`, so the in-box `stash apply` can find it.
+ *
+ * `--no-checkout` skips materializing the working tree on host (we'd just
+ * throw it away when we tar `.git/`). `file://` is required so git treats
+ * the source as a remote — without it, `git clone <local-path>` uses object
+ * hardlinks and silently ignores `--depth`, producing a full clone.
+ */
+async function runShallowClone(
+  hostRepo: string,
+  cloneDir: string,
+  depth: number | null,
+  includeStashRef: boolean,
+): Promise<void> {
+  const cloneArgs: string[] = ['clone', '--no-checkout', '--quiet'];
+  if (depth !== null) cloneArgs.push(`--depth=${String(depth)}`);
+  cloneArgs.push(`file://${hostRepo}`, cloneDir);
+  await execa('git', cloneArgs);
+  if (includeStashRef) {
+    // Soft-fail: the stash commit's parents could in principle fall outside
+    // a very shallow window; the in-box `stash apply` already soft-fails,
+    // so missing the ref here is equivalent.
+    const fetchArgs: string[] = ['-C', cloneDir, 'fetch', '--quiet'];
+    if (depth !== null) fetchArgs.push(`--depth=${String(depth)}`);
+    fetchArgs.push(
+      `file://${hostRepo}`,
+      `+${STASH_CARRYOVER_REF}:refs/remotes/origin/agentbox-carryover/stash`,
+    );
+    await execa('git', fetchArgs, { reject: false });
+  }
+}
+
+async function tarCloneDir(cloneDir: string, outPath: string): Promise<void> {
+  await execa('tar', ['-C', cloneDir, '-czf', outPath, '.'], {
+    env: { ...process.env, COPYFILE_DISABLE: '1' },
+  });
+}
+
+async function safeFileSize(path: string): Promise<number> {
+  try {
+    return (await stat(path)).size;
+  } catch {
+    return 0;
   }
 }
 

@@ -55,17 +55,20 @@ This split is why "add a new cloud" is small: only the SDK shim differs.
 `seedCloudWorkspace` (`packages/sandbox-cloud/src/workspace-seed.ts`) ships
 the host workspace into the sandbox:
 
-1. `git bundle create` on the host for the root repo and every nested
-   git repo (1.4). Optional `AGENTBOX_BUNDLE_DEPTH=N` for shallow seeding
-   on monorepos with deep history (1.3).
+1. `git clone --no-checkout [--depth=N] file://<hostRepo>` on the host for
+   the root repo and every nested git repo (1.4). Default cap: last 200
+   commits, redo at 100 if the resulting tar exceeds 20 MB. Override via
+   `box.bundleDepth` / `--bundle-depth <n>` (0 = full history) (1.3).
 2. `git stash create` + `git ls-files --others` on the host capture the
-   user's uncommitted changes; the stash SHA rides in the bundle via a
-   temp `refs/agentbox-carryover/stash` ref, untracked files in a side-
-   channel tar (1.5).
-3. `backend.uploadFile` ships the bundle (+ optional untracked tar).
-4. In-sandbox: `rm -rf /workspace && git clone <bundle> /workspace`,
-   repoint `origin` to the real upstream, checkout per-box branch
-   `agentbox/<box-name>`, `git stash apply` carry-over, untar untracked.
+   user's uncommitted changes; the stash SHA is fetched into the shallow
+   clone under `refs/remotes/origin/agentbox-carryover/stash`, untracked
+   files in a side-channel tar (1.5).
+3. `backend.uploadFile` ships `workspace.tar.gz` (the tarred `.git/` from
+   the shallow clone) + optional untracked tar.
+4. In-sandbox: `rm -rf /workspace && tar -xzf workspace.tar.gz` extracts
+   `.git/` into `/workspace`, then `git remote set-url origin <real>`,
+   `git checkout -B agentbox/<box-name>` (materializes the working tree
+   from HEAD), `git stash apply` carry-over, untar untracked.
 
 ### 2.2 Agent state split: snapshot bake + credentials volume
 

@@ -65,33 +65,46 @@ workspace, **per repo** (root + any 1st-level nested repos):
 
 1. On host: `git stash create` → SHA of a one-off commit holding staged +
    tracked-modified changes (without disturbing your worktree).
-2. Park that SHA under `refs/agentbox-carryover/stash` so the bundle includes
-   it.
-3. `git bundle create workspace.bundle --all <stash-ref>` (or `--depth=N` if
-   `AGENTBOX_BUNDLE_DEPTH` is set, for monorepos with huge history).
-4. `git ls-files --others --exclude-standard -z` + `tar -czf untracked.tar.gz`
-   → captures untracked-not-ignored files (`git stash create` doesn't).
-5. Delete the temp ref on host.
-6. `backend.uploadFile` ships `workspace.bundle` (and `untracked.tar.gz` if
+2. Park that SHA under `refs/agentbox-carryover/stash` (a temp host-side ref)
+   so the clone can fetch it.
+3. `git clone --no-checkout [--depth=N] file://<hostRepo> <stage>/clone` —
+   a shallow clone (default cap 200; adaptive: redo at 100 if the resulting
+   tar exceeds 20 MB). `--no-checkout` skips materializing the host-side
+   working tree (we'd just discard it); the in-box `git checkout` does that
+   later. Cap controlled by `box.bundleDepth` (`--bundle-depth <n>` flag, or
+   `agentbox config set box.bundleDepth N`): unset → adaptive; `N > 0` →
+   fixed shallow depth; `0` → no `--depth` (full history). Cloud-only —
+   docker bind-mounts `.git/`.
+   Note: `git bundle create` has no `--depth` flag in any git version
+   (`--depth` only exists on clone/fetch). The shallow-clone-then-tar dance
+   is the portable way to cap commit count.
+4. `git -C <stage>/clone fetch [--depth=N] file://<hostRepo>
+   +refs/agentbox-carryover/stash:refs/remotes/origin/agentbox-carryover/stash`
+   — pulls the carryover ref into the shallow clone.
+5. `tar -C <stage>/clone -czf <stage>/workspace.tar.gz .` — tars `.git/`
+   (the only thing in the clone dir after `--no-checkout`).
+6. `git ls-files --others --exclude-standard -z` + `tar -czf untracked.tar.gz`
+   → captures untracked-not-ignored files (stash create doesn't).
+7. Delete the temp host ref.
+8. `backend.uploadFile` ships `workspace.tar.gz` (and `untracked.tar.gz` if
    non-empty) to `/tmp/` in the sandbox.
-7. Inside the sandbox (run as one `bash -c` script):
+9. Inside the sandbox (run as one `bash -c` script):
    - `cd /tmp` (avoid stale-cwd FD when we wipe `/workspace`)
    - `sudo rm -rf /workspace && mkdir -p /workspace && chown ...`
-   - `git clone /tmp/agentbox-workspace.bundle /workspace` — **this is how
-     `.git` lands in the box** (a real clone from the bundle, not a copy)
-   - `git remote set-url origin <host's origin>` — repoint to the real
-     upstream so `git push/fetch` later work (they get tunneled back through
-     the host relay)
-   - `git fetch bundle '+refs/heads/*:refs/remotes/bundle/*'` so all branches
-     are visible
-   - `git checkout -B agentbox/<box-name>`
+   - `tar -C /workspace -xzf /tmp/agentbox-workspace.tar.gz` — **this is how
+     `.git` lands in the box** (extracted from the shallow clone's `.git/`)
+   - `git remote set-url origin <host's origin>` — repoint from the `file://`
+     placeholder to the real upstream so `git push` later works (it gets
+     tunneled back through the host relay)
+   - `git checkout -B agentbox/<box-name>` — materializes the working tree
+     from HEAD (the clone was `--no-checkout`)
    - `git stash apply refs/remotes/origin/agentbox-carryover/stash`
      (best-effort; soft-fails on shallow-clone merge conflicts)
    - `tar -xzf /tmp/agentbox-carryover-untracked.tar.gz` into `/workspace`
-   - clean up bundle + tar
+   - clean up tars
 
 If the host workspace **isn't** a git repo, `seedFromTar` just `tar -czf .`
-the whole dir, uploads, extracts. No bundle, no branch.
+the whole dir, uploads, extracts. No clone, no branch.
 
 ## First time vs. next time
 

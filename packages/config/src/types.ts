@@ -46,6 +46,7 @@ export interface UserConfig {
     cpus?: number;
     pidsLimit?: number;
     disk?: string;
+    bundleDepth?: number;
   };
   checkpoint?: {
     maxLayers?: number;
@@ -132,6 +133,7 @@ export interface EffectiveConfig {
     cpus: number;
     pidsLimit: number;
     disk: string;
+    bundleDepth: number | undefined;
   };
   checkpoint: {
     maxLayers: number;
@@ -237,6 +239,7 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     cpus: 0,
     pidsLimit: 0,
     disk: '',
+    bundleDepth: undefined,
   },
   checkpoint: {
     maxLayers: 3,
@@ -427,6 +430,12 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     description:
       "Best-effort writable-layer size for new boxes, e.g. '10G'. No-op on overlay2 / the macOS engines.",
     advanced: true,
+  },
+  {
+    key: 'box.bundleDepth',
+    type: 'int',
+    description:
+      'Cap git bundle history shipped to cloud sandboxes (daytona, hetzner). 0 = full history. Unset = adaptive default (last 200 commits; re-bundle at 100 if the bundle exceeds 20 MB). Ignored for docker (which bind-mounts .git/).',
   },
   {
     key: 'claude.sessionName',

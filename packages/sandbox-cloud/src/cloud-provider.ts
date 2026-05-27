@@ -327,6 +327,7 @@ export function createCloudProvider(
             workspacePath: req.workspacePath,
             branch,
             workspaceDir: CLOUD_WORKSPACE_DIR,
+            bundleDepth: req.bundleDepth,
             onLog: log,
           });
         }
