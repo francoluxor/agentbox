@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# agentbox `git` shim — intercepts the four network ops (`push`, `pull`,
+# `fetch`, `clone`) and routes them through `agentbox-ctl git ...` so the
+# host runs the credential-touching part. Everything else (commit, status,
+# log, diff, add, checkout, branch, ...) falls through to the real
+# `/usr/bin/git` with zero overhead and zero shim output.
+#
+# Strict per-op flag whitelist — better safe than compatible. Adding a flag
+# is a deliberate decision, not a default.
+
+set -euo pipefail
+
+# Paths are constants in production; env overrides exist purely to let unit
+# tests substitute a stub `agentbox-ctl` on PATH without rewriting the shim.
+# NEVER `exec git` — would loop on this shim. Always exec the resolved $REAL_GIT.
+CTL="${AGENTBOX_CTL_PATH:-/usr/local/bin/agentbox-ctl}"
+REAL_GIT="${AGENTBOX_REAL_GIT_PATH:-/usr/bin/git}"
+
+die() {
+  printf 'agentbox git shim: %s\n' "$*" >&2
+  exit 2
+}
+
+# Walk argv: any arg matching `-*` must be in $allowed (regex alternation).
+# Doesn't validate flag _values_ (e.g. `--branch main`); that's git's job.
+strict_flags() {
+  local subcmd="$1"; shift
+  local allowed="$1"; shift
+  local re="^(${allowed})$"
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --) ;;
+      -*)
+        if ! [[ "$arg" =~ $re ]]; then
+          die "unsupported flag '$arg' for '$subcmd'. Allowed: ${allowed//|/, }"
+        fi
+        ;;
+    esac
+  done
+}
+
+# Network ops (push/pull/fetch): refuse positional remote/branch. The ctl
+# rebuilds them from the registered worktree; re-passing them as positionals
+# makes git treat them as refspecs and fail with
+# `refs/remotes/origin/HEAD cannot be resolved to branch` (documented at
+# packages/ctl/src/commands/git.ts:131).
+refuse_positionals() {
+  local subcmd="$1"; shift
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --) ;;
+      -*) ;;
+      *)
+        die "positional '$arg' not allowed for '$subcmd' (the box's remote and branch are taken from the registered worktree)"
+        ;;
+    esac
+  done
+}
+
+if [ $# -eq 0 ]; then
+  exec "$REAL_GIT"
+fi
+
+case "$1" in
+  push)
+    shift
+    strict_flags "git push" "--force-with-lease" "$@"
+    refuse_positionals "git push" "$@"
+    exec "$CTL" git push -- "$@"
+    ;;
+  pull)
+    shift
+    strict_flags "git pull" "--ff-only" "$@"
+    refuse_positionals "git pull" "$@"
+    exec "$CTL" git pull -- "$@"
+    ;;
+  fetch)
+    shift
+    strict_flags "git fetch" "--prune" "$@"
+    refuse_positionals "git fetch" "$@"
+    exec "$CTL" git fetch -- "$@"
+    ;;
+  clone)
+    shift
+    strict_flags "git clone" "--branch|--depth" "$@"
+    # Walk argv: split into (url, dir, flags) so we can hand them to ctl
+    # in commander's expected shape (positionals first, then options).
+    url=''
+    dir=''
+    flags=()
+    pos=0
+    skip_value=0
+    for arg in "$@"; do
+      if [ "$skip_value" = "1" ]; then
+        flags+=("$arg")
+        skip_value=0
+        continue
+      fi
+      case "$arg" in
+        --branch|--depth)
+          flags+=("$arg")
+          skip_value=1
+          ;;
+        -*)
+          flags+=("$arg")
+          ;;
+        *)
+          if [ $pos -eq 0 ]; then url="$arg"
+          elif [ $pos -eq 1 ]; then dir="$arg"
+          else die "too many positionals for 'git clone' (got '$arg' after url + dir)"
+          fi
+          pos=$((pos+1))
+          ;;
+      esac
+    done
+    if [ -z "$url" ]; then
+      die "'git clone' requires a positional <url> (github URL or owner/name shorthand)"
+    fi
+    # `set -u` + empty array: use the ${arr[@]+"${arr[@]}"} guard.
+    if [ -n "$dir" ]; then
+      exec "$CTL" git clone "$url" "$dir" ${flags[@]+"${flags[@]}"}
+    else
+      exec "$CTL" git clone "$url" ${flags[@]+"${flags[@]}"}
+    fi
+    ;;
+  *)
+    exec "$REAL_GIT" "$@"
+    ;;
+esac

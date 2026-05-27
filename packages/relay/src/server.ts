@@ -425,6 +425,18 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
         send(res, status, result);
         return;
       }
+      if (body.method === 'git.clone' || body.method === 'gh.repo.clone') {
+        // Clone bundle-ship-back machinery is deferred to a follow-up PR
+        // (see docs/plans/gh-and-git-shims-host-only.md → Deferred follow-ups).
+        // The shim + ctl plumbing is in place so the next iteration only has
+        // to land the relay-side host clone + bundle + box transfer.
+        send(res, 501, {
+          exitCode: 64,
+          stdout: '',
+          stderr: `${body.method}: not yet implemented (deferred; see docs/plans/gh-and-git-shims-host-only.md). Run \`gh\` / \`git\` on the host directly for now.\n`,
+        });
+        return;
+      }
       if (
         body.method === 'download.workspace' ||
         body.method === 'download.env' ||

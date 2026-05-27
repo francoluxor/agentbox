@@ -148,6 +148,13 @@ export async function executeCloudAction(
   if (action.method.startsWith('gh.pr.')) {
     return runGhPrRpc(action, deps);
   }
+  if (action.method === 'git.clone' || action.method === 'gh.repo.clone') {
+    return {
+      exitCode: 64,
+      stdout: '',
+      stderr: `${action.method}: not yet implemented (deferred; see docs/plans/gh-and-git-shims-host-only.md). Run \`gh\` / \`git\` on the host directly for now.\n`,
+    };
+  }
   return {
     exitCode: 1,
     stdout: '',

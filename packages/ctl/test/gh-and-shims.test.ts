@@ -1,0 +1,411 @@
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { postRpc } from '../src/relay-rpc.js';
+
+const REPO_ROOT = join(import.meta.dirname, '..', '..', '..');
+const GH_SHIM = join(REPO_ROOT, 'packages/sandbox-docker/scripts/gh-shim');
+const GIT_SHIM = join(REPO_ROOT, 'packages/sandbox-docker/scripts/git-shim');
+
+interface StubShellEnv {
+  tmpDir: string;
+  ctlPath: string;
+  cleanup: () => void;
+}
+
+/**
+ * Set up a tmpdir with a stub `agentbox-ctl` that prints `STUB: <argv>` and
+ * exits 0. Returns the path to the stub so a shim test can point
+ * AGENTBOX_CTL_PATH at it. Also git-inits the tmpdir on
+ * `agentbox/test-branch` so the shim's `git rev-parse --abbrev-ref HEAD`
+ * returns a predictable branch for the auto-injection tests.
+ */
+function makeStubShell(): StubShellEnv {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'agentbox-shim-test-'));
+  const ctlPath = join(tmpDir, 'agentbox-ctl-stub');
+  writeFileSync(
+    ctlPath,
+    `#!/usr/bin/env bash\nprintf 'STUB: %s\\n' "$*"\nexit 0\n`,
+    { mode: 0o755 },
+  );
+  chmodSync(ctlPath, 0o755);
+  // Real git init + commit so `git rev-parse --abbrev-ref HEAD` returns the
+  // branch name rather than "HEAD" (which is what an unborn branch yields).
+  // Author env is set explicitly so the test never depends on a global git
+  // user.email/user.name being configured — under turbo's parallel run this
+  // failed intermittently with "Please tell me who you are" → exit 128.
+  // GIT_CONFIG_GLOBAL=/dev/null bypasses ~/.gitconfig entirely so a user's
+  // commit.gpgsign (which would prompt for a passphrase on the GPG key and
+  // fail in CI / pnpm test) doesn't apply to the test commit.
+  const env = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_SYSTEM: '/dev/null',
+    GIT_AUTHOR_NAME: 'agentbox-test',
+    GIT_AUTHOR_EMAIL: 'agentbox-test@example.invalid',
+    GIT_COMMITTER_NAME: 'agentbox-test',
+    GIT_COMMITTER_EMAIL: 'agentbox-test@example.invalid',
+  };
+  const init = spawnSync('git', ['init', '-q', '-b', 'agentbox/test-branch', tmpDir], {
+    env,
+    stdio: 'pipe',
+  });
+  if (init.status !== 0) {
+    throw new Error(`git init failed: ${init.stderr.toString()}`);
+  }
+  const commit = spawnSync('git', ['-C', tmpDir, 'commit', '--allow-empty', '-qm', 'init'], {
+    env,
+    stdio: 'pipe',
+  });
+  if (commit.status !== 0) {
+    throw new Error(`git commit failed: ${commit.stderr.toString()}`);
+  }
+  return {
+    tmpDir,
+    ctlPath,
+    cleanup: () => {
+      rmSync(tmpDir, { recursive: true, force: true });
+    },
+  };
+}
+
+function runShim(
+  shimPath: string,
+  args: string[],
+  env: StubShellEnv,
+): { code: number; stdout: string; stderr: string } {
+  const res = spawnSync('bash', [shimPath, ...args], {
+    cwd: env.tmpDir,
+    env: {
+      ...process.env,
+      AGENTBOX_CTL_PATH: env.ctlPath,
+      AGENTBOX_REAL_GIT_PATH: '/usr/bin/git',
+    },
+    encoding: 'utf8',
+  });
+  return { code: res.status ?? -1, stdout: res.stdout, stderr: res.stderr };
+}
+
+describe('agentbox-ctl gh pr * wire shape', () => {
+  it('postRpc body is { method: "gh.pr.view", params: { path, args } }', async () => {
+    const { createServer } = await import('node:http');
+    let received = '';
+    const server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (c: Buffer) => (body += c.toString('utf8')));
+      req.on('end', () => {
+        received = body;
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ exitCode: 0, stdout: '', stderr: '' }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    const prevUrl = process.env.AGENTBOX_RELAY_URL;
+    const prevTok = process.env.AGENTBOX_RELAY_TOKEN;
+    process.env.AGENTBOX_RELAY_URL = `http://127.0.0.1:${String(port)}`;
+    process.env.AGENTBOX_RELAY_TOKEN = 'stub';
+    try {
+      await postRpc('gh.pr.view', {
+        path: '/workspace',
+        args: ['--json', 'number,url,reviewDecision'],
+      });
+      const parsed = JSON.parse(received) as { method: string; params: unknown };
+      expect(parsed.method).toBe('gh.pr.view');
+      expect(parsed.params).toEqual({
+        path: '/workspace',
+        args: ['--json', 'number,url,reviewDecision'],
+      });
+    } finally {
+      if (prevUrl === undefined) delete process.env.AGENTBOX_RELAY_URL;
+      else process.env.AGENTBOX_RELAY_URL = prevUrl;
+      if (prevTok === undefined) delete process.env.AGENTBOX_RELAY_TOKEN;
+      else process.env.AGENTBOX_RELAY_TOKEN = prevTok;
+      await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())));
+    }
+  });
+
+  it('postRpc body is { method: "gh.repo.clone", params: { path, repo, targetPath, args } }', async () => {
+    const { createServer } = await import('node:http');
+    let received = '';
+    const server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (c: Buffer) => (body += c.toString('utf8')));
+      req.on('end', () => {
+        received = body;
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ exitCode: 0, stdout: '', stderr: '' }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    const prevUrl = process.env.AGENTBOX_RELAY_URL;
+    const prevTok = process.env.AGENTBOX_RELAY_TOKEN;
+    process.env.AGENTBOX_RELAY_URL = `http://127.0.0.1:${String(port)}`;
+    process.env.AGENTBOX_RELAY_TOKEN = 'stub';
+    try {
+      await postRpc('gh.repo.clone', {
+        path: '/workspace',
+        repo: 'foo/bar',
+        targetPath: 'mydir',
+        args: ['--branch', 'main', '--depth', '1'],
+      });
+      const parsed = JSON.parse(received) as { method: string; params: unknown };
+      expect(parsed.method).toBe('gh.repo.clone');
+      expect(parsed.params).toEqual({
+        path: '/workspace',
+        repo: 'foo/bar',
+        targetPath: 'mydir',
+        args: ['--branch', 'main', '--depth', '1'],
+      });
+    } finally {
+      if (prevUrl === undefined) delete process.env.AGENTBOX_RELAY_URL;
+      else process.env.AGENTBOX_RELAY_URL = prevUrl;
+      if (prevTok === undefined) delete process.env.AGENTBOX_RELAY_TOKEN;
+      else process.env.AGENTBOX_RELAY_TOKEN = prevTok;
+      await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())));
+    }
+  });
+});
+
+describe('gh-shim arg whitelist + branch injection', () => {
+  it('--version emits a sniffable "gh version" line', () => {
+    const env = makeStubShell();
+    try {
+      const out = runShim(GH_SHIM, ['--version'], env);
+      expect(out.code).toBe(0);
+      expect(out.stdout).toMatch(/^gh version /);
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('auth status returns success without round-tripping the relay', () => {
+    const env = makeStubShell();
+    try {
+      const out = runShim(GH_SHIM, ['auth', 'status'], env);
+      expect(out.code).toBe(0);
+      expect(out.stderr).toMatch(/logged in to github\.com/i);
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('pr view with no positional injects the current branch', () => {
+    const env = makeStubShell();
+    try {
+      const out = runShim(GH_SHIM, ['pr', 'view'], env);
+      expect(out.code).toBe(0);
+      expect(out.stdout.trim()).toBe('STUB: gh pr view -- agentbox/test-branch');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('pr view with explicit positional leaves it alone', () => {
+    const env = makeStubShell();
+    try {
+      const out = runShim(GH_SHIM, ['pr', 'view', '42'], env);
+      expect(out.code).toBe(0);
+      expect(out.stdout.trim()).toBe('STUB: gh pr view -- 42');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('pr view --json passes through the JSON field list AND still injects branch', () => {
+    // Regression: a naive `first_positional` treated `number,url` as the
+    // positional ref because it didn't know `--json` takes a value, so it
+    // skipped branch injection and the host resolved against `main`. The
+    // PR badge then went dark even though the box was on a branch with a PR.
+    const env = makeStubShell();
+    try {
+      const out = runShim(GH_SHIM, ['pr', 'view', '--json', 'number,url'], env);
+      expect(out.code).toBe(0);
+      expect(out.stdout).toContain('STUB: gh pr view -- agentbox/test-branch --json number,url');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('pr comment --body still injects branch as positional ref', () => {
+    const env = makeStubShell();
+    try {
+      const out = runShim(GH_SHIM, ['pr', 'comment', '--body', 'looks good'], env);
+      expect(out.code).toBe(0);
+      expect(out.stdout).toContain('STUB: gh pr comment -- agentbox/test-branch --body looks good');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('pr list auto-injects --head <branch>', () => {
+    const env = makeStubShell();
+    try {
+      const out = runShim(GH_SHIM, ['pr', 'list'], env);
+      expect(out.code).toBe(0);
+      expect(out.stdout).toContain('--head agentbox/test-branch');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('pr create injects --head <branch> when missing', () => {
+    const env = makeStubShell();
+    try {
+      const out = runShim(GH_SHIM, ['pr', 'create', '--fill', '--draft'], env);
+      expect(out.code).toBe(0);
+      expect(out.stdout).toContain('--head agentbox/test-branch');
+      expect(out.stdout).toContain('--fill');
+      expect(out.stdout).toContain('--draft');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('rejects unknown top-level subcommands (gh issue)', () => {
+    const env = makeStubShell();
+    try {
+      const out = runShim(GH_SHIM, ['issue', 'list'], env);
+      expect(out.code).toBe(2);
+      expect(out.stderr).toMatch(/not proxied/);
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('rejects un-whitelisted gh pr view flags (e.g. --comments)', () => {
+    const env = makeStubShell();
+    try {
+      const out = runShim(GH_SHIM, ['pr', 'view', '--comments'], env);
+      expect(out.code).toBe(2);
+      expect(out.stderr).toMatch(/unsupported flag '--comments'/);
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('repo clone requires a positional repo', () => {
+    const env = makeStubShell();
+    try {
+      const out = runShim(GH_SHIM, ['repo', 'clone'], env);
+      expect(out.code).toBe(2);
+      expect(out.stderr).toMatch(/requires a positional/);
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('repo clone accepts repo + --branch + --depth', () => {
+    const env = makeStubShell();
+    try {
+      const out = runShim(
+        GH_SHIM,
+        ['repo', 'clone', 'foo/bar', 'mydir', '--branch', 'main', '--depth', '1'],
+        env,
+      );
+      expect(out.code).toBe(0);
+      expect(out.stdout).toContain('foo/bar mydir --branch main --depth 1');
+    } finally {
+      env.cleanup();
+    }
+  });
+});
+
+describe('git-shim arg whitelist + passthrough', () => {
+  it('push with no args forwards to ctl', () => {
+    const env = makeStubShell();
+    try {
+      const out = runShim(GIT_SHIM, ['push'], env);
+      expect(out.code).toBe(0);
+      expect(out.stdout).toContain('STUB: git push --');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('push --force-with-lease is allowed', () => {
+    const env = makeStubShell();
+    try {
+      const out = runShim(GIT_SHIM, ['push', '--force-with-lease'], env);
+      expect(out.code).toBe(0);
+      expect(out.stdout).toContain('--force-with-lease');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('push --tags is rejected (better safe than compatible)', () => {
+    const env = makeStubShell();
+    try {
+      const out = runShim(GIT_SHIM, ['push', '--tags'], env);
+      expect(out.code).toBe(2);
+      expect(out.stderr).toMatch(/unsupported flag '--tags'/);
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('push origin main is rejected (positional refspec)', () => {
+    const env = makeStubShell();
+    try {
+      const out = runShim(GIT_SHIM, ['push', 'origin', 'main'], env);
+      expect(out.code).toBe(2);
+      expect(out.stderr).toMatch(/positional 'origin' not allowed/);
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('clone --recurse-submodules is rejected', () => {
+    const env = makeStubShell();
+    try {
+      const out = runShim(GIT_SHIM, ['clone', '--recurse-submodules', 'https://x/y.git'], env);
+      expect(out.code).toBe(2);
+      expect(out.stderr).toMatch(/unsupported flag '--recurse-submodules'/);
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('clone with no url is rejected', () => {
+    const env = makeStubShell();
+    try {
+      const out = runShim(GIT_SHIM, ['clone'], env);
+      expect(out.code).toBe(2);
+      expect(out.stderr).toMatch(/requires a positional <url>/);
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('clone url + dir + --branch + --depth lands in ctl call shape', () => {
+    const env = makeStubShell();
+    try {
+      const out = runShim(
+        GIT_SHIM,
+        ['clone', '--branch', 'main', '--depth', '1', 'https://github.com/x/y.git', 'mytarget'],
+        env,
+      );
+      expect(out.code).toBe(0);
+      expect(out.stdout).toContain('git clone https://github.com/x/y.git mytarget --branch main --depth 1');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('status falls through to real /usr/bin/git', () => {
+    const env = makeStubShell();
+    try {
+      const out = runShim(GIT_SHIM, ['status'], env);
+      expect(out.code).toBe(0);
+      expect(out.stdout).toMatch(/On branch agentbox\/test-branch/);
+    } finally {
+      env.cleanup();
+    }
+  });
+});

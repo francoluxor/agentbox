@@ -39,6 +39,8 @@ const execBitFiles = new Set([
   'packages/sandbox-docker/scripts/agentbox-dockerd-start',
   'packages/sandbox-docker/scripts/agentbox-checkpoint-cleanup',
   'packages/sandbox-docker/scripts/agentbox-open',
+  'packages/sandbox-docker/scripts/gh-shim',
+  'packages/sandbox-docker/scripts/git-shim',
 ]);
 const contextFiles = [
   'packages/ctl/dist/bin.cjs',
@@ -47,6 +49,8 @@ const contextFiles = [
   'packages/sandbox-docker/scripts/agentbox-dockerd-start',
   'packages/sandbox-docker/scripts/agentbox-checkpoint-cleanup',
   'packages/sandbox-docker/scripts/agentbox-open',
+  'packages/sandbox-docker/scripts/gh-shim',
+  'packages/sandbox-docker/scripts/git-shim',
   'packages/sandbox-docker/scripts/custom-system-CLAUDE.md',
   'packages/sandbox-docker/scripts/claude-managed-settings.json',
   'packages/sandbox-docker/scripts/agentbox-codex-hooks.json',

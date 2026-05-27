@@ -141,6 +141,19 @@ RUN apt-get update \
 COPY packages/ctl/dist/bin.cjs /usr/local/bin/agentbox-ctl
 RUN chmod +x /usr/local/bin/agentbox-ctl
 
+# `gh` + `git` shims: route a strict subset of upstream subcommands through
+# the host relay (via agentbox-ctl) so the host's authenticated `gh` / git
+# creds stay on the host — the in-box agent never sees a token. The shims
+# also light up Claude Code's branch-linked-to-PR badge (Claude Code calls
+# `gh pr view --json …` on refresh). See packages/sandbox-docker/scripts/
+# {gh,git}-shim and docs/plans/gh-and-git-shims-host-only.md. PATH ordering
+# (line 50 above) puts /usr/local/bin ahead of /usr/bin, so the shim wins;
+# the git shim execs /usr/bin/git directly for everything outside its tiny
+# network-op whitelist (push/pull/fetch/clone).
+COPY packages/sandbox-docker/scripts/gh-shim /usr/local/bin/gh
+COPY packages/sandbox-docker/scripts/git-shim /usr/local/bin/git
+RUN chmod +x /usr/local/bin/gh /usr/local/bin/git
+
 # Setup guide for the first-run wizard. This baked copy is the single source
 # of the /agentbox-setup skill: seedSetupSkillIntoVolume()
 # (packages/sandbox-docker/src/claude.ts) copies it into the box's
