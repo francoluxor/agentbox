@@ -112,6 +112,13 @@ export interface SeedWorkspaceOptions {
   container: string;
   /** Repos with collected carry-over, in DAG order: root first, nested after. */
   repos: RepoCarryOver[];
+  /**
+   * Base ref each worktree is forked from. `undefined` (default) → `HEAD`.
+   * Caller validates host-side; passed verbatim to `git worktree add`. Set
+   * by `agentbox create --from-branch <ref>` so the box can start from main
+   * (or any ref) instead of whatever the host happens to have checked out.
+   */
+  fromBranch?: string;
   onLog?: (line: string) => void;
 }
 
@@ -264,9 +271,18 @@ export async function seedWorkspace(opts: SeedWorkspaceOptions): Promise<void> {
   await dexec(opts.container, ['mkdir', '-p', WORKTREE_ROOT]);
 
   // Phase 1: register each worktree at its per-box unique path.
+  // `fromBranch` (when set) overrides the default `HEAD` base ref for the
+  // *root* repo only — the CLI's `--from-branch <ref>` is resolved against
+  // the user's primary repo, and a nested submodule/monorepo-sub-repo will
+  // almost never carry that same ref. Applying it uniformly would fail
+  // `git worktree add` for nested repos that don't have `<ref>`, aborting
+  // box creation. Mirrors the cloud path's behavior in
+  // `packages/sandbox-cloud/src/workspace-seed.ts` (which only forwards
+  // `fromBranch` to the root clone).
   for (const r of opts.repos) {
     const main = r.repo.hostMainRepo;
     const wt = r.gitWorktreePath;
+    const baseRef = r.repo.kind === 'root' ? (opts.fromBranch ?? 'HEAD') : 'HEAD';
     const add = await execa(
       'docker',
       [
@@ -282,7 +298,7 @@ export async function seedWorkspace(opts: SeedWorkspaceOptions): Promise<void> {
         '-b',
         r.branch,
         wt,
-        'HEAD',
+        baseRef,
       ],
       { reject: false },
     );
