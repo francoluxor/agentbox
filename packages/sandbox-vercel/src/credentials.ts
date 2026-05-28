@@ -52,16 +52,16 @@ export async function ensureVercelCredentials(
   intro('Vercel setup');
   note(
     `AgentBox needs Vercel credentials to provision sandboxes.\n` +
-      `Recommended: run \`vercel link\` then \`vercel env pull\` to get an OIDC token (auto-detected).\n` +
-      `Alternative: a personal access token + team id + project id.`,
+      `OIDC (quickest for short interactive work): run \`vercel link\` then \`vercel env pull\` (auto-detected; dev token expires ~12h, no headless refresh).\n` +
+      `Access token (recommended for long ops like \`agentbox prepare\` + CI): personal access token + team id + project id (doesn't expire on the 12h cycle).`,
     'Credentials required',
   );
 
   const mode = await select({
     message: 'How do you want to authenticate?',
     options: [
-      { value: 'oidc', label: 'OIDC token (vercel env pull) — recommended' },
-      { value: 'token', label: 'Access token (VERCEL_TOKEN + team + project)' },
+      { value: 'oidc', label: 'OIDC token (vercel env pull) — quickest for short interactive work' },
+      { value: 'token', label: 'Access token (VERCEL_TOKEN + team + project) — best for prepare/CI, no 12h expiry' },
     ],
     initialValue: 'oidc',
   });

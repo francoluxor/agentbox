@@ -160,10 +160,11 @@ agentbox/<box>` shows the commit, then try `agentbox-ctl git pull` and a `gh pr`
     builder sandbox after `snapshot()` (in case delete cascades to the snapshot).
     Confirm a snapshot survives its source's deletion; if so, delete the builder
     so it isn't left for Vercel's reaper.
-11. **OIDC 12h expiry friction.** Dev OIDC tokens last ~12h, so a long `prepare`
-    can outlive the token. `resolveCredentials` detects expiry with a clear
-    message, but there's no auto-refresh. Document the access-token trio as the
-    recommended path for long operations (it doesn't expire on the 12h cycle).
+11. [x] **OIDC 12h expiry friction.** Done (doc) — `docs/cloud-providers.md` now
+    has a "Which to use" note recommending the access-token trio for long ops
+    (`prepare`, CI) since OIDC dev tokens expire ~12h with no headless refresh,
+    and the `agentbox vercel login` prompt/labels say the same at the decision
+    point. (Auto-refresh itself remains unbuilt — this is the documentation half.)
 12. **No per-provider resource/region/timeout config.** `vcpus` defaults to 2,
     timeout to 45 min, region is fixed `iad1` (Vercel constraint). The
     "per-provider VM size config" TODO (already tracked in the repo TODO.md)

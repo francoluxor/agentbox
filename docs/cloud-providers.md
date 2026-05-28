@@ -446,12 +446,21 @@ persists it to the same `~/.agentbox/secrets.env`. First-time use of
 `--provider hetzner` triggers the login prompt automatically.
 
 `agentbox vercel login` is the Vercel equivalent. Two auth modes: the
-recommended **OIDC** path (`vercel link && vercel env pull` writes
-`VERCEL_OIDC_TOKEN` into `.env.local`, which the SDK reads directly — the dev
-token expires ~12h, re-pull when it does), or an **access token** trio
+**OIDC** path (`vercel link && vercel env pull` writes `VERCEL_OIDC_TOKEN` into
+`.env.local`, which the SDK reads directly), or an **access token** trio
 (`VERCEL_TOKEN` + `VERCEL_TEAM_ID` + `VERCEL_PROJECT_ID`) persisted to
 `~/.agentbox/secrets.env`. First-time use of `--provider vercel` triggers the
 prompt automatically.
+
+**Which to use:** OIDC is the quickest for short-lived interactive work, but the
+dev token expires on a ~12h cycle and `resolveCredentials` has **no headless
+auto-refresh** (a CLI-backed refresh needs an interactive `vercel` session). So
+for any long-running operation — most importantly `agentbox prepare --provider
+vercel`, whose base-snapshot bake can outlive a token — use the **access-token
+trio**: it doesn't expire on the 12h cycle and is the practical path for
+`prepare`, CI, and other headless/long jobs. Mint a token at
+`https://vercel.com/account/settings/tokens`; the team id is in the team's
+General settings and the project id in the project's General settings.
 
 ## 5. Known caveats
 
