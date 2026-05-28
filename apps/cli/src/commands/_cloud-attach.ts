@@ -128,8 +128,10 @@ export async function cloudAgentAttach(args: CloudAgentAttachArgs): Promise<void
       mode: args.mode,
       detachable: true,
       openIn: safeOpenIn,
+      // claude + macOS only: off darwin clipboard capture can't succeed, so
+      // leave Ctrl+V forwarding verbatim instead of a no-op flash.
       onPasteImage:
-        args.mode === 'claude'
+        args.mode === 'claude' && process.platform === 'darwin'
           ? () => pasteHostClipboardImage(provider, args.box)
           : undefined,
     });

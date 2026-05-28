@@ -22,7 +22,7 @@ import { execa } from 'execa';
  * back to TIFF. Prints `PNG`, `TIFF`, or `NONE` so the caller knows what (if
  * anything) landed and whether it still needs converting.
  */
-function captureScript(pngPath: string, tiffPath: string): string {
+function captureScriptArgs(pngPath: string, tiffPath: string): string[] {
   return [
     'try',
     '  set theData to (the clipboard as «class PNGf»)',
@@ -65,7 +65,7 @@ export async function captureClipboardImage(): Promise<string | null> {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   };
 
-  const res = await execa('osascript', captureScript(pngPath, tiffPath), {
+  const res = await execa('osascript', captureScriptArgs(pngPath, tiffPath), {
     reject: false,
   });
   const kind = res.stdout.trim();

@@ -133,7 +133,12 @@ async function attachClaudeWrapped(
     detachNotice: formatDetachNotice(reattach),
     onError,
     openIn,
-    onPasteImage: () => pasteHostClipboardImage(provider, box),
+    // macOS-only: off darwin clipboard capture can't succeed, so leave Ctrl+V
+    // forwarding verbatim instead of intercepting it for a no-op flash.
+    onPasteImage:
+      process.platform === 'darwin'
+        ? () => pasteHostClipboardImage(provider, box)
+        : undefined,
   });
   process.exit(code);
 }
