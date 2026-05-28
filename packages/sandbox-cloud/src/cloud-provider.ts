@@ -331,6 +331,12 @@ export function createCloudProvider(
       // "user logs in inside the box" the way cloud worked before.
       const agentVolumes = await ensureAgentVolumesForCloud(backend, { onLog: log });
 
+      // Read the `expose:` service ports up front so port-capped backends
+      // (vercel) can declare them at create time — a preview URL only routes to
+      // a port that was exposed when the sandbox was created. Reused below for
+      // the per-service preview-URL map. Best-effort: [] when there's no yaml.
+      const exposeServicePorts = await readExposedServicePorts(req.workspacePath);
+
       log(
         snapshotName
           ? `provisioning ${providerName} sandbox from snapshot`
@@ -342,6 +348,7 @@ export function createCloudProvider(
         snapshot: snapshotName,
         resources,
         timeoutMs,
+        exposePorts: exposeServicePorts,
         env: {
           AGENTBOX_BOX_ID: id,
           AGENTBOX_BOX_NAME: name,
@@ -539,7 +546,7 @@ export function createCloudProvider(
         // WebProxy URL — lets users hit services without going through the
         // WebProxy. Best-effort: a failed `previewUrl` for a given port
         // just omits it from the map.
-        const servicePorts = await readExposedServicePorts(req.workspacePath);
+        const servicePorts = exposeServicePorts;
         const servicePreviews: Record<number, string> = {};
         for (const port of servicePorts) {
           if (port === CLOUD_WEB_PROXY_PORT) continue;

@@ -22,7 +22,7 @@ vi.mock('../src/sdk.js', () => ({
   },
 }));
 
-import { vercelBackend } from '../src/backend.js';
+import { vercelBackend, buildExposedPorts, VERCEL_MAX_PORTS } from '../src/backend.js';
 
 function fakeSandbox(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -128,5 +128,30 @@ describe('vercelBackend.destroy', () => {
   it('is idempotent when the sandbox is already gone', async () => {
     mocks.get.mockRejectedValue(new Error('not_found'));
     await expect(vercelBackend.destroy({ sandboxId: 'gone' })).resolves.toBeUndefined();
+  });
+});
+
+describe('buildExposedPorts', () => {
+  it('returns just the base ports when no expose ports are given', () => {
+    expect(buildExposedPorts(undefined)).toEqual([6080, 8788]);
+    expect(buildExposedPorts([])).toEqual([6080, 8788]);
+  });
+
+  it('appends non-privileged expose ports after the base set', () => {
+    expect(buildExposedPorts([3000])).toEqual([6080, 8788, 3000]);
+  });
+
+  it('drops privileged ports (<1024, which Vercel 400s) and out-of-range', () => {
+    expect(buildExposedPorts([80, 443, 3000, 70000])).toEqual([6080, 8788, 3000]);
+  });
+
+  it('dedupes against the base set and itself', () => {
+    expect(buildExposedPorts([6080, 3000, 3000])).toEqual([6080, 8788, 3000]);
+  });
+
+  it('never exceeds the Vercel 4-port cap', () => {
+    const out = buildExposedPorts([3000, 3001, 3002, 3003]);
+    expect(out.length).toBe(VERCEL_MAX_PORTS);
+    expect(out).toEqual([6080, 8788, 3000, 3001]);
   });
 });

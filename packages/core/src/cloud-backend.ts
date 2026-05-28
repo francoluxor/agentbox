@@ -38,6 +38,13 @@ export interface CloudProvisionRequest {
    * maps it to `Sandbox.create({ timeout })`.
    */
   timeoutMs?: number;
+  /**
+   * Extra in-box service ports (from `agentbox.yaml` `expose`) the caller wants
+   * reachable via `previewUrl`. Backends with a fixed port allowance (Vercel:
+   * max 4, no privileged ports) merge these into the create-time port list up
+   * to their cap; backends that route all ports through one proxy ignore it.
+   */
+  exposePorts?: number[];
   /** Env vars baked into the sandbox at provision time. */
   env?: Record<string, string>;
   /** Persistent volumes to attach. Backends without a volume API ignore this. */

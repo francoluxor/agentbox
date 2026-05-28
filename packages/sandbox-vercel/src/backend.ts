@@ -47,15 +47,38 @@ const BOX_USER = 'vscode';
 const BOX_OWNER = 'vscode:vscode';
 
 /**
- * Ports exposed at create (max 4). Vercel REJECTS privileged ports (<1024) with
- * a 400, so we cannot expose the scaffold's WebProxy port 80 — the two ports
- * that matter are 6080 (noVNC) and 8788 (the relay/ctl bridge the host poller
- * reaches via `sandbox.domain(8788)`). The in-box WebProxy still binds 80, but
- * it isn't externally reachable on Vercel, so `agentbox url` for a web app is a
- * documented v1 limitation (see docs/vercel-backlog.md). A 4th slot is free for
- * a future non-privileged per-service expose.
+ * Base ports exposed at create. Vercel REJECTS privileged ports (<1024) with a
+ * 400, so we cannot expose the scaffold's WebProxy port 80 — the two base ports
+ * are 6080 (noVNC) and 8788 (the relay/ctl bridge the host poller reaches via
+ * `sandbox.domain(8788)`). The in-box WebProxy still binds 80, but it isn't
+ * externally reachable on Vercel, so `agentbox url` for a web app on :80 stays a
+ * documented limitation. The remaining slots (up to VERCEL_MAX_PORTS) are filled
+ * at create from `agentbox.yaml` `expose:` ports so per-service preview URLs
+ * actually route (see buildExposedPorts).
  */
 export const VERCEL_EXPOSED_PORTS = [6080, 8788] as const;
+
+/** Vercel's hard per-sandbox exposed-port cap. */
+export const VERCEL_MAX_PORTS = 4;
+
+/**
+ * Merge requested `expose:` service ports into the base set: drop privileged
+ * (<1024 — Vercel 400s) and out-of-range ports + dupes, preserve order, and cap
+ * at Vercel's 4-port limit. A preview URL only routes to a port declared here at
+ * create time, so this is what makes `services.*.expose` reachable on Vercel.
+ */
+export function buildExposedPorts(extra: readonly number[] | undefined): number[] {
+  const ports = [...VERCEL_EXPOSED_PORTS] as number[];
+  const seen = new Set<number>(ports);
+  for (const p of extra ?? []) {
+    if (ports.length >= VERCEL_MAX_PORTS) break;
+    if (Number.isInteger(p) && p >= 1024 && p < 65_536 && !seen.has(p)) {
+      ports.push(p);
+      seen.add(p);
+    }
+  }
+  return ports;
+}
 
 /**
  * Default per-session timeout. 45 min is the Hobby ceiling, so it's safe across
@@ -167,7 +190,7 @@ export const vercelBackend: CloudBackend = {
           name: req.name,
           source: { type: 'snapshot', snapshotId },
           resources: { vcpus: req.resources?.cpu ?? 2 },
-          ports: [...VERCEL_EXPOSED_PORTS],
+          ports: buildExposedPorts(req.exposePorts),
           timeout: req.timeoutMs ?? DEFAULT_TIMEOUT_MS,
           env: req.env,
           tags: { agentbox: 'true', 'agentbox.name': req.name },

@@ -199,8 +199,18 @@ agentbox/<box>` shows the commit, then try `agentbox-ctl git pull` and a `gh pr`
     offer to delete the ones absent from `state.json`. `apps/cli/src/commands/prune.ts`.
 16. **`Sandbox.fork()`** as a faster "branch from a running box" primitive than
     snapshot + create (Vercel-native, no host round-trip).
-17. **4th port / per-service `expose`.** Only 3 of the 4 allowed ports are used
-    (80/6080/8788); per-service `expose` URLs from `agentbox.yaml` beyond the
-    WebProxy aren't surfaced (the scaffold tries, but we're near the port cap).
+17. [x] **Per-service `expose` ports.** Done — the cloud scaffold already minted a
+    preview URL per `services.*.expose.port`, but on Vercel a URL only routes to a
+    port declared at `Sandbox.create({ ports })`, and only `[6080, 8788]` were
+    declared, so those URLs 404'd. Now the cloud provider reads the expose ports
+    before provision and threads them via `CloudProvisionRequest.exposePorts`; the
+    vercel backend's `buildExposedPorts` merges the non-privileged ones (Vercel
+    400s on <1024) onto the base set, capped at Vercel's 4-port limit (so up to 2
+    service ports). daytona/hetzner ignore the field (one WebProxy routes all
+    ports). Verified live: provisioning with `expose 3000` declares
+    `[6080, 8788, 3000]` and the public `domain(3000)` URL routes to an in-box
+    service. Unit-tested (`buildExposedPorts`: privileged-drop, dedupe, 4-cap).
+    Port 80 (the in-box WebProxy) still can't be exposed on Vercel — services must
+    listen on a non-privileged port to get a preview URL.
 18. **`networkPolicy` / `extendTimeout`** are unused — could expose egress
     locking (a safety win, cf. the hetzner firewall) and longer single sessions.
