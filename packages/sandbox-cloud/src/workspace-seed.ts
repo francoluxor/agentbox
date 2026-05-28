@@ -174,8 +174,15 @@ async function seedFromGitClone(args: SeedFromGitCloneArgs): Promise<void> {
   // fetch after the initial clone (HEAD-only clone doesn't pull arbitrary
   // refs). The untracked tar uploads on the side and the in-sandbox script
   // untars it after `git checkout` materializes the working tree.
-  const stashSha = await safeStashCreate(args.hostRepo);
-  const untrackedSize = await maybeBuildUntrackedTar(args.hostRepo, untrackedTarPath);
+  //
+  // --use-branch skips carry-over entirely: the box gets the reused branch's
+  // committed tip, not the host's uncommitted state (which may belong to a
+  // different branch). Mirrors the docker reuse path, which builds its
+  // RepoCarryOver with `stashSha: null` / empty untracked.
+  const stashSha = args.useBranch ? null : await safeStashCreate(args.hostRepo);
+  const untrackedSize = args.useBranch
+    ? 0
+    : await maybeBuildUntrackedTar(args.hostRepo, untrackedTarPath);
   let stashRefCreated = false;
   try {
     if (stashSha) {
