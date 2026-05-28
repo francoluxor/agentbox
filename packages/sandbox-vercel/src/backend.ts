@@ -33,6 +33,7 @@ import type {
   CloudSandboxSummary,
   CloudState,
 } from '@agentbox/core';
+import type { NetworkPolicy } from '@vercel/sandbox';
 import { resolveCredentials, Sandbox, Snapshot, type SandboxType } from './sdk.js';
 import { withVercelRetry } from './retry.js';
 import { readPreparedState } from './prepared-state.js';
@@ -78,6 +79,23 @@ export function buildExposedPorts(extra: readonly number[] | undefined): number[
     }
   }
   return ports;
+}
+
+/**
+ * Parse the `box.vercelNetworkPolicy` config string into a Vercel
+ * `NetworkPolicy`. `''`/unset → undefined (SDK default = allow-all). The
+ * literals `allow-all` / `deny-all` pass through; anything else is treated as a
+ * comma-separated domain allowlist `{ allow: [...] }` (everything else denied).
+ */
+export function parseNetworkPolicy(raw: string | undefined): NetworkPolicy | undefined {
+  const v = (raw ?? '').trim();
+  if (v === '') return undefined;
+  if (v === 'allow-all' || v === 'deny-all') return v;
+  const allow = v
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return allow.length > 0 ? { allow } : undefined;
 }
 
 /**
@@ -196,6 +214,9 @@ export const vercelBackend: CloudBackend = {
           tags: { agentbox: 'true', 'agentbox.name': req.name },
           persistent: true,
           keepLastSnapshots: { ...KEEP_LAST_SNAPSHOTS },
+          ...(parseNetworkPolicy(req.networkPolicy)
+            ? { networkPolicy: parseNetworkPolicy(req.networkPolicy) }
+            : {}),
           ...creds(),
         });
         return { sandboxId: sb.name };

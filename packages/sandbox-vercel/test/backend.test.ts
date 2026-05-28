@@ -22,7 +22,7 @@ vi.mock('../src/sdk.js', () => ({
   },
 }));
 
-import { vercelBackend, buildExposedPorts, VERCEL_MAX_PORTS } from '../src/backend.js';
+import { vercelBackend, buildExposedPorts, VERCEL_MAX_PORTS, parseNetworkPolicy } from '../src/backend.js';
 
 function fakeSandbox(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -153,5 +153,26 @@ describe('buildExposedPorts', () => {
     const out = buildExposedPorts([3000, 3001, 3002, 3003]);
     expect(out.length).toBe(VERCEL_MAX_PORTS);
     expect(out).toEqual([6080, 8788, 3000, 3001]);
+  });
+});
+
+describe('parseNetworkPolicy', () => {
+  it('returns undefined for empty/unset (SDK default allow-all)', () => {
+    expect(parseNetworkPolicy(undefined)).toBeUndefined();
+    expect(parseNetworkPolicy('')).toBeUndefined();
+    expect(parseNetworkPolicy('   ')).toBeUndefined();
+  });
+
+  it('passes through the allow-all / deny-all literals', () => {
+    expect(parseNetworkPolicy('allow-all')).toBe('allow-all');
+    expect(parseNetworkPolicy('deny-all')).toBe('deny-all');
+    expect(parseNetworkPolicy(' deny-all ')).toBe('deny-all');
+  });
+
+  it('treats anything else as a comma-separated domain allowlist', () => {
+    expect(parseNetworkPolicy('github.com')).toEqual({ allow: ['github.com'] });
+    expect(parseNetworkPolicy('github.com, *.npmjs.org ,')).toEqual({
+      allow: ['github.com', '*.npmjs.org'],
+    });
   });
 });

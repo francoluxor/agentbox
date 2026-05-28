@@ -45,6 +45,13 @@ export interface CloudProvisionRequest {
    * to their cap; backends that route all ports through one proxy ignore it.
    */
   exposePorts?: number[];
+  /**
+   * Backend-interpreted egress policy string. Vercel maps it to a
+   * `Sandbox.create({ networkPolicy })`: `allow-all` / `deny-all` / a
+   * comma-separated domain allowlist. Backends without a native egress
+   * primitive ignore it (hetzner locks egress via its own firewall instead).
+   */
+  networkPolicy?: string;
   /** Env vars baked into the sandbox at provision time. */
   env?: Record<string, string>;
   /** Persistent volumes to attach. Backends without a volume API ignore this. */

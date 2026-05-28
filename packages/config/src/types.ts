@@ -50,6 +50,7 @@ export interface UserConfig {
     bundleDepth?: number;
     vercelVcpus?: number;
     vercelTimeoutMs?: number;
+    vercelNetworkPolicy?: string;
   };
   checkpoint?: {
     maxLayers?: number;
@@ -140,6 +141,7 @@ export interface EffectiveConfig {
     bundleDepth: number | undefined;
     vercelVcpus: number;
     vercelTimeoutMs: number;
+    vercelNetworkPolicy: string;
   };
   checkpoint: {
     maxLayers: number;
@@ -249,6 +251,7 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     bundleDepth: undefined,
     vercelVcpus: 2,
     vercelTimeoutMs: 2_700_000,
+    vercelNetworkPolicy: '',
   },
   checkpoint: {
     maxLayers: 3,
@@ -464,6 +467,12 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     type: 'int',
     description:
       'Max session length (ms) for new --provider vercel boxes before the VM auto-snapshots; persistent mode auto-resumes on the next call. Default 2700000 (45 min, the Hobby ceiling). Vercel-only.',
+  },
+  {
+    key: 'box.vercelNetworkPolicy',
+    type: 'string',
+    description:
+      "Egress lock for new --provider vercel boxes: 'allow-all' (default, unset), 'deny-all', or a comma-separated domain allowlist (e.g. 'github.com,*.npmjs.org') that denies everything else. Vercel-only; ignored by other providers.",
   },
   {
     key: 'claude.sessionName',

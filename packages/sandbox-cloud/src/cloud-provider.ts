@@ -285,6 +285,11 @@ export function createCloudProvider(
       const timeoutOverride = req.providerOptions?.['timeoutMs'];
       const timeoutMs =
         typeof timeoutOverride === 'number' && timeoutOverride > 0 ? timeoutOverride : undefined;
+      const networkPolicyOpt = req.providerOptions?.['networkPolicy'];
+      const networkPolicy =
+        typeof networkPolicyOpt === 'string' && networkPolicyOpt.trim() !== ''
+          ? networkPolicyOpt.trim()
+          : undefined;
 
       // Per-box tokens: `relayToken` authenticates the in-box agent to its
       // in-sandbox relay (`/events`, `/rpc` bearer); `bridgeToken` separately
@@ -349,6 +354,7 @@ export function createCloudProvider(
         resources,
         timeoutMs,
         exposePorts: exposeServicePorts,
+        networkPolicy,
         env: {
           AGENTBOX_BOX_ID: id,
           AGENTBOX_BOX_NAME: name,

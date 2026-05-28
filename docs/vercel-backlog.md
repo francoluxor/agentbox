@@ -212,5 +212,14 @@ agentbox/<box>` shows the commit, then try `agentbox-ctl git pull` and a `gh pr`
     service. Unit-tested (`buildExposedPorts`: privileged-drop, dedupe, 4-cap).
     Port 80 (the in-box WebProxy) still can't be exposed on Vercel — services must
     listen on a non-privileged port to get a preview URL.
-18. **`networkPolicy` / `extendTimeout`** are unused — could expose egress
-    locking (a safety win, cf. the hetzner firewall) and longer single sessions.
+18. [x] **`networkPolicy` egress locking.** Done — added `box.vercelNetworkPolicy`
+    config (`allow-all` default / `deny-all` / comma-separated domain allowlist),
+    threaded config → `providerOptions` (vercel-only) → `CloudProvisionRequest.networkPolicy`
+    → `Sandbox.create({ networkPolicy })`. `parseNetworkPolicy` maps the string to
+    the SDK shape (pass-through literals; else `{ allow: [...] }`). daytona/hetzner
+    ignore it (hetzner locks egress via its own firewall). Verified live: a
+    `deny-all` box can't reach `example.com`; an `example.com`-allowlist box
+    reaches `example.com` but not `api.github.com`. Unit-tested `parseNetworkPolicy`.
+    `extendTimeout` is **deferred** (niche: session length is already set at create
+    via `box.vercelTimeoutMs`, and persistent mode auto-resumes — mid-session
+    extension has no clean CLI home yet).

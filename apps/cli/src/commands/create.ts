@@ -342,6 +342,7 @@ export const createCommand = new Command('create')
             ? {
                 vcpus: cfg.effective.box.vercelVcpus,
                 timeoutMs: cfg.effective.box.vercelTimeoutMs,
+                networkPolicy: cfg.effective.box.vercelNetworkPolicy,
               }
             : {}),
         },
