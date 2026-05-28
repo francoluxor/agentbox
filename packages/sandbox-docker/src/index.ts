@@ -174,6 +174,7 @@ export {
   stageCodexCredentialsForUpload,
   stageOpencodeStaticForUpload,
   stageOpencodeCredentialsForUpload,
+  stageOpencodeStateForUpload,
   type StageClaudeOptions,
   type StageCodexOptions,
   type StageOpencodeOptions,
