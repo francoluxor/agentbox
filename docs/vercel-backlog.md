@@ -78,6 +78,24 @@ Confirmed live 2026-05-28:
 4. [ ] **Relay round-trip.** Confirm the host `CloudBoxPoller` reaches the in-box
    relay over `sandbox.domain(8788)` and that `agentbox-ctl git push|pull` +
    `gh pr` work from inside a vercel box. (Still open — interactive; see runbook.)
+   **Plan (host — must run on a real host, not a nested box):**
+   - *Why nested doesn't work:* a vercel box's `CloudBoxPoller` runs wherever the
+     `agentbox` CLI runs; from inside a docker agentbox the relay/git creds chain is
+     doubly-nested and the vercel box's bridge can't cleanly reach the laptop's git
+     identity. Run this from the laptop host.
+   - The public-URL plumbing is already validated: `sandbox.domain(8788)` is a
+     stable public HTTPS+WS endpoint (the #17 expose work + the bridge both rely on
+     it; preview URLs proved stable across stop/start in P0 #5). So the transport
+     the poller needs is known-good.
+   - Runbook: `agentbox create --provider vercel` from a repo with a pushable
+     origin → `agentbox shell <box>` → commit in `/workspace` → `agentbox-ctl git
+     push` → on the host confirm `git ls-remote origin agentbox/<box>` shows the
+     commit → then `agentbox-ctl git pull` and a `gh pr` op. `scripts/vercel-live-e2e.sh`
+     gates this behind `E2E_RELAY=1`.
+   - Note: `agentbox-ctl git push` via the host relay has been exercised
+     continuously on the **docker** provider (the relay's git-RPC path is the same
+     `git.push`/`git.fetch` handler); what's unconfirmed is specifically the
+     vercel box → `domain(8788)` bridge → host poller → `git.push` chain end-to-end.
 5. [x] **Lifecycle semantics.** `stop` auto-snapshots (live status `running →
    stopping → stopped` in ~18 s); `start` resumes (`get({resume:true})`) with the
    same `/workspace` (marker survived); `destroy` preserves the base; the public
@@ -156,6 +174,27 @@ agentbox/<box>` shows the commit, then try `agentbox-ctl git pull` and a `gh pr`
    preserved). **Upgrade:** a ttyd / WebSocket terminal over `sandbox.domain(port)`
    (WebSocket works through the domain proxy — noVNC relies on it) — needs a ttyd
    binary in the snapshot + a ws client in `attach-helper.ts`, and the 4th port.
+   **Plan (host — heavy, needs a re-bake):**
+   - Bake `ttyd` into the base snapshot: add an install step to
+     `packages/sandbox-vercel/scripts/provision.sh` (no AL2023 dnf package — grab a
+     static x86_64 binary from the ttyd releases, or build; drop at
+     `/usr/local/bin/ttyd`, `chmod 755`). This changes the prepare context
+     fingerprint, so `agentbox prepare --provider vercel` auto-rebakes (no `--force`).
+   - Expose a ttyd port. The 4-port cap math is now: base `[6080, 8788]` + up to 2
+     `expose` ports (see #17, done). Reserve one slot for ttyd, e.g. add a 3rd base
+     port `7681` (ttyd default) to `VERCEL_EXPOSED_PORTS` in `backend.ts`
+     (`buildExposedPorts` already caps at `VERCEL_MAX_PORTS=4`). Note this leaves
+     only 1 free slot for `expose` — document the trade-off.
+   - In-box launch: a small `agentbox-ttyd-start` helper (run via the cloud
+     lifecycle, like `vnc-launch.ts` runs `agentbox-vnc-start`) that does
+     `ttyd -p 7681 -i 0.0.0.0 --writable tmux new -A -s <session>`.
+   - Rewrite the attach: `build-attach.ts` / `attach-helper.ts` currently spawn the
+     SDK send-keys/capture-pane pump. Replace with a WebSocket client to
+     `wss://<sandbox.domain(7681)>/ws` bridging the local PTY (ttyd speaks a simple
+     binary ws protocol: client sends `'0'+data` for stdin, `'1'+JSON` for resize;
+     server sends `'0'+data` for output). Keep the send-keys path as a fallback.
+   - Verify live: attach to a box, confirm low-latency keystrokes + correct cursor
+     positioning (vs. the current full-pane repaint).
 9. [x] **Published-CLI asset staging.** Done — `stage-runtime.mjs` now stages a
    `runtime/vercel/` tree (attach-helper.js + provision.sh + ctl/shims + baked
    config) mirroring the candidates `runtime-assets.ts` already resolved, and
@@ -192,6 +231,25 @@ agentbox/<box>` shows the commit, then try `agentbox-ctl git pull` and a `gh pr`
 14. **Per-project snapshot tier** — the daytona/hetzner `projects[<hash>]`
     optimization that skips workspace/credential re-seeding on repeat creates for
     the same project. `prepared-state.ts` is single-tier (base only) today.
+    **Plan (host):**
+    - `packages/sandbox-vercel/src/prepared-state.ts` currently stores only
+      `{ schema, base: { snapshotId, contextSha256, ... } }`. Add a
+      `projects?: Record<string, { snapshotId, workspaceSha?, createdAt }>` tier
+      keyed by `hashProjectPath(projectRoot)` (the same hash `@agentbox/config`
+      already exports and that the cloud-checkpoint store uses).
+    - On `create --provider vercel`: after a successful first create for a project,
+      capture a project snapshot (the box post-workspace-seed + cred-seed) and
+      record it under `projects[<hash>]`. On the next create for the same project,
+      boot from that snapshot and **skip** `seedCloudWorkspace` + agent-cred seeding
+      (the snapshot already carries them) — mirror how `cloud-provider.create`
+      already skips the seed when `snapshotName` is set.
+    - Mirror the daytona/hetzner implementation — grep `projects[` /
+      `projectDirSegment` in `packages/sandbox-daytona` + `packages/sandbox-hetzner`
+      for the established shape (invalidation on `contextSha`/cli-stamp change, and
+      a freshness policy so a stale project snapshot is rebuilt).
+    - Verify: two sequential `create`s for the same workspace — the second should
+      skip the workspace seed (watch the create log for "skipping workspace seed")
+      and be materially faster.
 15. [x] **`agentbox prune --provider vercel`.** Done — generalized the daytona-only
     `pruneDaytona` into a provider-agnostic `pruneCloud` over a
     `CLOUD_PRUNE_PROVIDERS` list, so `--provider vercel` (and `hetzner`, also
@@ -199,6 +257,27 @@ agentbox/<box>` shows the commit, then try `agentbox-ctl git pull` and a `gh pr`
     offer to delete the ones absent from `state.json`. `apps/cli/src/commands/prune.ts`.
 16. **`Sandbox.fork()`** as a faster "branch from a running box" primitive than
     snapshot + create (Vercel-native, no host round-trip).
+    **Plan (investigated 2026-05-29, not yet built):**
+    - SDK is ready: `Sandbox.fork({ sourceSandbox: <name>, name?, resources?, ports?, env?, ...creds })`
+      copies the source's current filesystem (inherits its snapshot/runtime). `env`
+      is **not** copied — pass it explicitly. Returns a new `Sandbox`.
+    - The hard part is the agentbox surface, not the SDK call. Box-record minting
+      (`mintBox`) + relay registration (`registerBoxWithRelay`) + `recordBox` are
+      currently **inline in `cloud-provider.ts` `create()`** (~L272–660, shared by
+      daytona/hetzner/vercel). Two options:
+      1. *Refactor* `create()` to extract a `finalizeCloudBox(handle, req, {id,name,branch,relayToken,bridgeToken})` that does the post-provision steps (workspace already present on a fork, so skip the seed), and call it from both `create` and a new `forkBox`. Cleanest, but regression-risk to all three cloud creates — cover with the existing cloud-provider unit tests + a daytona/hetzner smoke.
+      2. *Duplicate* the ~80-line record-construction + register + `recordBox` in a vercel-only `forkBox`. Lower risk, more drift.
+    - Add a `Provider.fork?(sourceBox, opts)` capability (vercel-only) + an
+      `agentbox fork [box] [--name]` CLI command (mirror `url.ts`'s box-resolution +
+      cloud lifecycle probe; source must be a running vercel box).
+    - **Branch semantics decision needed:** the fork inherits the source's
+      `/workspace` on the source's `agentbox/<src>` branch. Decide whether to leave
+      it (fast, but two boxes share a branch name → host `.git` confusion on cloud
+      is moot since cloud uses a git bundle, not the bind-mount) or `git checkout -b
+      agentbox/<fork>` in the fork at finalize. Recommend re-branching for parity
+      with `create`.
+    - Verify live: `Sandbox.fork` a running box, confirm the fork has the source's
+      `/workspace` edits (write a marker in the source first), then `destroy` both.
 17. [x] **Per-service `expose` ports.** Done — the cloud scaffold already minted a
     preview URL per `services.*.expose.port`, but on Vercel a URL only routes to a
     port declared at `Sandbox.create({ ports })`, and only `[6080, 8788]` were
