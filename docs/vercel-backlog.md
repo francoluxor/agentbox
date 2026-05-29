@@ -286,6 +286,17 @@ agentbox/<box>` shows the commit, then try `agentbox-ctl git pull` and a `gh pr`
     `vercelVcpus=4` yields `sandbox.vcpus === 4` (default 2). Region stays fixed
     `iad1` (Vercel constraint). Note: Vercel only accepts specific vcpu counts
     (1/2/4/8); an unsupported value (e.g. 3) fails create with a 400.
+13b. [x] **Per-box agent credential push.** Done — `vercelBackend.provision`
+    now pushes the host's renewable credentials (`.credentials.json` for claude,
+    `auth.json` for codex/opencode) into `/home/vscode/.agentbox-creds/<agent>/`
+    at create time, mirroring Hetzner's scp push over the Vercel SDK
+    (`writeFiles` + `sudo -u vscode tar`). Reuses the shared
+    `stage{Claude,Codex,Opencode}CredentialsForUpload` stagers from
+    `@agentbox/sandbox-cloud`; the credential-pivot symlinks already baked by
+    `provision.sh` route `~/.claude/.credentials.json` etc. to that dir. Pushes
+    every create (renewable tokens), best-effort (a failure logs + falls back to
+    interactive login). Closes the agent-credential gap from the no-volume
+    short-circuit. Unit-tested in `test/push-credentials.test.ts`.
 
 ### P2 — deferred (parity niceties, not blocking)
 
