@@ -12,6 +12,7 @@ import {
   ClaudeSessionError,
   claudeSessionInfo,
   createBox,
+  DEFAULT_BOX_IMAGE,
   DEFAULT_RELAY_PORT,
   detectEngine,
   ensureClaudeVolume,
@@ -557,8 +558,12 @@ export const claudeCommand = new Command('claude')
         hostWorkspace: opts.workspace,
       });
     } else {
+      // The login runs in a throwaway DOCKER container to capture the token to
+      // ~/.agentbox — so it needs a docker image, not `box.image`, which on the
+      // cloud path can be a cloud snapshot ref (e.g. `snap_…`) that `docker
+      // build` rejects. The default box image carries the agent CLIs.
       await maybeRunCloudClaudeLogin({
-        image: cfg.effective.box.image,
+        image: DEFAULT_BOX_IMAGE,
         authSource: resolved.source,
         yes: !!opts.yes,
         hostWorkspace: opts.workspace,

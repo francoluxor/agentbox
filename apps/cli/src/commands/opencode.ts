@@ -13,6 +13,7 @@ import {
   buildOpencodeAttachArgv,
   buildOpencodeLoginRunArgv,
   createBox,
+  DEFAULT_BOX_IMAGE,
   DEFAULT_RELAY_PORT,
   detectEngine,
   ensureImage,
@@ -511,7 +512,9 @@ export const opencodeCommand = new Command('opencode')
     if (isCloud) {
       // Cloud sign-in offer: capture a host login to ~/.agentbox so the per-box
       // push seeds it (docker's offer below only seeds via the shared volume).
-      await maybeRunCloudOpencodeLogin({ image: cfg.effective.box.image, yes: !!opts.yes });
+      // Uses the default docker image — the login runs in a docker container,
+      // and `box.image` on the cloud path can be a snapshot ref docker rejects.
+      await maybeRunCloudOpencodeLogin({ image: DEFAULT_BOX_IMAGE, yes: !!opts.yes });
       const provider = await providerForCreate({ flag: opts.provider, config: cfg.effective });
       const withPlaywright =
         cfg.effective.box.withPlaywright || cfg.effective.browser.default !== 'agent-browser';
