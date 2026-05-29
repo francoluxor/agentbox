@@ -302,3 +302,26 @@ agentbox/<box>` shows the commit, then try `agentbox-ctl git pull` and a `gh pr`
     `extendTimeout` is **deferred** (niche: session length is already set at create
     via `box.vercelTimeoutMs`, and persistent mode auto-resumes — mid-session
     extension has no clean CLI home yet).
+19. **gh/git relay shims don't win PATH on Vercel AL2023.** Found 2026-05-29 while
+    verifying the git-shim-ordering fix: in a booted vercel box `command -v git`
+    resolves to **`/opt/git/bin/git`**, not `/usr/local/bin/git` — Vercel's base
+    prepends `/opt/git/bin` ahead of `/usr/local/bin`. So the relay-routing shims
+    `provision.sh` installs at `/usr/local/bin/{git,gh}` are inert at runtime: an
+    agent that types `git push` / `gh pr ...` inside the box hits the real
+    binaries (no host creds) instead of routing through the relay. (The
+    relay-driven path — `agentbox-ctl git push`, the host poller — is unaffected;
+    it calls `ctl` directly, not via the `git` shim. So this is about
+    *agent-initiated* git/gh, and is closely tied to #4.)
+    **Plan (host):**
+    - Make `/usr/local/bin` win for the agent's shells. The login-shell shim
+      `/etc/profile.d/agentbox.sh` (provision.sh step "login-shell shim") is the
+      natural place — prepend `/usr/local/bin` ahead of `/opt/git/bin` in PATH
+      there. Agent sessions run through a login shell (tmux), so this covers them;
+      confirm it also covers non-login `exec` paths if any rely on the shim.
+    - Alternative/back-stop: also drop the shims into `/opt/git/bin/{git,gh}` (or
+      symlink) so they win regardless of PATH order — but that dir is Vercel's, so
+      prefer the PATH fix.
+    - Verify live: in a booted box `command -v git` → `/usr/local/bin/git` and
+      `git push` with no relay errors out via the shim (not real git).
+    - Note: docker/hetzner are unaffected (their base PATH puts `/usr/local/bin`
+      first); this is Vercel-base-specific.
