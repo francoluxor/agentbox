@@ -48,6 +48,33 @@ implementation (per the project convention), not as end-of-PR cleanup.
 - [x] **Phase 6 — unit tests.** env-loader, credentials, prepared-state,
   backend (mocked SDK), build-attach. `pnpm build && lint && typecheck && test`
   all green.
+- [x] **Phase 7 — "Sign in with Vercel" (CLI-login) auth.** A third, default
+  `agentbox vercel login` mode that drives the official Vercel `sandbox`/`sbx`
+  CLI (`npm i -g sandbox`) through its browser OAuth, then reuses the CLI's own
+  credentials for our SDK calls — no token to paste, and no 12h OIDC friction.
+  - Token is **never copied to `secrets.env`**: only the marker
+    `VERCEL_AUTH_SOURCE=cli` + `VERCEL_TEAM_ID` + `VERCEL_PROJECT_ID` are cached.
+    `resolveCredentials()` reads the live `vca_` access token straight from the
+    Vercel CLI store (`auth.json`) every call (`cli-store.ts`), so the CLI is the
+    single self-refreshing source of truth.
+  - `ensureFreshCredentials()` (sdk.ts, called at the top of every backend op +
+    prepare + attach-helper) detects a near-expiry token (120s skew) and triggers
+    the CLI's own lazy refresh by running `sbx list` (`sbx-cli.ts`), then re-reads
+    the rotated token. In-process single-flight collapses concurrent ops.
+  - Project resolution: the OAuth token is team-scoped with no project, so after
+    login we list the team's projects (`vercel-rest.ts`) and the user picks one
+    (clack select, pre-selecting `agentbox`/`vercel-sandbox-default-project`, with
+    a create-new option) — cached as `VERCEL_PROJECT_ID`.
+  - Store path resolver is platform-aware (macOS `~/Library/Application Support`,
+    Linux `$XDG_DATA_HOME`/`~/.local/share`, Windows `%APPDATA%`) with an
+    `AGENTBOX_VERCEL_CLI_DIR` override for tests.
+  - **PoC-validated 2026-05-29**: `sbx` refreshes a *stale* token fully
+    non-interactively (no browser); the `vca_` token works as a Bearer against
+    `api.vercel.com` and the SDK; `GET/POST /v9/projects` accept it. New unit
+    tests: `cli-store`, `cli-auth` (resolve + ensureFreshCredentials), `vercel-rest`.
+  - PAT-trio and OIDC modes are unchanged, so headless/CI is unaffected.
+  - **Not yet live-verified end-to-end** (`prepare`/`create` against a real box
+    in CLI-login mode) — see the verify checklist below.
 
 ## What's still missing
 
@@ -76,10 +103,26 @@ Confirmed live 2026-05-28:
    tar-extract as vscode) lands `/workspace` on the box branch — gated on the
    sudoers fix (#3). Agent-credential / carry / env-file ownership beyond this was
    not separately audited but the box boots with the agent CLIs present.
-4. [ ] **Relay round-trip.** Confirm the host `CloudBoxPoller` reaches the in-box
-   relay over `sandbox.domain(8788)` and that `agentbox-ctl git push|pull` +
-   `gh pr` work from inside a vercel box. (Still open — interactive; see runbook.)
-   **Plan (host — must run on a real host, not a nested box):**
+4. [ ] **Relay round-trip.** Still **unconfirmed** — and the `scripts/vercel-live-e2e.sh`
+   Phase D "PASS" (run **2026-05-29**, `E2E_RELAY=1`, `../agentbox-test-repo`) is a
+   **false positive**: it only checks that the `agentbox shell <box> -- … git push`
+   wrapper exits 0, but Vercel's attach is the laggy send-keys/capture-pane pump
+   whose exit code does **not** reliably reflect the in-box command's. After the
+   "PASS", `git ls-remote origin` showed **no `agentbox/vfe-*` branch** and the
+   relay log recorded **no `git.push` from that box** — i.e. the push never reached
+   the remote. The e2e's Phase D needs a real verification gate (assert the probe
+   commit appears on the remote via `git ls-remote`, not just the wrapper exit
+   code) before this can be ticked.
+   What the 2026-05-29 work *did* establish: two real bugs blocking the path were
+   found and fixed (see "Bugs found live 2026-05-29" below) — the secrets.env-only
+   credential path, and the missing attach-helper chunk in the staged runtime that
+   made `agentbox shell` on a vercel box die `ERR_MODULE_NOT_FOUND` (that crash is
+   gone now). #19 (PATH/shim ordering) was also fixed. Phases A/B/C (create,
+   pause/resume, checkpoint round-trip) and the destroy/base-guard regression did
+   pass legitimately. **Next:** add the ls-remote assertion to the e2e and re-run,
+   or drive the push via a non-attach path (e.g. `agentbox exec`) so the in-box
+   exit code is trustworthy.
+   **Original plan (host — must run on a real host, not a nested box):**
    - *Why nested doesn't work:* a vercel box's `CloudBoxPoller` runs wherever the
      `agentbox` CLI runs; from inside a docker agentbox the relay/git creds chain is
      doubly-nested and the vercel box's bridge can't cleanly reach the laptop's git
@@ -104,6 +147,30 @@ Confirmed live 2026-05-28:
 6. [x] **Checkpoint round-trip.** `agentbox checkpoint create` snapshots, the
    manifest stores the Vercel snapshot **id**, and `create --snapshot <ref>` boots
    from it with the captured `/workspace` intact.
+
+#### Bugs found live 2026-05-29 (fixed — during the #4 relay round-trip pass)
+
+- **Vercel creds in `.env.local` were invisible to the host CLI.** The env-loader
+  harvested only `VERCEL_OIDC_TOKEN` from `.env.local` and read the access-token
+  trio solely from `~/.agentbox/secrets.env`, so a trio sitting in `.env.local`
+  left `prepare`/`create` failing with "Vercel credentials not configured." Fixed
+  by dropping `.env.local` reading entirely — Vercel creds now come **only** from
+  the shell env or `~/.agentbox/secrets.env`, matching the daytona/hetzner loader
+  (project `.env`/`.env.local` belong to the app, not the host CLI). The
+  access-token trio is now the primary `agentbox vercel login` path.
+- **`agentbox shell` on a vercel box died `ERR_MODULE_NOT_FOUND`.** The staged
+  `runtime/vercel/attach-helper.js` (a tsup entry) imports a shared
+  `./chunk-<hash>.js`, but `stage-runtime.mjs` copied only `attach-helper.js`, not
+  the chunk — and the hash changes every build so it can't be listed statically.
+  This broke the attach path the e2e uses to run the in-box `agentbox-ctl git
+  push`, failing Phase D before the relay was even exercised. Fixed by walking the
+  import graph from the staged `attach-helper.js` and staging every chunk it
+  (transitively) pulls in.
+- **#19 — relay shims lost PATH on AL2023.** `/opt/git/bin` precedes
+  `/usr/local/bin` on Vercel's base, so the relay-routing `git`/`gh` shims were
+  inert for agent-typed commands. Fixed in `provision.sh`'s login-shell shim
+  (`/etc/profile.d/agentbox.sh`) by force-prepending `/usr/local/bin`. Baked into
+  the base snapshot (provision.sh is in the prepare context fingerprint).
 
 #### Bugs found live 2026-05-28 (fixed)
 

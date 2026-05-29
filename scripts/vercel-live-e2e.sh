@@ -216,21 +216,43 @@ fi
 # ---------------------------------------------------------------------------
 info "Phase D: relay round-trip (#4)"
 if [[ "${E2E_RELAY:-0}" == "1" ]]; then
-  echo "attempting in-box commit + 'agentbox-ctl git push' via the relay..."
-  echo "(this uses the one-shot attach path, which is laggy for vercel — read the output carefully)"
-  "${AB[@]}" shell "$BOX" -- bash -lc '
-    set -e
-    cd /workspace
-    git config user.email e2e@agentbox.local
-    git config user.name agentbox-e2e
-    date > AGENTBOX_RELAY_PROBE
-    git add AGENTBOX_RELAY_PROBE
-    git commit -m "e2e relay probe" >/dev/null
-    agentbox-ctl git push
-  ' && pass "in-box 'agentbox-ctl git push' returned success" \
-     || fail "in-box git push via relay failed (check the host relay is up + origin is reachable)"
-  echo "VERIFY MANUALLY on the host: 'git ls-remote origin agentbox/$BOX' should show the probe commit,"
-  echo "and the host relay log should record the push host-action."
+  PROBE_BRANCH="agentbox/$BOX"
+  # GROUND TRUTH: do NOT trust the `agentbox shell ... git push` exit code — on
+  # vercel `shell` goes through the laggy attach pump whose exit code reflects the
+  # attach wrapper, not the in-box command (this produced a false PASS on
+  # 2026-05-29: the wrapper exited 0 but nothing reached origin). The only
+  # reliable gate is "did the probe commit actually land on origin?", checked
+  # with `git ls-remote` from a repo that shares the same origin.
+  GIT_REMOTE_REPO="${E2E_GIT_REPO:-$PWD}"
+  if ! git -C "$GIT_REMOTE_REPO" ls-remote origin >/dev/null 2>&1; then
+    fail "no reachable origin at $GIT_REMOTE_REPO (set E2E_GIT_REPO=<repo with a pushable origin>)"
+  else
+    pre="$(git -C "$GIT_REMOTE_REPO" ls-remote origin "refs/heads/$PROBE_BRANCH" 2>/dev/null | awk '{print $1}')"
+    echo "pre-push: origin $PROBE_BRANCH = ${pre:-<absent>}"
+    echo "triggering in-box commit + 'agentbox-ctl git push' via the relay (attach is laggy — be patient)..."
+    "${AB[@]}" shell "$BOX" -- bash -lc '
+      set -e
+      cd /workspace
+      git config user.email e2e@agentbox.local
+      git config user.name agentbox-e2e
+      date > AGENTBOX_RELAY_PROBE
+      git add AGENTBOX_RELAY_PROBE
+      git commit -m "e2e relay probe '"$MARKER_VAL"'" >/dev/null
+      agentbox-ctl git push
+    ' || echo "note: attach wrapper returned non-zero (unreliable on vercel) — verifying via origin instead"
+    # Poll origin for the box branch (the relay push is async via the poller).
+    pushed=""
+    for _ in $(seq 1 20); do
+      cur="$(git -C "$GIT_REMOTE_REPO" ls-remote origin "refs/heads/$PROBE_BRANCH" 2>/dev/null | awk '{print $1}')"
+      if [[ -n "$cur" && "$cur" != "$pre" ]]; then pushed="$cur"; break; fi
+      sleep 6
+    done
+    if [[ -n "$pushed" ]]; then
+      pass "relay round-trip: probe commit $pushed landed on origin $PROBE_BRANCH (verified via git ls-remote)"
+    else
+      fail "relay round-trip: probe commit never appeared on origin $PROBE_BRANCH within 120s (push did NOT complete through the relay)"
+    fi
+  fi
 else
   cat <<EOF
 SKIPPED (set E2E_RELAY=1 to attempt). Manual runbook:
