@@ -109,9 +109,9 @@ Confirmed live 2026-05-28:
    not separately audited but the box boots with the agent CLIs present.
 4. [x] **Relay round-trip.** **Confirmed live 2026-05-29** by ground truth (not a
    wrapper exit code). On box `relayv1`: an in-box `agentbox-ctl git push` of commit
-   `fc6d54de` traveled vercel box → in-box bridge on `sandbox.domain(8788)` → host
+   `7f8eea5d` traveled vercel box → in-box bridge on `sandbox.domain(8788)` → host
    `CloudBoxPoller` → `runGitRpc` (git-bundle pull-back + host `git push origin`),
-   and `git ls-remote origin refs/heads/agentbox/relayv1` returned **`fc6d54de`** —
+   and `git ls-remote origin refs/heads/agentbox/relayv1` returned **`7f8eea5d`** —
    the commit reached GitHub. The relay log shows `rpc box=40ebb05d method=git.push`.
    The push was driven via `backend.exec` (real exit code), not the attach pump.
    Getting here required fixing several real issues found live (see "Bugs found live
