@@ -204,6 +204,7 @@ export const vercelBackend: CloudBackend = {
           'from a Dockerfile, so the base snapshot is a one-time prerequisite.',
       );
     }
+    const networkPolicy = parseNetworkPolicy(req.networkPolicy);
     // No-retry: Sandbox.create is billable and non-idempotent — a timeout after
     // the request reached the origin could leave a duplicate sandbox we can't
     // reference for cleanup.
@@ -220,9 +221,7 @@ export const vercelBackend: CloudBackend = {
           tags: { agentbox: 'true', 'agentbox.name': req.name },
           persistent: true,
           keepLastSnapshots: { ...KEEP_LAST_SNAPSHOTS },
-          ...(parseNetworkPolicy(req.networkPolicy)
-            ? { networkPolicy: parseNetworkPolicy(req.networkPolicy) }
-            : {}),
+          ...(networkPolicy ? { networkPolicy } : {}),
           ...creds(),
         });
         return { sandboxId: sb.name };
