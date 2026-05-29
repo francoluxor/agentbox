@@ -156,15 +156,20 @@ async function uploadOneEntry(args: UploadOneArgs): Promise<void> {
   parts.push(`rm -f ${remoteTar}`);
   const cmd = parts.join(' && ');
 
-  // Run as root: the command writes to arbitrary dest paths and chowns to the
-  // target uid (the parent-chain chown below assumes root-created dirs), so it
-  // needs root. It also keeps Vercel's exec on its single `bash -lc` path —
-  // the default (vscode) path wraps in `sudo -u vscode -H bash -lc '<cmd>'`,
-  // and that extra nesting mangles this command's `$(...)`/`$var`/`while`
-  // (parent expands empty → `dirname "."` loops forever → the exec hangs).
-  // Hetzner/Daytona ignore `user` (they run as their default user already), so
-  // this only changes the Vercel path.
-  const res = await args.backend.exec(args.handle, cmd, { user: 'root' });
+  // Vercel-only: force the extract to run as root. Vercel's exec wraps a
+  // non-root command in `sudo -u vscode -H bash -lc '<cmd>'`, and that extra
+  // `bash -lc` nesting mangles this command's `$(...)`/`$var`/`while` (the
+  // parent var expands empty → `dirname "."` loops forever → the exec hangs
+  // until timeout, surfacing as "Stream ended before command finished"). Its
+  // single-`bash -lc` root path doesn't re-parse, so the command runs cleanly.
+  // The command still chowns the dest to the target uid (default vscode 1000),
+  // so files end up vscode-owned and writable regardless of who runs it.
+  //
+  // Scoped explicitly to Vercel rather than relying on other backends ignoring
+  // `user:` — Hetzner/Daytona keep their existing (working) carry path
+  // unchanged even if they start honoring `user` later.
+  const execOpts = args.backend.name === 'vercel' ? { user: 'root' as const } : undefined;
+  const res = await args.backend.exec(args.handle, cmd, execOpts);
   if (res.exitCode !== 0) {
     throw new Error(
       `in-box extract failed (exit ${String(res.exitCode)}): ${(res.stderr || res.stdout).slice(-300)}`,

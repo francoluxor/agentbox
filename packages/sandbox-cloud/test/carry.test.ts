@@ -85,12 +85,6 @@ describe('uploadCarryPaths', () => {
     const execCalls = backend.calls.filter((c) => c.method === 'exec');
     expect(execCalls).toHaveLength(1);
 
-    // Must run as root: the extract chowns to arbitrary uids and the parent-
-    // chain chown assumes root-created dirs. On Vercel the default (vscode)
-    // path wraps in `sudo -u vscode -H bash -lc '<cmd>'`, and that nesting
-    // mangles the command's `$(...)`/`while` (infinite loop → hung exec).
-    expect(execCalls[0]!.args[2]).toMatchObject({ user: 'root' });
-
     const cmd = String(execCalls[0]!.args[1]);
     // ~/ expanded to /home/vscode at the host layer before being shell-quoted.
     expect(cmd).toContain(`mkdir -p '${HOST_HOME_REPLACE}/.agentbox'`);
@@ -180,5 +174,33 @@ describe('uploadCarryPaths', () => {
     expect(res.copied).toBe(1);
     expect(res.errors).toHaveLength(1);
     expect(res.errors[0]).toMatch(/tar pack failed/);
+  });
+
+  it('runs the extract as root on Vercel (avoids the sudo -u vscode exec-nesting hang)', async () => {
+    const src = join(workspace, 'marker.txt');
+    await writeFile(src, 'hi');
+    const backend = makeMockCloudBackend({ name: 'vercel' });
+    const handle = await backend.provision({ name: 'b', image: 'i' });
+    await uploadCarryPaths({
+      backend,
+      handle,
+      entries: [entry({ absSrc: src, absDest: '~/.agentbox/marker.txt', kind: 'file', bytes: 2 })],
+    });
+    const execCall = backend.calls.find((c) => c.method === 'exec');
+    expect(execCall!.args[2]).toMatchObject({ user: 'root' });
+  });
+
+  it('leaves the exec user unset on non-Vercel backends', async () => {
+    const src = join(workspace, 'marker.txt');
+    await writeFile(src, 'hi');
+    const backend = makeMockCloudBackend({ name: 'hetzner' });
+    const handle = await backend.provision({ name: 'b', image: 'i' });
+    await uploadCarryPaths({
+      backend,
+      handle,
+      entries: [entry({ absSrc: src, absDest: '~/.agentbox/marker.txt', kind: 'file', bytes: 2 })],
+    });
+    const execCall = backend.calls.find((c) => c.method === 'exec');
+    expect(execCall!.args[2]).toBeUndefined();
   });
 });
