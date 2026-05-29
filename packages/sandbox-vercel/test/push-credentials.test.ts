@@ -75,7 +75,9 @@ describe('vercelBackend.provision — per-box credential push', () => {
     expect(writeFiles).toHaveBeenCalledTimes(3);
     expect(runCommand).toHaveBeenCalledTimes(3);
 
-    const remotes = writeFiles.mock.calls.map((c) => (c[0] as Array<{ path: string }>)[0].path);
+    const remotes = (writeFiles.mock.calls as unknown as Array<[Array<{ path: string }>]>).map(
+      (c) => c[0][0]!.path,
+    );
     expect(remotes).toEqual([
       '/tmp/agentbox-claude-creds.tar.gz',
       '/tmp/agentbox-codex-creds.tar.gz',
@@ -83,7 +85,9 @@ describe('vercelBackend.provision — per-box credential push', () => {
     ]);
 
     // Each extract targets the matching ~/.agentbox-creds/<kind> dest.
-    const extracts = runCommand.mock.calls.map((c) => (c[0] as { args: string[] }).args[1]);
+    const extracts = (runCommand.mock.calls as unknown as Array<[{ args: string[] }]>).map(
+      (c) => c[0].args[1],
+    );
     expect(extracts[0]).toContain('/home/vscode/.agentbox-creds/claude');
     expect(extracts[1]).toContain('/home/vscode/.agentbox-creds/codex');
     expect(extracts[2]).toContain('/home/vscode/.agentbox-creds/opencode');
@@ -118,7 +122,7 @@ describe('vercelBackend.provision — per-box credential push', () => {
     stage.opencode.mockResolvedValue(stageResult(null));
 
     const logs: string[] = [];
-    const handle = await vercelBackend.provision({ name: 'box-1', onLog: (l) => logs.push(l) } as never);
+    const handle = await vercelBackend.provision({ name: 'box-1', onLog: (l: string) => logs.push(l) } as never);
     expect(handle).toEqual({ sandboxId: 'box-1' });
     expect(logs.some((l) => l.includes('claude credential extract failed'))).toBe(true);
   });
@@ -131,7 +135,7 @@ describe('vercelBackend.provision — per-box credential push', () => {
     stage.opencode.mockResolvedValue(stageResult(null));
 
     const logs: string[] = [];
-    const handle = await vercelBackend.provision({ name: 'box-1', onLog: (l) => logs.push(l) } as never);
+    const handle = await vercelBackend.provision({ name: 'box-1', onLog: (l: string) => logs.push(l) } as never);
     expect(handle).toEqual({ sandboxId: 'box-1' });
     expect(logs.some((l) => l.includes('agent credential push failed'))).toBe(true);
   });
