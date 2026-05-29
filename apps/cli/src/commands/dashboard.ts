@@ -317,7 +317,12 @@ export const dashboardCommand = new Command('dashboard')
           { volume: claudeVolume },
           { image: box.image, isolate: claudeVolume !== SHARED_CLAUDE_VOLUME },
         );
-        await startClaudeSession({ container: box.container, claudeArgs: [], boxName: box.name });
+        const claudeCfg = await loadEffectiveConfig(box.workspacePath);
+        await startClaudeSession({
+          container: box.container,
+          claudeArgs: applyClaudeSkipPermissions([], claudeCfg.effective),
+          boxName: box.name,
+        });
         const info = await claudeSessionInfo(box.container);
         // Attach only once the agent TUI has drawn — see waitForTmuxPaneContent.
         await waitForTmuxPaneContent(box.container, info.sessionName);
@@ -337,7 +342,11 @@ export const dashboardCommand = new Command('dashboard')
         // Install codex if the box image lacks it (checkpoint predating Codex).
         await ensureCodexInstalled(box.container);
         if (box.codexConfigVolume) await seedCodexHooks(box.codexConfigVolume, box.image);
-        await startCodexSession({ container: box.container, codexArgs: [] });
+        const codexCfg = await loadEffectiveConfig(box.workspacePath);
+        await startCodexSession({
+          container: box.container,
+          codexArgs: applyCodexSkipPermissions([], codexCfg.effective),
+        });
         await waitForTmuxPaneContent(box.container, DEFAULT_CODEX_SESSION);
         return {
           kind: 'attach',
@@ -426,7 +435,10 @@ export const dashboardCommand = new Command('dashboard')
         if (!agent) return { boxId: result.record.id };
         if (agent === 'codex') {
           await ensureCodexInstalled(ctr, { onProgress });
-          await startCodexSession({ container: ctr, codexArgs: [] });
+          await startCodexSession({
+            container: ctr,
+            codexArgs: applyCodexSkipPermissions([], cfg.effective),
+          });
           // Attach only once the agent TUI has drawn — see waitForTmuxPaneContent.
           await waitForTmuxPaneContent(ctr, DEFAULT_CODEX_SESSION);
           return {
@@ -454,7 +466,11 @@ export const dashboardCommand = new Command('dashboard')
           };
         }
         await rebuildPluginNativeDeps(ctr, { volume: result.record.claudeConfigVolume });
-        await startClaudeSession({ container: ctr, claudeArgs: [], boxName: result.record.name });
+        await startClaudeSession({
+          container: ctr,
+          claudeArgs: applyClaudeSkipPermissions([], cfg.effective),
+          boxName: result.record.name,
+        });
         const info = await claudeSessionInfo(ctr);
         await waitForTmuxPaneContent(ctr, info.sessionName);
         return {
