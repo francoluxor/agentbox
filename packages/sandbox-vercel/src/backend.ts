@@ -169,6 +169,12 @@ function buildRunCommand(
   const prelude: string[] = [];
   if (opts?.cwd) prelude.push(`cd ${shq(opts.cwd)}`);
   for (const [k, v] of Object.entries(opts?.env ?? {})) {
+    // The value is shell-quoted, but the key is interpolated bare into a
+    // `bash -lc` string that runs as root — reject anything that isn't a POSIX
+    // env-var name so a key like `x;rm -rf /` can't inject a command.
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) {
+      throw new Error(`vercel exec: invalid env var name ${JSON.stringify(k)}`);
+    }
     prelude.push(`export ${k}=${shq(v)}`);
   }
   const inner = [...prelude, cmd].join('\n');

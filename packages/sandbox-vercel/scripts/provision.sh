@@ -132,16 +132,16 @@ step "agentbox-ctl install"
 install -m 0755 /tmp/agentbox-ctl /usr/local/bin/agentbox-ctl
 done_ "agentbox-ctl install"
 
-step "baked helper scripts (vnc / cleanup / xdg-open / gh + git shims)"
+step "baked helper scripts (vnc / cleanup / xdg-open)"
 install -m 0755 /tmp/agentbox-vnc-start          /usr/local/bin/agentbox-vnc-start
 install -m 0755 /tmp/agentbox-checkpoint-cleanup /usr/local/bin/agentbox-checkpoint-cleanup
 install -m 0755 /tmp/agentbox-open               /usr/local/bin/agentbox-open
 ln -sf /usr/local/bin/agentbox-open /usr/local/bin/xdg-open
-# gh + git shims win on PATH (/usr/local/bin precedes /usr/bin) so agent calls
-# to `gh ...` / `git push|pull|fetch|clone` route through the relay.
-install -m 0755 /tmp/agentbox-gh-shim            /usr/local/bin/gh
-install -m 0755 /tmp/agentbox-git-shim           /usr/local/bin/git
-done_ "baked helper scripts (vnc / cleanup / xdg-open / gh + git shims)"
+# NOTE: the gh + git shims are installed LAST (see "relay shims" near the end).
+# Installing them here would put the relay-routing `git` on PATH ahead of
+# /usr/bin/git and route provision.sh's own noVNC `git clone` through a relay
+# that doesn't exist during the bake.
+done_ "baked helper scripts (vnc / cleanup / xdg-open)"
 
 step "baked config files (claude / codex / setup guide / tmux.conf)"
 install -m 0644 /tmp/agentbox-custom-CLAUDE.md      /etc/claude-code/CLAUDE.md
@@ -241,6 +241,17 @@ done_ "Claude Code (native installer, run as vscode)"
 step "dnf cleanup"
 dnf clean all 2>/dev/null || true
 done_ "dnf cleanup"
+
+# Relay-routing shims, installed LAST — after every git/gh use in this script
+# (the noVNC `git clone` and any npm/installer step). They win on PATH
+# (/usr/local/bin precedes /usr/bin) so at RUNTIME agent calls to `gh ...` /
+# `git push|pull|fetch|clone` route through the host relay; during the bake there
+# is no relay, so they must not shadow the real binaries until provisioning is
+# done. Installed from /tmp just before the trim step removes the sources.
+step "relay shims (gh + git)"
+install -m 0755 /tmp/agentbox-gh-shim  /usr/local/bin/gh
+install -m 0755 /tmp/agentbox-git-shim /usr/local/bin/git
+done_ "relay shims (gh + git)"
 
 step "trim /tmp/agentbox-*"
 rm -f /tmp/agentbox-ctl /tmp/agentbox-vnc-start \

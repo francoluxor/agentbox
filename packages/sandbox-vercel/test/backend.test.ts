@@ -98,6 +98,25 @@ describe('vercelBackend.exec', () => {
     expect(arg.sudo).toBe(true);
     expect(arg.args.join(' ')).not.toMatch(/sudo -u vscode/);
   });
+
+  it('exports a valid env var with a shell-quoted value', async () => {
+    const runCommand = vi.fn(() =>
+      Promise.resolve({ exitCode: 0, stdout: async () => '', stderr: async () => '' }),
+    );
+    mocks.get.mockResolvedValue(fakeSandbox({ runCommand }));
+
+    await vercelBackend.exec({ sandboxId: 'box-1' }, 'env', { user: 'root', env: { FOO: "a'b; rm -rf /" } });
+    const arg = firstRunArg(runCommand);
+    // Key bare, value quoted — the injection lives in the value and is neutralised.
+    expect(arg.args.join(' ')).toContain("export FOO='a'\\''b; rm -rf /'");
+  });
+
+  it('rejects an env var name with shell metacharacters (injection guard)', async () => {
+    mocks.get.mockResolvedValue(fakeSandbox({ runCommand: vi.fn() }));
+    await expect(
+      vercelBackend.exec({ sandboxId: 'box-1' }, 'echo hi', { env: { 'x;rm -rf /': '1' } }),
+    ).rejects.toThrow(/invalid env var name/);
+  });
 });
 
 describe('vercelBackend.destroy', () => {
