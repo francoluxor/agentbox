@@ -4,9 +4,51 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   hostBackupHasCredentials,
+  hostClaudeBackupExpired,
   isRealAgentCredential,
+  parseExtractResult,
   parseSyncResult,
 } from '../src/claude-credentials.js';
+
+describe('parseExtractResult', () => {
+  it('reports copied only on COPIED=yes', () => {
+    expect(parseExtractResult('COPIED=yes')).toEqual({ copied: true });
+    expect(parseExtractResult('COPIED=no')).toEqual({ copied: false });
+    expect(parseExtractResult('garbage')).toEqual({ copied: false });
+  });
+});
+
+describe('hostClaudeBackupExpired', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'abx-exp-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const write = async (obj: unknown) => {
+    const p = join(dir, 'creds.json');
+    await writeFile(p, JSON.stringify(obj));
+    return p;
+  };
+
+  it('true when expiresAt is in the past', async () => {
+    const p = await write({ claudeAiOauth: { refreshToken: 'rt', expiresAt: 1000 } });
+    expect(await hostClaudeBackupExpired(p, 2000)).toBe(true);
+  });
+  it('false when expiresAt is in the future', async () => {
+    const p = await write({ claudeAiOauth: { refreshToken: 'rt', expiresAt: 5000 } });
+    expect(await hostClaudeBackupExpired(p, 2000)).toBe(false);
+  });
+  it('false when expiresAt is absent (do not nag)', async () => {
+    const p = await write({ claudeAiOauth: { refreshToken: 'rt' } });
+    expect(await hostClaudeBackupExpired(p, 2000)).toBe(false);
+  });
+  it('false on a missing/garbage file', async () => {
+    expect(await hostClaudeBackupExpired(join(dir, 'nope.json'), 2000)).toBe(false);
+  });
+});
 
 describe('isRealAgentCredential', () => {
   it('claude requires a non-empty claudeAiOauth.refreshToken', () => {

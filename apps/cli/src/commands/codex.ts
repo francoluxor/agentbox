@@ -1,3 +1,6 @@
+import { access } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { confirm, intro, isCancel, log, outro, spinner } from '@clack/prompts';
 import {
   findProjectRoot,
@@ -9,6 +12,7 @@ import {
 import {
   buildCodexAttachArgv,
   buildCodexLoginRunArgv,
+  CODEX_CREDENTIALS_BACKUP_FILE,
   CodexSessionError,
   codexSessionInfo,
   createBox,
@@ -17,6 +21,7 @@ import {
   ensureCodexInstalled,
   ensureCodexVolume,
   ensureImage,
+  extractCodexCredentials,
   formatDetachNotice,
   inspectBox,
   runInteractiveCodexLogin,
@@ -234,6 +239,60 @@ async function maybeRunCodexLogin(args: { image: string; yes: boolean }): Promis
     return;
   }
   log.success('Signed in to Codex — saved for future boxes.');
+}
+
+/** True when the cloud push has a codex credential source on the host. */
+async function cloudCodexCredAvailable(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  if ((env['OPENAI_API_KEY'] ?? '').length > 0) return true;
+  for (const p of [CODEX_CREDENTIALS_BACKUP_FILE, join(homedir(), '.codex', 'auth.json')]) {
+    try {
+      await access(p);
+      return true;
+    } catch {
+      /* not present */
+    }
+  }
+  return false;
+}
+
+/**
+ * Cloud counterpart of {@link maybeRunCodexLogin}, offered before creating a
+ * CLOUD box. Cloud reads the host backup `~/.agentbox/codex-credentials.json`
+ * (or the host's real `~/.codex/auth.json`); the docker login writes only to
+ * the shared volume, so after a successful login we extract its `auth.json`
+ * into the backup for the cloud push to seed. Skips on non-TTY / --yes / a
+ * credential source already present.
+ */
+async function maybeRunCloudCodexLogin(args: { image: string; yes: boolean }): Promise<void> {
+  if (!process.stdin.isTTY || args.yes) return;
+  if (await cloudCodexCredAvailable()) return;
+
+  const answer = await confirm({
+    message: 'Sign in to Codex? (saved and reused by every box)',
+    initialValue: true,
+  });
+  if (isCancel(answer) || !answer) {
+    log.info('Skipped sign-in — codex will prompt you to sign in inside the box.');
+    return;
+  }
+
+  const s = spinner();
+  s.start('preparing sandbox image');
+  await ensureImage(args.image, { onProgress: (line) => s.message(clampSpinnerLine(line)) });
+  s.message('preparing codex config');
+  await ensureCodexVolume({ volume: SHARED_CODEX_VOLUME }, { syncFromHost: true, image: args.image });
+  s.stop('image ready');
+
+  const exitCode = await runCodexLoginContainer(args.image, []);
+  if (exitCode !== 0) {
+    log.warn('Codex login did not complete; continuing — run `agentbox codex login` to retry.');
+    return;
+  }
+  // Capture the freshly-logged-in auth.json from the shared volume to the host
+  // backup so the cloud push seeds it into this box (and future ones).
+  const { copied } = await extractCodexCredentials(SHARED_CODEX_VOLUME, args.image);
+  if (copied) log.success('Signed in to Codex — saved for future boxes.');
+  else log.warn('Codex login finished but no auth.json was captured — sign in inside the box if needed.');
 }
 
 export const codexCommand = new Command('codex')
@@ -460,6 +519,9 @@ export const codexCommand = new Command('codex')
     }
 
     if (isCloud) {
+      // Cloud sign-in offer: capture a host login to ~/.agentbox so the per-box
+      // push seeds it (docker's offer below only seeds via the shared volume).
+      await maybeRunCloudCodexLogin({ image: cfg.effective.box.image, yes: !!opts.yes });
       const provider = await providerForCreate({ flag: opts.provider, config: cfg.effective });
       const withPlaywright =
         cfg.effective.box.withPlaywright || cfg.effective.browser.default !== 'agent-browser';

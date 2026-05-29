@@ -1,5 +1,5 @@
 import { chmod, mkdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { execa } from 'execa';
 import type { ClaudeConfigSpec } from './claude.js';
 import { STATE_DIR } from './state.js';
@@ -58,6 +58,89 @@ export function isRealAgentCredential(agent: CredentialAgentKind, text: string):
     return typeof rt === 'string' && rt.length > 0;
   }
   return Object.keys(parsed as Record<string, unknown>).length > 0;
+}
+
+/**
+ * True iff the host backup holds a Claude OAuth blob whose access token is
+ * already expired (`claudeAiOauth.expiresAt`, ms epoch, < now). A missing
+ * `expiresAt` (or unreadable file) → false: we only report a *known* expiry, so
+ * callers don't nag when the box could still refresh the token itself. `now` is
+ * injectable for tests.
+ */
+export async function hostClaudeBackupExpired(
+  path: string = CREDENTIALS_BACKUP_FILE,
+  now: number = Date.now(),
+): Promise<boolean> {
+  try {
+    const parsed = JSON.parse(await readFile(path, 'utf8')) as {
+      claudeAiOauth?: { expiresAt?: unknown };
+    };
+    const exp = parsed?.claudeAiOauth?.expiresAt;
+    return typeof exp === 'number' && Number.isFinite(exp) && exp < now;
+  } catch {
+    return false;
+  }
+}
+
+/** Result line parser for the volume→backup extract helper. Pure (unit-tested). */
+export function parseExtractResult(stdout: string): { copied: boolean } {
+  return { copied: /\bCOPIED=yes\b/.test(stdout) };
+}
+
+/**
+ * One-directional extract of a codex/opencode `auth.json` from a shared docker
+ * config volume to a host backup under `~/.agentbox` — the cloud analogue of
+ * `syncClaudeCredentials`'s extract, used after a host `agentbox <agent> login`
+ * so the cloud push can seed the captured login into future boxes. The volume
+ * root holds `auth.json` (same convention `volumeHas{Codex,Opencode}Auth` uses
+ * for `/dst/auth.json`). Best-effort: any failure resolves to not-copied and
+ * never throws into a login flow.
+ */
+export async function extractVolumeAuthToBackup(opts: {
+  volume: string;
+  image: string;
+  backupFile: string;
+}): Promise<{ copied: boolean }> {
+  try {
+    await mkdir(STATE_DIR, { recursive: true });
+    const script =
+      'COPIED=no; ' +
+      'if [ -s /dst/auth.json ]; then cp -a /dst/auth.json "/host-state/$DEST" && COPIED=yes; fi; ' +
+      'echo "COPIED=$COPIED"';
+    const { stdout } = await execa('docker', [
+      'run',
+      '--rm',
+      '--user',
+      '0',
+      '-v',
+      `${opts.volume}:/dst`,
+      '-v',
+      `${STATE_DIR}:/host-state`,
+      '-e',
+      // Pass the destination filename via env so the path isn't interpolated
+      // into the script string (keeps the docker arg list static + injection-safe).
+      `DEST=${basename(opts.backupFile)}`,
+      opts.image,
+      'sh',
+      '-c',
+      script,
+    ]);
+    const result = parseExtractResult(stdout);
+    if (result.copied) await chmod(opts.backupFile, 0o600).catch(() => {});
+    return result;
+  } catch {
+    return { copied: false };
+  }
+}
+
+/** Extract codex `auth.json` from its shared volume to `~/.agentbox/codex-credentials.json`. */
+export function extractCodexCredentials(volume: string, image: string): Promise<{ copied: boolean }> {
+  return extractVolumeAuthToBackup({ volume, image, backupFile: CODEX_CREDENTIALS_BACKUP_FILE });
+}
+
+/** Extract opencode `auth.json` from its shared volume to `~/.agentbox/opencode-credentials.json`. */
+export function extractOpencodeCredentials(volume: string, image: string): Promise<{ copied: boolean }> {
+  return extractVolumeAuthToBackup({ volume, image, backupFile: OPENCODE_CREDENTIALS_BACKUP_FILE });
 }
 
 export type CredentialSyncDirection = 'extracted' | 'seeded' | 'noop';

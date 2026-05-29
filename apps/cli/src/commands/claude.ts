@@ -18,6 +18,7 @@ import {
   ensureImage,
   formatDetachNotice,
   hostBackupHasCredentials,
+  hostClaudeBackupExpired,
   inspectBox,
   rebuildPluginNativeDeps,
   runInteractiveClaudeLogin,
@@ -300,6 +301,54 @@ async function maybeRunClaudeLogin(args: {
   log.success('Signed in with your Claude subscription — saved for future boxes.');
 }
 
+/**
+ * Cloud counterpart of {@link maybeRunClaudeLogin}: offered before creating a
+ * CLOUD box. Cloud has no shared volume to persist an in-box login, so without
+ * a host credential the box boots unauthenticated. Capturing the login to
+ * `~/.agentbox/claude-credentials.json` (via the same throwaway-container login
+ * + `syncClaudeCredentials`) lets the cloud push seed it into this box and every
+ * future one. Also re-offers when the saved token is *expired* — the in-box
+ * refresh has proven unreliable on cloud. Skips on non-TTY / --yes / host env.
+ */
+async function maybeRunCloudClaudeLogin(args: {
+  image: string;
+  authSource: ResolvedClaudeAuth['source'];
+  yes: boolean;
+  hostWorkspace: string;
+}): Promise<void> {
+  if (!process.stdin.isTTY || args.yes) return;
+  if (args.authSource === 'host-env') return;
+  const hasCreds = await hostBackupHasCredentials();
+  const expired = hasCreds && (await hostClaudeBackupExpired());
+  if (hasCreds && !expired) return;
+
+  const message = expired
+    ? 'Your saved Claude login looks expired. Sign in again? (saved and reused by every box)'
+    : 'Sign in with your Claude subscription? (saved and reused by every box)';
+  const answer = await confirm({ message, initialValue: true });
+  if (isCancel(answer) || !answer) {
+    log.info('Skipped sign-in — claude will prompt you to /login inside the box.');
+    return;
+  }
+
+  const s = spinner();
+  s.start('preparing sandbox image');
+  await ensureImage(args.image, { onProgress: (line) => s.message(clampSpinnerLine(line)) });
+  s.message('preparing claude config');
+  await ensureClaudeVolume(
+    { volume: SHARED_CLAUDE_VOLUME },
+    { syncFromHost: true, image: args.image, hostWorkspace: args.hostWorkspace },
+  );
+  s.stop('image ready');
+
+  const exitCode = await runClaudeLoginContainer(args.image, ['--claudeai']);
+  if (exitCode !== 0) {
+    log.warn('Claude login did not complete; continuing — run `agentbox claude login` to retry.');
+    return;
+  }
+  log.success('Signed in with your Claude subscription — saved for future boxes.');
+}
+
 export const claudeCommand = new Command('claude')
   .description('Create a sandboxed box and launch Claude Code in a detachable tmux session')
   // Mirror create's surface so users can swap the verb without re-learning flags.
@@ -496,10 +545,19 @@ export const claudeCommand = new Command('claude')
     // setup-token (the dormant CI fallback).
     const resolved = await resolveClaudeAuth(process.env);
 
-    // First-run sign-in offer is Docker-only — the cloud path seeds creds via
-    // the per-agent Daytona volume (see ensureAgentVolumesForCloud).
+    // First-run sign-in offer. Docker seeds every box from the host backup;
+    // cloud captures the login to the same backup so the per-box push seeds it
+    // (and re-offers on an expired token). Both run the throwaway-container
+    // login — docker is always available.
     if (!isCloud) {
       await maybeRunClaudeLogin({
+        image: cfg.effective.box.image,
+        authSource: resolved.source,
+        yes: !!opts.yes,
+        hostWorkspace: opts.workspace,
+      });
+    } else {
+      await maybeRunCloudClaudeLogin({
         image: cfg.effective.box.image,
         authSource: resolved.source,
         yes: !!opts.yes,
