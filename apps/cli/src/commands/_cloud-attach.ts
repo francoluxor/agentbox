@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { spinner } from '@clack/prompts';
 import { DEFAULT_RELAY_PORT } from '@agentbox/sandbox-docker';
 import type { BoxRecord } from '@agentbox/core';
 import type { AttachOpenIn } from '@agentbox/config';
@@ -97,12 +98,31 @@ export async function cloudAgentAttach(args: CloudAgentAttachArgs): Promise<void
   if (!provider.buildAttach) {
     throw new Error(`provider '${provider.name}' does not support interactive attach`);
   }
+  // Ensure the box is running before we attach. A cloud box can be stopped
+  // out from under an attach — most notably `checkpoint --set-default`, which
+  // snapshots and stops the sandbox. Without this, buildAttach runs against a
+  // dead sandbox and the relay poller 502s ("not listening on the requested
+  // port") forever while the user stares at "Waiting for connection...".
+  // `provider.start` auto-resumes from snapshot and returns the record with
+  // refreshed preview URLs / relay tokens, which we must use downstream.
+  // Mirrors the docker attach path (unpause/start) and `checkpoint create`.
+  let box = args.box;
+  const state = await provider.probeState(box);
+  if (state === 'missing') {
+    throw new Error(`cloud sandbox for ${box.name} is missing; was it destroyed?`);
+  }
+  if (state !== 'running') {
+    const s = spinner();
+    s.start(state === 'paused' ? 'resuming box' : 'starting box');
+    box = await provider.start(box);
+    s.stop('box running');
+  }
   const command = buildCloudAttachInnerCommand(args.binary, args.extraArgs);
   // Daytona-only: force inline attach. `spec.cleanup` would otherwise run as
   // soon as the host process returns from the spawn (before the new pane has
   // released the per-call SSH tunnel), breaking the detached attach.
   const safeOpenIn: AttachOpenIn | undefined =
-    args.box.provider === 'daytona' ? 'same' : args.openIn;
+    box.provider === 'daytona' ? 'same' : args.openIn;
 
   // New-terminal attaches (tab/window/split) re-invoke `agentbox <agent> attach`
   // in the fresh pane, and that re-invocation carries NO `extraArgs` — so for a
@@ -112,7 +132,7 @@ export async function cloudAgentAttach(args: CloudAgentAttachArgs): Promise<void
   // finds it via `tmux has-session` and just attaches. (Inline attach runs the
   // full command itself, so it doesn't need this.)
   if (safeOpenIn && safeOpenIn !== 'same' && args.extraArgs && args.extraArgs.length > 0) {
-    const pre = await provider.buildAttach(args.box, 'agent', {
+    const pre = await provider.buildAttach(box, 'agent', {
       sessionName: args.sessionName,
       command,
       detached: true,
@@ -124,7 +144,7 @@ export async function cloudAgentAttach(args: CloudAgentAttachArgs): Promise<void
     }
   }
 
-  const spec = await provider.buildAttach(args.box, 'agent', {
+  const spec = await provider.buildAttach(box, 'agent', {
     sessionName: args.sessionName,
     command,
   });
@@ -134,19 +154,19 @@ export async function cloudAgentAttach(args: CloudAgentAttachArgs): Promise<void
     args.mode === 'claude' && (await clipboardCaptureAvailable());
   try {
     const code = await runWrappedAttach({
-      container: args.box.name,
+      container: box.name,
       command: spec.argv[0],
       dockerArgv: spec.argv.slice(1),
       env: spec.env,
       relayBaseUrl: RELAY_HOST_URL,
-      boxId: args.box.id,
-      boxName: args.box.name,
-      projectIndex: args.box.projectIndex,
+      boxId: box.id,
+      boxName: box.name,
+      projectIndex: box.projectIndex,
       mode: args.mode,
       detachable: true,
       openIn: safeOpenIn,
       onPasteImage: canPaste
-        ? () => pasteHostClipboardImage(provider, args.box)
+        ? () => pasteHostClipboardImage(provider, box)
         : undefined,
     });
     process.exit(code);
