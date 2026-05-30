@@ -54,3 +54,29 @@ macOS (arm64 tested), Docker via OrbStack or Docker Desktop. Container needs
 `--cap-add=SYS_ADMIN --device=/dev/fuse --security-opt=apparmor:unconfined` —
 `runBox` in `packages/sandbox-docker/src/docker.ts` is the single source of
 truth for those flags.
+
+## Releasing
+
+Only `@madarco/agentbox` (`apps/cli`) is published. Releases are driven from the
+commit history — there is no Changesets step.
+
+1. **Generate the notes.** Run the `/release-notes [patch|minor|major]` slash
+   command in Claude Code from the repo root. It reads the commits since the last
+   `vX.Y.Z` tag, curates them into a short user-facing entry (grouped Breaking /
+   Added / Changed / Fixed), and prepends it to `apps/cli/CHANGELOG.md`. Review
+   and edit the entry — it is a draft, not the final word.
+2. **Cut the release.** From `apps/cli`, run the matching publish script:
+
+   ```sh
+   pnpm --filter @madarco/agentbox run publish:minor   # or publish:patch
+   ```
+
+   `npm version` bumps `package.json`; the `version` lifecycle script stages
+   `CHANGELOG.md` so both land in one commit; npm tags it `vX.Y.Z` and the script
+   pushes the commit + tag. That tag is the anchor for the next `/release-notes`.
+3. **Publish to npm.** `cd apps/cli && npm publish` (`prepublishOnly` rebuilds
+   the workspace first). `CHANGELOG.md` ships in the tarball (it is in the package
+   `files` list) — npm surfaces it on the package page.
+
+The first tracked release is tagged `v0.9.0`; earlier history lives in the git
+log.
