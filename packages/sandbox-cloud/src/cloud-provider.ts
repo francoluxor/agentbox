@@ -270,6 +270,176 @@ export function createCloudProvider(
     }
   }
 
+  // Re-ensure a freshly-woken cloud box. A resumed/restarted sandbox boots
+  // fresh: its in-box processes are gone and (on some backends) preview URLs
+  // rotate. Refresh the web/service/relay preview URLs, re-register host
+  // portless aliases, persist the record, relaunch the in-box daemons
+  // (ctl daemon -> in-box bridge + the agentbox.yaml tasks/services, dockerd,
+  // VNC), and re-register with the host relay. Shared by `start()` (after
+  // `backend.start`) and `resume()` (after `backend.resume`) so EVERY wake path
+  // brings the box fully back, not just attach. Idempotent — the `launch*`
+  // helpers no-op when the daemon is already alive.
+  async function reEnsureCloudBox(box: BoxRecord, h: CloudHandle): Promise<BoxRecord> {
+    // Preview URLs (and their tokens) can rotate across stop/start — refresh
+    // the web + relay preview URLs and persist so `agentbox url` and the
+    // host poller see the live values.
+    const webPort = box.cloud?.webPort ?? CLOUD_WEB_PROXY_PORT;
+    let webPreview: { url: string; token?: string } | undefined;
+    try {
+      webPreview = await backend.previewUrl(h, webPort);
+    } catch {
+      const cached = box.cloud?.previewUrls?.[webPort];
+      webPreview = cached ? { url: cached } : undefined;
+    }
+    // Re-mint per-service preview URLs from `agentbox.yaml`. Daytona's
+    // preview URLs rotate when a sandbox restarts, so any cached ports
+    // need to be re-resolved against the live handle.
+    const servicePreviews: Record<number, string> = {};
+    try {
+      const ports = await readExposedServicePorts(box.workspacePath);
+      for (const port of ports) {
+        if (port === webPort) continue;
+        try {
+          const p = await backend.previewUrl(h, port);
+          servicePreviews[port] = p.url;
+        } catch {
+          // skip — falls back to cached value below if any
+        }
+      }
+    } catch {
+      // workspace path missing / yaml unreadable: keep cached previewUrls
+    }
+    let relayPreview: { url: string; token?: string } | undefined;
+    try {
+      relayPreview = await backend.previewUrl(h, 8788);
+    } catch {
+      relayPreview = box.cloud?.relayPreviewUrl
+        ? { url: box.cloud.relayPreviewUrl, token: box.cloud.relayPreviewToken }
+        : undefined;
+    }
+    // Build the refreshed preview map: keep cached values for ports we
+    // couldn't re-resolve, overlay fresh URLs from this start.
+    const mergedPreviews: Record<number, string> = {
+      ...(box.cloud?.previewUrls ?? {}),
+      ...servicePreviews,
+    };
+    if (webPreview !== undefined) mergedPreviews[webPort] = webPreview.url;
+
+    // Portless: the `ssh -L` local port is fresh after `agentbox start`
+    // (pickFreePort picks again), and the in-VPS portless proxy died with
+    // the VPS. Re-register the host alias against the new local port and
+    // bring the in-box mirror back up. Skipped when no host portless alias
+    // was set originally (user opted out at create) or when the URL is
+    // non-loopback (Daytona).
+    let portlessAliasName: string | undefined = box.portlessAlias;
+    let portlessUrlResolved: string | undefined = box.portlessUrl;
+    if (box.portlessAlias && webPreview) {
+      const r = await bootstrapPortlessForCloudBox(backend, h, {
+        boxName: box.name,
+        webPreviewUrl: webPreview.url,
+        webPort,
+        onLog: () => {},
+      });
+      if (r) {
+        portlessAliasName = r.alias;
+        portlessUrlResolved = r.url;
+      }
+    }
+    // Same story for the VNC alias — the ssh -L port for 6080 is fresh.
+    // Best-effort, silent (startBox has no onLog). Skipped when no VNC
+    // alias was set at create.
+    let portlessVncAliasName: string | undefined = box.portlessVncAlias;
+    let portlessVncUrlResolved: string | undefined = box.portlessVncUrl;
+    if (box.portlessVncAlias && box.vncEnabled) {
+      try {
+        const vncPreview = await backend.previewUrl(h, CLOUD_VNC_PORT);
+        const url = await registerHostPortlessAlias({
+          alias: box.portlessVncAlias,
+          previewUrl: vncPreview.url,
+          label: 'vnc',
+          onLog: () => {},
+        });
+        if (url) {
+          portlessVncAliasName = box.portlessVncAlias;
+          portlessVncUrlResolved = url;
+        }
+      } catch {
+        /* best-effort */
+      }
+    }
+
+    const next: BoxRecord = {
+      ...box,
+      portlessAlias: portlessAliasName,
+      portlessUrl: portlessUrlResolved,
+      portlessVncAlias: portlessVncAliasName,
+      portlessVncUrl: portlessVncUrlResolved,
+      cloud: {
+        ...(box.cloud ?? { backend: providerName, sandboxId: h.sandboxId }),
+        webPort,
+        previewUrls: Object.keys(mergedPreviews).length > 0 ? mergedPreviews : undefined,
+        relayPreviewUrl: relayPreview?.url ?? box.cloud?.relayPreviewUrl,
+        relayPreviewToken: relayPreview?.token ?? box.cloud?.relayPreviewToken,
+      },
+    };
+    await recordBox(next);
+    // Re-launch the ctl daemon — it dies with the sandbox.
+    await launchCloudCtlDaemon({
+      backend,
+      handle: h,
+      boxId: box.id,
+      boxName: box.name,
+      relayUrl: `http://127.0.0.1:${String(8788)}`,
+      relayToken: box.relayToken ?? '',
+      bridgeToken: box.cloud?.bridgeToken,
+    });
+    // Re-launch in-box dockerd — also dies with the sandbox. Best-effort,
+    // mirrors the docker provider's lifecycle.ts:276 relaunch. Skipped for
+    // backends that can't run nested containers (vercel).
+    if (opts.launchDockerd !== false) {
+      try {
+        const dockerd = await launchCloudDockerdDaemon({ backend, handle: h, timeoutMs: 60_000 });
+        if (!dockerd.up) {
+          // swallowed; surface only on follow-up `docker info`
+        }
+      } catch {
+        // best-effort
+      }
+    }
+    // Re-launch the VNC stack — Xvnc + websockify die with the sandbox.
+    // Best-effort: a failure here shouldn't block start; `agentbox screen`
+    // surfaces the missing daemon with a clear error.
+    if (box.vncEnabled && box.vncPassword) {
+      try {
+        await launchCloudVncDaemon({ backend, handle: h, vncPassword: box.vncPassword });
+      } catch {
+        // swallowed; user-visible error comes from `agentbox screen` if it
+        // can't reach websockify after a few retries.
+      }
+    }
+    // Re-register with the host relay so its CloudBoxPoller picks up the
+    // fresh preview URL/token.
+    if (relayPreview && box.relayToken && box.cloud?.bridgeToken) {
+      try {
+        await registerBoxWithRelay({
+          boxId: box.id,
+          token: box.relayToken,
+          name: box.name,
+          kind: 'cloud',
+          backend: backend.name,
+          previewUrl: relayPreview.url,
+          previewToken: relayPreview.token,
+          bridgeToken: box.cloud.bridgeToken,
+          createdAt: box.createdAt,
+          projectIndex: box.projectIndex,
+        });
+      } catch {
+        // best-effort
+      }
+    }
+    return next;
+  }
+
   return {
     name: providerName,
 
@@ -719,164 +889,7 @@ export function createCloudProvider(
     async start(box: BoxRecord): Promise<BoxRecord> {
       const h = handleFor(box);
       await backend.start(h);
-      // Preview URLs (and their tokens) can rotate across stop/start — refresh
-      // the web + relay preview URLs and persist so `agentbox url` and the
-      // host poller see the live values.
-      const webPort = box.cloud?.webPort ?? CLOUD_WEB_PROXY_PORT;
-      let webPreview: { url: string; token?: string } | undefined;
-      try {
-        webPreview = await backend.previewUrl(h, webPort);
-      } catch {
-        const cached = box.cloud?.previewUrls?.[webPort];
-        webPreview = cached ? { url: cached } : undefined;
-      }
-      // Re-mint per-service preview URLs from `agentbox.yaml`. Daytona's
-      // preview URLs rotate when a sandbox restarts, so any cached ports
-      // need to be re-resolved against the live handle.
-      const servicePreviews: Record<number, string> = {};
-      try {
-        const ports = await readExposedServicePorts(box.workspacePath);
-        for (const port of ports) {
-          if (port === webPort) continue;
-          try {
-            const p = await backend.previewUrl(h, port);
-            servicePreviews[port] = p.url;
-          } catch {
-            // skip — falls back to cached value below if any
-          }
-        }
-      } catch {
-        // workspace path missing / yaml unreadable: keep cached previewUrls
-      }
-      let relayPreview: { url: string; token?: string } | undefined;
-      try {
-        relayPreview = await backend.previewUrl(h, 8788);
-      } catch {
-        relayPreview = box.cloud?.relayPreviewUrl
-          ? { url: box.cloud.relayPreviewUrl, token: box.cloud.relayPreviewToken }
-          : undefined;
-      }
-      // Build the refreshed preview map: keep cached values for ports we
-      // couldn't re-resolve, overlay fresh URLs from this start.
-      const mergedPreviews: Record<number, string> = {
-        ...(box.cloud?.previewUrls ?? {}),
-        ...servicePreviews,
-      };
-      if (webPreview !== undefined) mergedPreviews[webPort] = webPreview.url;
-
-      // Portless: the `ssh -L` local port is fresh after `agentbox start`
-      // (pickFreePort picks again), and the in-VPS portless proxy died with
-      // the VPS. Re-register the host alias against the new local port and
-      // bring the in-box mirror back up. Skipped when no host portless alias
-      // was set originally (user opted out at create) or when the URL is
-      // non-loopback (Daytona).
-      let portlessAliasName: string | undefined = box.portlessAlias;
-      let portlessUrlResolved: string | undefined = box.portlessUrl;
-      if (box.portlessAlias && webPreview) {
-        const r = await bootstrapPortlessForCloudBox(backend, h, {
-          boxName: box.name,
-          webPreviewUrl: webPreview.url,
-          webPort,
-          onLog: () => {},
-        });
-        if (r) {
-          portlessAliasName = r.alias;
-          portlessUrlResolved = r.url;
-        }
-      }
-      // Same story for the VNC alias — the ssh -L port for 6080 is fresh.
-      // Best-effort, silent (startBox has no onLog). Skipped when no VNC
-      // alias was set at create.
-      let portlessVncAliasName: string | undefined = box.portlessVncAlias;
-      let portlessVncUrlResolved: string | undefined = box.portlessVncUrl;
-      if (box.portlessVncAlias && box.vncEnabled) {
-        try {
-          const vncPreview = await backend.previewUrl(h, CLOUD_VNC_PORT);
-          const url = await registerHostPortlessAlias({
-            alias: box.portlessVncAlias,
-            previewUrl: vncPreview.url,
-            label: 'vnc',
-            onLog: () => {},
-          });
-          if (url) {
-            portlessVncAliasName = box.portlessVncAlias;
-            portlessVncUrlResolved = url;
-          }
-        } catch {
-          /* best-effort */
-        }
-      }
-
-      const next: BoxRecord = {
-        ...box,
-        portlessAlias: portlessAliasName,
-        portlessUrl: portlessUrlResolved,
-        portlessVncAlias: portlessVncAliasName,
-        portlessVncUrl: portlessVncUrlResolved,
-        cloud: {
-          ...(box.cloud ?? { backend: providerName, sandboxId: h.sandboxId }),
-          webPort,
-          previewUrls: Object.keys(mergedPreviews).length > 0 ? mergedPreviews : undefined,
-          relayPreviewUrl: relayPreview?.url ?? box.cloud?.relayPreviewUrl,
-          relayPreviewToken: relayPreview?.token ?? box.cloud?.relayPreviewToken,
-        },
-      };
-      await recordBox(next);
-      // Re-launch the ctl daemon — it dies with the sandbox.
-      await launchCloudCtlDaemon({
-        backend,
-        handle: h,
-        boxId: box.id,
-        boxName: box.name,
-        relayUrl: `http://127.0.0.1:${String(8788)}`,
-        relayToken: box.relayToken ?? '',
-        bridgeToken: box.cloud?.bridgeToken,
-      });
-      // Re-launch in-box dockerd — also dies with the sandbox. Best-effort,
-      // mirrors the docker provider's lifecycle.ts:276 relaunch. Skipped for
-      // backends that can't run nested containers (vercel).
-      if (opts.launchDockerd !== false) {
-        try {
-          const dockerd = await launchCloudDockerdDaemon({ backend, handle: h, timeoutMs: 60_000 });
-          if (!dockerd.up) {
-            // swallowed; surface only on follow-up `docker info`
-          }
-        } catch {
-          // best-effort
-        }
-      }
-      // Re-launch the VNC stack — Xvnc + websockify die with the sandbox.
-      // Best-effort: a failure here shouldn't block start; `agentbox screen`
-      // surfaces the missing daemon with a clear error.
-      if (box.vncEnabled && box.vncPassword) {
-        try {
-          await launchCloudVncDaemon({ backend, handle: h, vncPassword: box.vncPassword });
-        } catch {
-          // swallowed; user-visible error comes from `agentbox screen` if it
-          // can't reach websockify after a few retries.
-        }
-      }
-      // Re-register with the host relay so its CloudBoxPoller picks up the
-      // fresh preview URL/token.
-      if (relayPreview && box.relayToken && box.cloud?.bridgeToken) {
-        try {
-          await registerBoxWithRelay({
-            boxId: box.id,
-            token: box.relayToken,
-            name: box.name,
-            kind: 'cloud',
-            backend: backend.name,
-            previewUrl: relayPreview.url,
-            previewToken: relayPreview.token,
-            bridgeToken: box.cloud.bridgeToken,
-            createdAt: box.createdAt,
-            projectIndex: box.projectIndex,
-          });
-        } catch {
-          // best-effort
-        }
-      }
-      return next;
+      return reEnsureCloudBox(box, h);
     },
 
     async pause(box: BoxRecord): Promise<void> {
@@ -884,7 +897,14 @@ export function createCloudProvider(
     },
 
     async resume(box: BoxRecord): Promise<void> {
-      await backend.resume(handleFor(box));
+      const h = handleFor(box);
+      await backend.resume(h);
+      // A resumed sandbox boots fresh — ctl/bridge (-> the agentbox.yaml
+      // tasks/services), VNC and dockerd are gone. Re-ensure everything
+      // `start()` does so non-attach resume paths (`agentbox unpause`/`url`/
+      // `checkpoint`/dashboard) don't strand a box with dead daemons. The
+      // returned record is persisted inside `reEnsureCloudBox` (recordBox).
+      await reEnsureCloudBox(box, h);
     },
 
     async stop(box: BoxRecord): Promise<void> {
