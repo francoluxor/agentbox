@@ -484,12 +484,12 @@ export async function runInstallWizard(opts: RunInstallWizardOptions = {}): Prom
   // 6) First-run marker (so the auto-trigger doesn't fire again).
   markSetupComplete(providerName);
 
-  // 7) Tutorial outro.
-  note(tutorialBody(providerName), 'Next steps');
-
   // Brief check post-setup so the user sees what's now ready.
   const providerGroup = await runProviderChecks(providerName);
   process.stdout.write('  ' + formatCompact([sysGroup, providerGroup]) + '\n');
+
+  // 7) Tutorial outro.
+  note(tutorialBody(providerName), 'Next steps');
 
   outro(
     opts.fromAutoTrigger
