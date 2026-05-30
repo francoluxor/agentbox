@@ -42,6 +42,7 @@ export interface UserConfig {
     isolateCodexConfig?: boolean;
     isolateOpencodeConfig?: boolean;
     image?: string;
+    imageRegistry?: string;
     dockerCacheShared?: boolean;
     memory?: number;
     cpus?: number;
@@ -140,6 +141,7 @@ export interface EffectiveConfig {
     isolateCodexConfig: boolean;
     isolateOpencodeConfig: boolean;
     image: string;
+    imageRegistry: string;
     dockerCacheShared: boolean;
     memory: number;
     cpus: number;
@@ -257,6 +259,9 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     isolateCodexConfig: false,
     isolateOpencodeConfig: false,
     image: 'agentbox/box:dev',
+    // Mirrors BOX_IMAGE_REGISTRY in @agentbox/sandbox-docker. Empty disables the
+    // registry pull (always build the docker base image locally).
+    imageRegistry: 'ghcr.io/madarco/agentbox/box',
     dockerCacheShared: false,
     memory: 0,
     cpus: 0,
@@ -439,6 +444,13 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     key: 'box.image',
     type: 'string',
     description: 'Box image ref (advanced).',
+    advanced: true,
+  },
+  {
+    key: 'box.imageRegistry',
+    type: 'string',
+    description:
+      'Registry repo to pull the prebuilt docker base image from before building locally. Empty = always build. Docker only (advanced).',
     advanced: true,
   },
   {

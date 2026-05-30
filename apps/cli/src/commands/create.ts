@@ -40,6 +40,8 @@ interface CreateOptions {
   hostSnapshot?: boolean; // commander: --host-snapshot / --no-host-snapshot => true / false / undefined
   snapshot?: string; // --snapshot <ref>: start from this checkpoint
   image?: string;
+  /** --build / --no-pull: force a local docker base-image build instead of pulling from the registry. */
+  build?: boolean;
   attach?: boolean;
   yes?: boolean;
   withPlaywright?: boolean;
@@ -142,6 +144,10 @@ export const createCommand = new Command('create')
     'start from a project checkpoint (see `agentbox checkpoint`); overrides box.defaultCheckpoint',
   )
   .option('--image <ref>', 'override the box image', undefined)
+  .option(
+    '--build',
+    'build the docker base image locally instead of pulling the prebuilt one from the registry',
+  )
   .option('--attach', 'drop into a shell inside the box after it is ready')
   .option('--with-playwright', 'also install @playwright/cli@latest globally inside the box')
   .option(
@@ -335,6 +341,8 @@ export const createCommand = new Command('create')
         name: opts.name,
         checkpointRef,
         image: cfg.effective.box.image,
+        allowPull: opts.build ? false : undefined,
+        imageRegistry: cfg.effective.box.imageRegistry,
         withPlaywright,
         withEnv: cfg.effective.box.withEnv,
         envFilesToImport: wiz.envFilesToImport,

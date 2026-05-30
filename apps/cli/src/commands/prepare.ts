@@ -39,6 +39,7 @@ interface PrepareOptions {
   provider?: string;
   name?: string;
   force?: boolean;
+  build?: boolean;
   yes?: boolean;
   status?: boolean;
 }
@@ -213,6 +214,8 @@ export interface RunPrepareOptions {
   name?: string;
   /** Rebuild even if the image / snapshot already exists. */
   force?: boolean;
+  /** Docker only: force a local build instead of pulling the prebuilt image from the registry. */
+  build?: boolean;
   /** Skip the Daytona cost-notice. */
   yes?: boolean;
   /** Host workspace dir (defaults to `process.cwd()`). */
@@ -253,6 +256,13 @@ export async function runPrepare(
   }
 
   const cwd = opts.cwd ?? process.cwd();
+  // Docker base-image registry override (box.imageRegistry; empty = always build).
+  const registry =
+    providerName === 'docker'
+      ? await loadEffectiveConfig(cwd)
+          .then((c) => c.effective.box.imageRegistry)
+          .catch(() => undefined)
+      : undefined;
   const sp = spinner();
   sp.start(`preparing ${providerName}…`);
   try {
@@ -260,6 +270,8 @@ export async function runPrepare(
       name: opts.name,
       hostWorkspace: cwd,
       force: opts.force,
+      allowPull: opts.build ? false : undefined,
+      registry,
       onLog: (line) => sp.message(line.slice(0, 80)),
     });
     if (result.snapshotName !== undefined) {
@@ -304,6 +316,10 @@ export const prepareCommand = new Command('prepare')
   )
   .option('-n, --name <name>', 'snapshot name (Daytona only; default: agentbox-base-<timestamp>)')
   .option('-f, --force', 'rebuild even if the image / snapshot already exists')
+  .option(
+    '--build',
+    'docker: build the base image locally instead of pulling the prebuilt one from the registry',
+  )
   .option('-y, --yes', 'skip confirmation prompts (cost / time warnings)')
   .option('--status', 'show status without preparing anything')
   .action(async (opts: PrepareOptions) => {
@@ -322,6 +338,7 @@ export const prepareCommand = new Command('prepare')
     await runPrepare(providerName, {
       name: opts.name,
       force: opts.force,
+      build: opts.build,
       yes: opts.yes,
     });
   });

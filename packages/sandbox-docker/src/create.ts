@@ -134,6 +134,10 @@ export interface CreateBoxOptions {
    */
   useBranch?: string;
   image?: string;
+  /** Try the registry before building the base image. Defaults to true. */
+  allowPull?: boolean;
+  /** Registry repo for the base-image pull. Defaults to `BOX_IMAGE_REGISTRY`; empty disables. */
+  imageRegistry?: string;
   onLog?: (line: string) => void;
   /**
    * Claude Code config volume. When omitted, defaults to `{ isolate: false }` —
@@ -401,6 +405,8 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
   const ensureRef = checkpointImage ? (opts.image ?? DEFAULT_BOX_IMAGE) : imageRef;
   const { built } = await ensureImage(ensureRef, {
     onProgress: (line) => log(`[image] ${line}`),
+    allowPull: opts.allowPull,
+    registry: opts.imageRegistry,
   });
   log(built ? `built image ${ensureRef}` : `using cached image ${imageRef}`);
 

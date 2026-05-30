@@ -31,10 +31,26 @@ node apps/cli/dist/index.js destroy cc -y
 
 For the full lifecycle command list see [`docs/features.md`](./features.md).
 
-## Image rebuild
+## Image: pull vs rebuild
 
-The box image is pinned to `agentbox/box:dev` and reused across creates. After
-**any** change that bakes into the image, wipe the cached copy so the next
+The box image is pinned to `agentbox/box:dev` and reused across creates. On
+first use the CLI **pulls** a prebuilt copy from GHCR
+(`ghcr.io/madarco/agentbox/box`) instead of building locally — a multi-minute
+build collapses to a `docker pull`. The pull target is tagged by the
+build-context fingerprint (`sha-<first 16 hex>`, see `registryRefForSha()` in
+`image.ts`), so the tag *is* the content identity: a fingerprint that matches a
+published build pulls cleanly; one that doesn't (a locally edited baked file)
+404s and the CLI builds locally. `ensureImage()` / `DockerProvider.prepare()`
+go through `pullOrBuild()`.
+
+Force a local build (skip the pull):
+
+```sh
+agentbox prepare --provider docker --build   # or: agentbox create --build
+agentbox config set --global box.imageRegistry ""   # disable pulling everywhere
+```
+
+After **any** change that bakes into the image, wipe the cached copy so the next
 create rebuilds:
 
 ```sh
@@ -47,6 +63,21 @@ docker rmi agentbox/box:dev
 stage script are the authoritative list.
 
 Wipe everything if state drifts: `agentbox prune --all -y`.
+
+### Publishing the prebuilt image
+
+`.github/workflows/box-image.yml` builds a multi-arch (amd64 + arm64) manifest
+and pushes it to GHCR, tagged `sha-<fingerprint>`, `<cliVersion>`, and `latest`.
+It runs on `workflow_dispatch`, on `v*` tags, and on `main` pushes that touch the
+build context (`Dockerfile.box`, the docker scripts, `packages/ctl/**`,
+`apps/cli/share/**`). The fingerprint is computed by
+`apps/cli/scripts/print-box-context-sha.mjs` (same inputs as the runtime
+fingerprint — verified equal locally).
+
+**One-time setup:** after the first successful publish, make the GHCR package
+public (repo → Packages → `box` → Package settings → Change visibility →
+Public), otherwise anonymous `docker pull` from end users fails and they fall
+back to building locally.
 
 ## Host environment assumed
 

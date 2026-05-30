@@ -53,6 +53,16 @@ export interface CreateBoxRequest {
   projectRoot: string;
   /** Override the base image / snapshot. */
   image?: string;
+  /**
+   * Try the public registry before building the docker base image. Defaults
+   * to true. `--build` / `box.imageRegistry=""` set this false. Docker only.
+   */
+  allowPull?: boolean;
+  /**
+   * Registry repo for the docker base-image pull. Defaults to
+   * `BOX_IMAGE_REGISTRY`; empty disables pulling. Docker only.
+   */
+  imageRegistry?: string;
   /** Start from this checkpoint ref instead of a cold image. */
   checkpointRef?: string;
   withPlaywright?: boolean;
@@ -208,6 +218,18 @@ export interface PrepareOptions {
    * snapshot under a new name when not given one.
    */
   force?: boolean;
+  /**
+   * Try the public registry before building. Docker only: when true (default)
+   * `prepare` pulls the fingerprint-tagged base image and retags it locally,
+   * falling back to a build on a miss. `--build` / `box.imageRegistry=""`
+   * set this false to force a local build. Ignored by cloud providers.
+   */
+  allowPull?: boolean;
+  /**
+   * Registry repo to pull the docker base image from. Defaults to
+   * `BOX_IMAGE_REGISTRY`; empty string disables pulling. Docker only.
+   */
+  registry?: string;
   /**
    * Progress sink for the build-side log stream (Docker BuildKit output,
    * Daytona's `onLogs` chunks). Wired to the CLI spinner / latest.log.

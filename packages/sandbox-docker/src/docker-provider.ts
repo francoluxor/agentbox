@@ -24,12 +24,11 @@ import { execInBox, inspectContainerStatus } from './docker.js';
 import { boxResourceStats } from './stats.js';
 import { detectEngine } from './host-export.js';
 import { portlessGetUrl } from './portless.js';
-import { DEFAULT_BOX_IMAGE, buildImage, imageExists } from './image.js';
+import { DEFAULT_BOX_IMAGE, imageExists, pullOrBuild } from './image.js';
 import {
   computeDockerContextFingerprint,
   preparedMatches,
   readPreparedDockerState,
-  writePreparedDockerState,
 } from './prepared-state.js';
 import { downloadFromBox, uploadToBox } from './box-cp.js';
 
@@ -62,6 +61,8 @@ export const dockerProvider: Provider = {
       fromBranch: req.fromBranch,
       useBranch: req.useBranch,
       image: req.image,
+      allowPull: req.allowPull,
+      imageRegistry: req.imageRegistry,
       onLog: req.onLog,
       claudeConfig: po.claudeConfig,
       claudeEnv: po.claudeEnv,
@@ -202,15 +203,20 @@ export const dockerProvider: Provider = {
       }
     }
 
-    opts.onLog?.(`building docker image ${ref}…`);
-    await buildImage({ ref, onProgress: opts.onLog });
+    // `--force` skips the registry pull and always builds a fresh local image.
+    const { source } = await pullOrBuild(ref, fingerprint, {
+      onProgress: opts.onLog,
+      allowPull: opts.force ? false : opts.allowPull,
+      registry: opts.registry,
+    });
     if (fingerprint) {
-      writePreparedDockerState({ imageRef: ref, contextSha256: fingerprint.contextSha256 });
       opts.onLog?.(
-        `docker image ${ref} built; recorded fingerprint ${fingerprint.contextSha256.slice(0, 12)}`,
+        `docker image ${ref} ${source}; recorded fingerprint ${fingerprint.contextSha256.slice(0, 12)}`,
       );
     } else {
-      opts.onLog?.(`docker image ${ref} built (fingerprint unavailable, prepared state not written)`);
+      opts.onLog?.(
+        `docker image ${ref} ${source} (fingerprint unavailable, prepared state not written)`,
+      );
     }
     return {};
   },

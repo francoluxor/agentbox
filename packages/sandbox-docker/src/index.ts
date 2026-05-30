@@ -140,10 +140,17 @@ export {
 } from './in-box-git.js';
 export {
   DEFAULT_BOX_IMAGE,
+  BOX_IMAGE_REGISTRY,
+  registryRefForSha,
   ensureImage,
+  pullOrBuild,
+  pullImage,
+  tagImage,
   imageExists,
   imageInfo,
   type ImageInfo,
+  type EnsureImageOptions,
+  type PullOrBuildOptions,
 } from './image.js';
 export {
   computeDockerContextFingerprint,

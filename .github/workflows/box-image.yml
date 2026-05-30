@@ -1,0 +1,78 @@
+name: Publish box image
+
+# Build the docker box image once and push a multi-arch (amd64 + arm64) manifest
+# to GHCR so `agentbox` can pull it on first install instead of building locally.
+# The image is tagged by its build-context fingerprint (`sha-<first 16 hex>`),
+# which is exactly the tag the CLI pulls (registryRefForSha() in
+# @agentbox/sandbox-docker) — the tag is the content identity, so a pull either
+# hits an identical image or 404s and the CLI builds locally.
+#
+# NOTE: after the first successful run, make the GHCR package public once
+# (repo → Packages → box → Package settings → Change visibility → Public),
+# otherwise anonymous `docker pull` from end users fails.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+    branches: [main]
+    paths:
+      - 'packages/sandbox-docker/Dockerfile.box'
+      - 'packages/sandbox-docker/scripts/**'
+      - 'packages/ctl/**'
+      - 'apps/cli/share/**'
+      - '.github/workflows/box-image.yml'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/madarco/agentbox/box
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Builds packages/ctl/dist/bin.cjs and stages apps/cli/runtime/docker
+      # (apps/cli tsup onSuccess runs scripts/stage-runtime.mjs).
+      - run: pnpm build
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          SHA="$(node apps/cli/scripts/print-box-context-sha.mjs)"
+          VERSION="$(node -p "require('./apps/cli/package.json').version")"
+          echo "sha=${SHA:0:16}" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "box context fingerprint: $SHA (tag sha-${SHA:0:16}), cli $VERSION"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: apps/cli/runtime/docker
+          file: apps/cli/runtime/docker/Dockerfile.box
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: |
+            ${{ env.IMAGE }}:sha-${{ steps.tags.outputs.sha }}
+            ${{ env.IMAGE }}:${{ steps.tags.outputs.version }}
+            ${{ env.IMAGE }}:latest

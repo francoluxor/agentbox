@@ -5,6 +5,26 @@ import { dirname, resolve } from 'node:path';
 
 export const DEFAULT_BOX_IMAGE = 'agentbox/box:dev';
 
+/**
+ * Public registry repo the box image is published to (see
+ * `.github/workflows/box-image.yml`). The CLI pulls a fingerprint-tagged
+ * image from here on first use instead of building locally — a multi-minute
+ * build collapses to a `docker pull`. An empty registry (config override)
+ * disables pulling and always builds.
+ */
+export const BOX_IMAGE_REGISTRY = 'ghcr.io/madarco/agentbox/box';
+
+/**
+ * The pull target for a given build-context fingerprint. The tag *is* the
+ * content identity: a local staged context that matches a published build
+ * has the same sha, so a pull hit can be retagged to `agentbox/box:dev` and
+ * stamped into docker-prepared.json without risk of a stale image (a locally
+ * edited context has a different sha, its tag 404s, and we build instead).
+ */
+export function registryRefForSha(sha: string, registry: string = BOX_IMAGE_REGISTRY): string {
+  return `${registry}:sha-${sha.slice(0, 16)}`;
+}
+
 const here = dirname(fileURLToPath(import.meta.url));
 
 // The Dockerfile's COPY lines reference monorepo-relative paths
@@ -45,6 +65,39 @@ export const BUILD_CONTEXT_DIR = BUILD_CONTEXT_DIR_RESOLVED;
 export async function imageExists(ref: string): Promise<boolean> {
   const result = await execa('docker', ['image', 'inspect', ref], { reject: false });
   return result.exitCode === 0;
+}
+
+/**
+ * Attempt `docker pull <target>`. Returns true on success, false on any
+ * failure (missing tag, offline, auth) — callers fall back to a local build.
+ * Never throws. Single attempt: a missing tag is the expected "build locally"
+ * signal, not a transient error worth retrying.
+ */
+export async function pullImage(
+  target: string,
+  opts: { onProgress?: (line: string) => void } = {},
+): Promise<boolean> {
+  const subprocess = execa('docker', ['pull', target], {
+    stderr: 'pipe',
+    stdout: 'pipe',
+    reject: false,
+  });
+  if (opts.onProgress) {
+    const forward = (chunk: Buffer | string): void => {
+      const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      for (const line of text.split(/\r?\n/)) {
+        if (line.length > 0) opts.onProgress?.(line);
+      }
+    };
+    subprocess.stdout?.on('data', forward);
+    subprocess.stderr?.on('data', forward);
+  }
+  const result = await subprocess;
+  return result.exitCode === 0;
+}
+
+export async function tagImage(source: string, target: string): Promise<void> {
+  await execa('docker', ['tag', source, target]);
 }
 
 export interface ImageInfo {
@@ -122,12 +175,70 @@ export async function buildImage(opts: BuildImageOptions = {}): Promise<string> 
   return ref;
 }
 
+export interface PullOrBuildOptions {
+  onProgress?: (line: string) => void;
+  /** Dockerfile path. Defaults to `Dockerfile.box` next to this package. */
+  dockerfile?: string;
+  /** Build context directory. Defaults to the staged runtime / monorepo root. */
+  contextDir?: string;
+  /** Try the registry before building. Defaults to true. */
+  allowPull?: boolean;
+  /** Registry repo to pull from. Defaults to `BOX_IMAGE_REGISTRY`; empty disables pulling. */
+  registry?: string;
+}
+
+/**
+ * Make `ref` present locally, preferring a registry pull over a local build.
+ *
+ * When `fingerprint` is non-null and pulling is allowed, pull the
+ * fingerprint-tagged image and retag it to `ref`; on a miss (or when pulling
+ * is disabled / unfingerprintable) build from the staged context. Either way,
+ * a known fingerprint is stamped into docker-prepared.json so the next
+ * `ensureImage()` treats this as a cache hit.
+ */
+export async function pullOrBuild(
+  ref: string,
+  fingerprint: { contextSha256: string } | null,
+  opts: PullOrBuildOptions = {},
+): Promise<{ source: 'pulled' | 'built' }> {
+  const { writePreparedDockerState } = await import('./prepared-state.js');
+  const registry = opts.registry ?? BOX_IMAGE_REGISTRY;
+  const allowPull = opts.allowPull !== false;
+
+  if (allowPull && registry && fingerprint) {
+    const target = registryRefForSha(fingerprint.contextSha256, registry);
+    opts.onProgress?.(`[image] pulling ${target}`);
+    if (await pullImage(target, { onProgress: opts.onProgress })) {
+      await tagImage(target, ref);
+      writePreparedDockerState({ imageRef: ref, contextSha256: fingerprint.contextSha256 });
+      opts.onProgress?.(`[image] pulled ${target} -> ${ref}`);
+      return { source: 'pulled' };
+    }
+    opts.onProgress?.(`[image] registry miss, building ${ref} locally`);
+  }
+
+  await buildImage({
+    ref,
+    dockerfile: opts.dockerfile,
+    contextDir: opts.contextDir,
+    onProgress: opts.onProgress,
+  });
+  if (fingerprint) {
+    writePreparedDockerState({ imageRef: ref, contextSha256: fingerprint.contextSha256 });
+  }
+  return { source: 'built' };
+}
+
 export interface EnsureImageOptions {
   onProgress?: (line: string) => void;
   /** Dockerfile path. Defaults to `Dockerfile.box` next to this package. */
   dockerfile?: string;
   /** Build context directory. Defaults to the monorepo root. */
   contextDir?: string;
+  /** Try the registry before building. Defaults to true. */
+  allowPull?: boolean;
+  /** Registry repo to pull from. Defaults to `BOX_IMAGE_REGISTRY`; empty disables pulling. */
+  registry?: string;
 }
 
 export async function ensureImage(
@@ -137,12 +248,8 @@ export async function ensureImage(
   // Lazy import: prepared-state imports back into image.ts for the default
   // DOCKERFILE_PATH/BUILD_CONTEXT_DIR constants, so loading it at top-level
   // would create a circular ESM init order.
-  const {
-    computeDockerContextFingerprint,
-    readPreparedDockerState,
-    writePreparedDockerState,
-    preparedMatches,
-  } = await import('./prepared-state.js');
+  const { computeDockerContextFingerprint, readPreparedDockerState, preparedMatches } =
+    await import('./prepared-state.js');
 
   const fingerprint = await computeDockerContextFingerprint({
     contextDir: opts.contextDir,
@@ -170,16 +277,14 @@ export async function ensureImage(
     return { ref, built: false, reason: 'image up to date' };
   }
 
-  opts.onProgress?.(`[image] rebuilding ${ref}: ${reason}`);
-  await buildImage({
-    ref,
+  opts.onProgress?.(`[image] ${ref}: ${reason}`);
+  const { source } = await pullOrBuild(ref, fingerprint, {
+    onProgress: opts.onProgress,
     dockerfile: opts.dockerfile,
     contextDir: opts.contextDir,
-    onProgress: opts.onProgress,
+    allowPull: opts.allowPull,
+    registry: opts.registry,
   });
-  if (fingerprint) {
-    writePreparedDockerState({ imageRef: ref, contextSha256: fingerprint.contextSha256 });
-  }
-  return { ref, built: true, reason };
+  return { ref, built: source === 'built', reason };
 }
 
