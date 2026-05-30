@@ -49,6 +49,20 @@ interface DashboardOptions {
 }
 
 /**
+ * Whether the dashboard should keep a box's attach session alive (pooled)
+ * across box switches rather than re-spawning it each time. Worth it only for
+ * providers with no persistent connection where reconnecting is expensive and
+ * the attach has no per-call cleanup to defer — currently Vercel (no SSH; each
+ * `sbx exec` pays a credential refresh + SDK handshake + remote tmux attach).
+ * Docker (local exec) and hetzner (SSH ControlMaster) reconnect cheaply;
+ * daytona mints+revokes a per-call SSH token, so pooling it would change token
+ * lifetime semantics. Add future no-SSH providers here.
+ */
+function providerSupportsKeepAlive(provider: BoxRecord['provider']): boolean {
+  return provider === 'vercel';
+}
+
+/**
  * Sidebar / switch order: group by project (so the global view doesn't
  * interleave per-project indices), then projectIndex, then name.
  */
@@ -272,6 +286,7 @@ export const dashboardCommand = new Command('dashboard')
           args: spec.argv.slice(1),
           ...(spec.cleanup ? { cleanup: spec.cleanup } : {}),
           mode: which,
+          ...(providerSupportsKeepAlive(record.provider) ? { keepAlive: true } : {}),
         };
       };
 

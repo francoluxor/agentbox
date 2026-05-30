@@ -38,6 +38,132 @@ import { runPrepare } from './prepare.js';
  *  presence in an existing target means we wrote it and may overwrite freely. */
 const MANAGED_SENTINEL = '<!-- agentbox-managed:v1 -->';
 
+/** Compact half-block "agentbox" wordmark shown above the wizard's clack gutter.
+ *  Brand blue (256-color 39) echoes the dashboard sidebar. */
+const LOGO_L1 = '▄▀█ █▀▀ █▀▀ █▄░█ ▀█▀ █▄▄ █▀█ ▀▄▀';
+const LOGO_L2 = '█▀█ █▄█ ██▄ █░▀█ ░█░ █▄█ █▄█ █░█';
+const LOGO_WIDTH = LOGO_L1.length; // both lines are the same cell width
+
+/** Static fallback banner (no animation): solid brand blue, dropped when NO_COLOR. */
+const BANNER = (() => {
+  const art = `${LOGO_L1}\n${LOGO_L2}`;
+  const tinted = process.env.NO_COLOR ? art : `\x1b[38;5;39m${art}\x1b[0m`;
+  return `\n${tinted}\n\n`;
+})();
+
+// Synchronized-output toggles (DECSET/DECRST 2026): terminals that support it
+// commit each animation frame atomically, avoiding tearing/flicker.
+const SYNC_BEGIN = '\x1b[?2026h';
+const SYNC_END = '\x1b[?2026l';
+const HIDE_CURSOR = '\x1b[?25l';
+const SHOW_CURSOR = '\x1b[?25h';
+
+/** Braille spinner frames for the "Checking system…" line shown under the logo. */
+const SPIN = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** 256-color code for a logo cell `dist` columns from the shine band's center. */
+function shineColor(dist: number): number {
+  const d = Math.abs(dist);
+  if (d === 0) return 231; // white core
+  if (d === 1) return 159; // light cyan
+  if (d === 2) return 81; // cyan
+  return 39; // base brand blue
+}
+
+/** Render one logo line with the shine band centered at column `center`. */
+function paintLine(line: string, center: number): string {
+  let out = '';
+  let prev = -1;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    const c = shineColor(i - center);
+    if (c !== prev) {
+      out += `\x1b[38;5;${String(c)}m`;
+      prev = c;
+    }
+    out += ch;
+  }
+  return out + '\x1b[0m';
+}
+
+/**
+ * Draw the agentbox logo with a ~2s left-to-right "shine sweep", then settle to
+ * the solid brand-blue wordmark. Falls back to the instant static banner when a
+ * TTY isn't present or motion is suppressed (NO_COLOR / CI / AGENTBOX_NO_ANIM),
+ * leaving identical output to `BANNER` so `intro(...)` always starts clean.
+ */
+async function animateBanner(): Promise<void> {
+  if (
+    process.env.NO_COLOR ||
+    process.env.CI ||
+    process.env.AGENTBOX_NO_ANIM ||
+    !process.stdout.isTTY
+  ) {
+    process.stdout.write(BANNER);
+    return;
+  }
+
+  const restoreCursor = (): void => {
+    process.stdout.write(SHOW_CURSOR);
+  };
+  process.once('exit', restoreCursor);
+  // Adding a SIGINT listener suppresses Node's default terminate-on-Ctrl+C, so
+  // restore the cursor and exit explicitly (130 = terminated by SIGINT). Keep a
+  // named reference so the cleanup below can actually remove it — otherwise the
+  // handler leaks past the animation and fires on the next Ctrl+C (e.g. during a
+  // clack prompt), bypassing clack's cancellation flow.
+  const onSigint = (): void => {
+    restoreCursor();
+    process.exit(130);
+  };
+  process.once('SIGINT', onSigint);
+
+  const frameMs = 45;
+  // Band starts just off the left edge and exits past the right edge.
+  const start = -3;
+  const end = LOGO_WIDTH + 2;
+
+  // Layout reserved under the logo (so the sweep isn't pinned to the terminal's
+  // bottom edge): L2, a blank row, the "Checking system…" status row, then a
+  // trailing blank pad row. Reserve them up front (scrolling the view up if we
+  // are near the bottom), then return to the logo's first row to animate.
+  // Each frame redraws both logo lines + the status line, then moves the cursor
+  // back up to the logo's first row so the next frame paints in place.
+  const down = 4; // L2(+1) + blank(+2) + status(+3) + blank pad(+4)
+  process.stdout.write(`\n${HIDE_CURSOR}`);
+  process.stdout.write('\n'.repeat(down) + `\x1b[${String(down)}A`);
+
+  const statusLine = (spin: string): string =>
+    `  \x1b[38;5;51m${spin}\x1b[0m \x1b[38;5;245mChecking system…\x1b[0m`;
+
+  for (let center = start; center <= end; center++) {
+    const spin = SPIN[Math.floor((center - start) / 2) % SPIN.length] ?? SPIN[0]!;
+    const frame =
+      SYNC_BEGIN +
+      paintLine(LOGO_L1, center) +
+      '\n' +
+      paintLine(LOGO_L2, center) +
+      '\n\n\x1b[2K' + // down to the status row (col 0), clear it
+      statusLine(spin) +
+      '\x1b[3A\r' + // back up to the logo's first row
+      SYNC_END;
+    process.stdout.write(frame);
+    await sleep(frameMs);
+  }
+
+  // Settle the wordmark to solid brand blue (status line stays), hold briefly.
+  process.stdout.write(SYNC_BEGIN + `\x1b[38;5;39m${LOGO_L1}\n${LOGO_L2}\x1b[0m` + SYNC_END);
+  await sleep(250);
+
+  // Clear the status row and leave the cursor one blank line below the logo so
+  // the real (instant) system check prints its result there via `intro(...)`.
+  process.stdout.write(SYNC_BEGIN + '\n\x1b[2K\n\x1b[2K' + SHOW_CURSOR + SYNC_END);
+  process.removeListener('exit', restoreCursor);
+  process.removeListener('SIGINT', onSigint);
+}
+
 /** Substring unique to the pre-rename `agentbox` host skill. Lets `install`
  *  replace it in place during the agentbox → agentbox-info rename even though
  *  that old file predates the sentinel. */
@@ -55,7 +181,10 @@ function installTargets(): InstallTarget[] {
   const claudeSkills = join(home, '.claude', 'skills');
   return [
     { src: join('agentbox', 'SKILL.md'), dest: join(claudeSkills, 'agentbox', 'SKILL.md') },
-    { src: join('agentbox-info', 'SKILL.md'), dest: join(claudeSkills, 'agentbox-info', 'SKILL.md') },
+    {
+      src: join('agentbox-info', 'SKILL.md'),
+      dest: join(claudeSkills, 'agentbox-info', 'SKILL.md'),
+    },
     {
       src: join('codex', 'agentbox.md'),
       dest: join(home, '.codex', 'prompts', 'agentbox.md'),
@@ -84,9 +213,7 @@ function resolveHostSkillsDir(): string {
   for (const c of candidates) {
     if (existsSync(c)) return c;
   }
-  throw new Error(
-    `could not locate bundled host skills; tried:\n  ${candidates.join('\n  ')}`,
-  );
+  throw new Error(`could not locate bundled host skills; tried:\n  ${candidates.join('\n  ')}`);
 }
 
 function writableReason(target: string, force: boolean): 'new' | 'managed' | 'forced' | 'skip' {
@@ -235,10 +362,11 @@ function tutorialBody(provider: ProviderName): string {
   const startCmd = provider === 'docker' ? 'agentbox claude' : `agentbox ${provider} claude`;
   return (
     `Get started:\n` +
-    `  ${startCmd}        # or codex, opencode\n` +
-    `  Ctrl+a d                          # detach from the box\n` +
-    `  agentbox claude attach            # resume it later\n` +
-    `  agentbox install                  # set up another provider`
+    `  ${startCmd}                       # for claude, codex, opencode\n` +
+    `   -> Setup wizard? -> Yes          # install dependencies and setup agentbox.yaml\n` +
+    `   -> Ctrl+a d                      # to detach from the box and leave claude running\n` +
+    `  agentbox claude attach 1          # resume it later\n` +
+    `  agentbox install                  # to set up another provider`
   );
 }
 
@@ -258,7 +386,8 @@ function isProviderName(s: string): s is ProviderName {
 export async function runInstallWizard(opts: RunInstallWizardOptions = {}): Promise<boolean> {
   if (!ensureTty()) return false;
 
-  intro('AgentBox setup');
+  await animateBanner();
+  intro('Check system compatibility');
 
   // 1) Compact system check (full detail lives in `agentbox doctor`).
   const sysResults = await runSystemChecks();
@@ -273,8 +402,6 @@ export async function runInstallWizard(opts: RunInstallWizardOptions = {}): Prom
       outro('aborted');
       return false;
     }
-  } else {
-    log.info('run `agentbox doctor` for the full per-check report');
   }
 
   // 2) Provider picker.
@@ -317,9 +444,7 @@ export async function runInstallWizard(opts: RunInstallWizardOptions = {}): Prom
     providerName === 'docker'
       ? 'Build the box image now? (~1GB, a few minutes)'
       : `Bake the ${providerName} base snapshot now? (a few minutes, uses cloud time)`;
-  const wantPrepare = opts.yes
-    ? true
-    : await confirm({ message: prepareMsg, initialValue: true });
+  const wantPrepare = opts.yes ? true : await confirm({ message: prepareMsg, initialValue: true });
   if (isCancel(wantPrepare)) {
     outro('cancelled');
     return false;
@@ -350,9 +475,9 @@ export async function runInstallWizard(opts: RunInstallWizardOptions = {}): Prom
   try {
     skillRes = installHostSkills({ force: opts.force, dryRun: opts.dryRun, quiet: true });
     if (skillRes.written.length > 0) {
-      sp.stop(`host skill: wrote ${String(skillRes.written.length)} file(s)`);
+      sp.stop(`Agentbox Skills: Installed in ${String(skillRes.written.length)} locations`);
     } else {
-      sp.stop(`host skill: nothing to write (${String(skillRes.skipped)} skipped)`);
+      sp.stop(`Agentbox Skills: nothing to write (${String(skillRes.skipped)} skipped)`);
     }
     if (skillRes.blocked.length > 0) {
       log.warn(
@@ -361,24 +486,24 @@ export async function runInstallWizard(opts: RunInstallWizardOptions = {}): Prom
       );
     }
   } catch (err) {
-    sp.stop('host skill: failed');
+    sp.stop('Agentbox Skills: failed');
     log.warn(err instanceof Error ? err.message : String(err));
   }
 
   // 6) First-run marker (so the auto-trigger doesn't fire again).
   markSetupComplete(providerName);
 
-  // 7) Tutorial outro.
-  note(tutorialBody(providerName), 'Next steps');
-
   // Brief check post-setup so the user sees what's now ready.
   const providerGroup = await runProviderChecks(providerName);
   process.stdout.write('  ' + formatCompact([sysGroup, providerGroup]) + '\n');
 
+  // 7) Tutorial outro.
+  note(tutorialBody(providerName), 'Next steps');
+
   outro(
     opts.fromAutoTrigger
-      ? 'Setup complete — continuing with your command…'
-      : 'Setup complete',
+      ? '✨ Setup complete — continuing with your command…'
+      : '✨ Setup complete',
   );
   return true;
 }
@@ -395,7 +520,10 @@ export const installCommand = new Command('install')
   .description(
     'Interactive setup wizard: system check, pick a provider, log in, prepare its base image/snapshot, and install the host /agentbox skill. `--skills-only` runs just the skill install.',
   )
-  .option('--skills-only', 'only install the host /agentbox skill files (no wizard, no login, no prepare)')
+  .option(
+    '--skills-only',
+    'only install the host /agentbox skill files (no wizard, no login, no prepare)',
+  )
   .option('--force', 'overwrite existing skill files even if not AgentBox-managed')
   .option('--dry-run', 'print what would be written without changing anything')
   .option(

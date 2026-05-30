@@ -369,9 +369,25 @@ function summaryToken(group: CheckGroup): string {
   return `${group.title} ready`;
 }
 
+// Raw ANSI escapes (the repo's established color path — see dashboard/sidebar.ts).
+const C_GREEN = '\x1b[32m';
+const C_YELLOW = '\x1b[33m';
+const C_RED = '\x1b[31m';
+const C_RESET = '\x1b[0m';
+const COLOR = !process.env.NO_COLOR; // install requires a TTY anyway; honor NO_COLOR for piped output
+
+function statusMarker(s: CheckStatus): string {
+  const glyph = s === 'ok' ? '✓' : s === 'warn' ? '⚠' : '✗';
+  if (!COLOR) return glyph;
+  const color = s === 'ok' ? C_GREEN : s === 'warn' ? C_YELLOW : C_RED;
+  return `${color}${glyph}${C_RESET}`;
+}
+
 /** One-line summary used by the `install` wizard. */
 export function formatCompact(groups: CheckGroup[]): string {
-  return groups.map(summaryToken).join(' · ');
+  return groups
+    .map((g) => `${statusMarker(worstInResults(g.results))} ${summaryToken(g)}`)
+    .join(' · ');
 }
 
 function pad(s: string, width: number): string {

@@ -51,6 +51,7 @@ export {
   CLOUD_SNAPSHOT_NAME_PREFIX,
   cloudSnapshotName,
   listCloudCheckpoints,
+  probeCloudCheckpoint,
   removeCloudCheckpointDir,
   resolveCloudCheckpoint,
   writeCloudCheckpointManifest,

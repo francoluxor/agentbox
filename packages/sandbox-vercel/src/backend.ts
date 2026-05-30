@@ -118,9 +118,23 @@ export function parseNetworkPolicy(raw: string | undefined): NetworkPolicy | und
  */
 const DEFAULT_TIMEOUT_MS = 45 * 60_000;
 
-/** Keep exactly one auto-snapshot per box, never expiring, so a paused box can
- * always resume and storage stays flat. `destroy` purges it explicitly. */
-const KEEP_LAST_SNAPSHOTS = { count: 1, expiration: 0, deleteEvicted: true } as const;
+/**
+ * Per-box snapshot retention. Keep one auto-snapshot, never expiring, so a
+ * paused box can always resume; `destroy` purges a box's own snapshot explicitly.
+ *
+ * `deleteEvicted: false` is load-bearing, NOT a tweak. A box boots from a shared
+ * snapshot (the prepared base, or a `setup` checkpoint), and Vercel reports that
+ * source as the box's `currentSnapshotId` until it takes its first auto-snapshot
+ * — i.e. the source is the first member of this box's retention window. With
+ * `deleteEvicted: true`, the box's first stop/snapshot evicts the source and
+ * DELETES it, nuking the shared base/checkpoint every other box depends on, so
+ * every later `create` 410s with "Snapshot expired or deleted." (Same hazard the
+ * `destroy` guard already dodges, but eviction is automatic and bypasses it.)
+ * `false` keeps evicted snapshots around (they fall back to `snapshotExpiration`,
+ * which we pin to 0 = never at create) — trading a little snapshot accumulation
+ * for never deleting a snapshot another box boots from.
+ */
+const KEEP_LAST_SNAPSHOTS = { count: 1, expiration: 0, deleteEvicted: false } as const;
 
 function creds(): Partial<{ token: string; teamId: string; projectId: string }> {
   return resolveCredentials();
@@ -288,6 +302,10 @@ export const vercelBackend: CloudBackend = {
           env: req.env,
           tags: { agentbox: 'true', 'agentbox.name': req.name },
           persistent: true,
+          // Pin the sandbox-default expiration to never. Evicted snapshots (see
+          // KEEP_LAST_SNAPSHOTS) fall back to this, so the shared base/checkpoint
+          // a box boots from is never re-stamped with a finite expiry on eviction.
+          snapshotExpiration: 0,
           keepLastSnapshots: { ...KEEP_LAST_SNAPSHOTS },
           ...(networkPolicy ? { networkPolicy } : {}),
           ...creds(),
@@ -489,6 +507,21 @@ export const vercelBackend: CloudBackend = {
   // lifetime, not a per-URL signature, so the expiry arg is irrelevant here).
   async signedPreviewUrl(h: CloudHandle, port: number): Promise<CloudPreviewUrl> {
     return this.previewUrl(h, port);
+  },
+
+  async snapshotExists(snapshotName: string): Promise<boolean> {
+    await ensureFreshCredentials();
+    return withVercelRetry({ method: 'snapshotExists', retryOnAmbiguous: true }, async () => {
+      try {
+        const snap = await Snapshot.get({ snapshotId: snapshotName, ...creds() });
+        // `Snapshot.get` resolves deleted/failed tombstones (status field) rather
+        // than throwing, so "didn't throw" wrongly passes a dead snapshot. Only a
+        // 'created' snapshot can actually boot a sandbox.
+        return snap.status === 'created';
+      } catch {
+        return false;
+      }
+    });
   },
 
   // NOTE: no `createSnapshot`/`deleteSnapshot` here. Vercel snapshots are

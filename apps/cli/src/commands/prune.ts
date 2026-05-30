@@ -5,6 +5,7 @@ import { readState } from '@agentbox/sandbox-core';
 import { listBoxes, pruneBoxes, type PruneResult } from '@agentbox/sandbox-docker';
 import { Command } from 'commander';
 import { handleLifecycleError } from './_errors.js';
+import { cloudBackendForProvider } from '../provider/cloud-backend.js';
 
 interface PruneOptions {
   dryRun?: boolean;
@@ -136,18 +137,6 @@ function isCloudPruneProvider(name: string): name is CloudPruneProvider {
   return (CLOUD_PRUNE_PROVIDERS as readonly string[]).includes(name);
 }
 
-/** Lazily resolve a cloud backend (dynamic import keeps provider SDKs out of the hot path). */
-async function cloudBackendFor(provider: CloudPruneProvider): Promise<CloudBackend> {
-  switch (provider) {
-    case 'daytona':
-      return (await import('@agentbox/sandbox-daytona')).daytonaBackend;
-    case 'hetzner':
-      return (await import('@agentbox/sandbox-hetzner')).hetznerBackend;
-    case 'vercel':
-      return (await import('@agentbox/sandbox-vercel')).vercelBackend;
-  }
-}
-
 /**
  * Cloud orphan-sandbox prune. Lists every sandbox the configured credentials
  * can see, cross-references against this CLI's local `state.json`, and offers
@@ -160,7 +149,8 @@ async function cloudBackendFor(provider: CloudPruneProvider): Promise<CloudBacke
  */
 async function pruneCloud(provider: CloudPruneProvider, opts: PruneOptions): Promise<void> {
   const dryRun = opts.dryRun ?? false;
-  const backend = await cloudBackendFor(provider);
+  // CloudPruneProvider is always a cloud provider, so this never resolves null.
+  const backend = (await cloudBackendForProvider(provider)) as CloudBackend;
   if (!backend.list) {
     log.error(`${provider} backend doesn't expose \`list()\`; cannot enumerate sandboxes for prune`);
     process.exit(2);

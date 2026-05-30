@@ -38,11 +38,7 @@ import {
   setInstallMethodNative,
   trustWorkspace,
 } from './claude-hooks-filter.js';
-import {
-  CREDENTIALS_BACKUP_FILE,
-  CODEX_CREDENTIALS_BACKUP_FILE,
-  OPENCODE_CREDENTIALS_BACKUP_FILE,
-} from './claude-credentials.js';
+import { CREDENTIALS_BACKUP_FILE } from './claude-credentials.js';
 
 export interface StageResult {
   /** Absolute path to the .tar.gz, or null when there was nothing to stage. */
@@ -419,10 +415,15 @@ export async function stageCodexStaticForUpload(
 export async function stageCodexCredentialsForUpload(
   opts: StageCodexOptions = {},
 ): Promise<StageResult> {
-  if (await pathExists(CODEX_CREDENTIALS_BACKUP_FILE)) {
-    return stageSingleFileTarball('codex-creds', CODEX_CREDENTIALS_BACKUP_FILE, 'auth.json');
-  }
   const hostHome = opts.hostHome ?? homedir();
+  // Prefer the cloud backup under <hostHome>/.agentbox. Derive it from hostHome
+  // (rather than the module-load `CODEX_CREDENTIALS_BACKUP_FILE` constant) so the
+  // path tracks the active home: production uses the real home — identical to the
+  // constant — while tests/callers can redirect the whole lookup via hostHome.
+  const cloudBackup = join(hostHome, '.agentbox', 'codex-credentials.json');
+  if (await pathExists(cloudBackup)) {
+    return stageSingleFileTarball('codex-creds', cloudBackup, 'auth.json');
+  }
   const hostAuth = join(hostHome, '.codex', 'auth.json');
   if (!(await pathExists(hostAuth))) return emptyResult([CODEX_KEYCHAIN_WARNING]);
   return stageSingleFileTarball('codex-creds', hostAuth, 'auth.json');
@@ -519,10 +520,14 @@ export async function stageOpencodeStaticForUpload(
 export async function stageOpencodeCredentialsForUpload(
   opts: StageOpencodeOptions = {},
 ): Promise<StageResult> {
-  if (await pathExists(OPENCODE_CREDENTIALS_BACKUP_FILE)) {
-    return stageSingleFileTarball('opencode-creds', OPENCODE_CREDENTIALS_BACKUP_FILE, 'auth.json');
-  }
   const hostHome = opts.hostHome ?? homedir();
+  // Cloud backup under <hostHome>/.agentbox, derived from hostHome (see the
+  // codex stager above) so the path tracks the active home and tests stay
+  // hermetic; production matches OPENCODE_CREDENTIALS_BACKUP_FILE.
+  const cloudBackup = join(hostHome, '.agentbox', 'opencode-credentials.json');
+  if (await pathExists(cloudBackup)) {
+    return stageSingleFileTarball('opencode-creds', cloudBackup, 'auth.json');
+  }
   const hostAuth = join(hostHome, '.local', 'share', 'opencode', 'auth.json');
   if (!(await pathExists(hostAuth))) return emptyResult();
   return stageSingleFileTarball('opencode-creds', hostAuth, 'auth.json');

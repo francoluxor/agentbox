@@ -6,10 +6,12 @@ import {
   cloudSnapshotName,
   CLOUD_SNAPSHOT_NAME_PREFIX,
   listCloudCheckpoints,
+  probeCloudCheckpoint,
   removeCloudCheckpointDir,
   resolveCloudCheckpoint,
   writeCloudCheckpointManifest,
 } from '../src/checkpoint.js';
+import { isSnapshotGoneError } from '../src/snapshot-error.js';
 
 // Override HOME so writeCloudCheckpointManifest writes under a tmp dir
 // instead of the real `~/.agentbox/`. Restored at the end.
@@ -104,5 +106,84 @@ describe('manifest lifecycle', () => {
     // A different backend with the same project + name finds nothing.
     expect(await resolveCloudCheckpoint(projectRoot, 'other-backend', 'setup')).toBeNull();
     await removeCloudCheckpointDir(projectRoot, 'daytona', 'setup');
+  });
+});
+
+describe('probeCloudCheckpoint', () => {
+  const projectRoot = '/projects/test-probe';
+
+  async function seed(name: string): Promise<void> {
+    await writeCloudCheckpointManifest(projectRoot, 'vercel', name, {
+      snapshotName: `snap_${name}`,
+      sourceBoxId: 'a',
+      sourceBoxName: 'x',
+    });
+  }
+
+  it('reports not-live with no prune when there is no manifest', async () => {
+    const backend = { name: 'vercel', snapshotExists: async () => true };
+    expect(await probeCloudCheckpoint(backend, projectRoot, 'absent')).toEqual({
+      live: false,
+      pruned: false,
+    });
+  });
+
+  it('keeps a live snapshot and leaves the manifest in place', async () => {
+    await seed('warm');
+    const backend = { name: 'vercel', snapshotExists: async () => true };
+    expect(await probeCloudCheckpoint(backend, projectRoot, 'warm')).toEqual({
+      live: true,
+      pruned: false,
+    });
+    expect(await resolveCloudCheckpoint(projectRoot, 'vercel', 'warm')).not.toBeNull();
+    await removeCloudCheckpointDir(projectRoot, 'vercel', 'warm');
+  });
+
+  it('prunes the manifest when the snapshot is gone', async () => {
+    await seed('stale');
+    const backend = { name: 'vercel', snapshotExists: async () => false };
+    expect(await probeCloudCheckpoint(backend, projectRoot, 'stale')).toEqual({
+      live: false,
+      pruned: true,
+    });
+    // The dangling manifest is gone so the next read provisions from base.
+    expect(await resolveCloudCheckpoint(projectRoot, 'vercel', 'stale')).toBeNull();
+  });
+
+  it('assumes live (no prune) when the backend cannot probe', async () => {
+    await seed('unprobable');
+    const backend = { name: 'vercel' };
+    expect(await probeCloudCheckpoint(backend, projectRoot, 'unprobable')).toEqual({
+      live: true,
+      pruned: false,
+    });
+    expect(await resolveCloudCheckpoint(projectRoot, 'vercel', 'unprobable')).not.toBeNull();
+    await removeCloudCheckpointDir(projectRoot, 'vercel', 'unprobable');
+  });
+});
+
+describe('isSnapshotGoneError', () => {
+  it('matches a Vercel 410 APIError by status code', () => {
+    expect(isSnapshotGoneError({ response: { status: 410 }, message: 'Status code 410 is not ok' })).toBe(
+      true,
+    );
+    expect(isSnapshotGoneError({ status: 410 })).toBe(true);
+  });
+
+  it('matches the "Snapshot expired or deleted." body message', () => {
+    expect(
+      isSnapshotGoneError({ json: { error: { message: 'Snapshot expired or deleted.' } } }),
+    ).toBe(true);
+  });
+
+  it('matches a "snapshot not found" message', () => {
+    expect(isSnapshotGoneError(new Error('snapshot not found'))).toBe(true);
+  });
+
+  it('does not match unrelated errors', () => {
+    expect(isSnapshotGoneError(new Error('network timeout'))).toBe(false);
+    expect(isSnapshotGoneError({ status: 500 })).toBe(false);
+    expect(isSnapshotGoneError(null)).toBe(false);
+    expect(isSnapshotGoneError('boom')).toBe(false);
   });
 });

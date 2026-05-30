@@ -199,6 +199,25 @@ Confirmed live 2026-05-28:
   resolves deleted/failed tombstones (`status: 'deleted'|'failed'`, `sizeBytes: 0`)
   instead of throwing, so "get didn't throw" wrongly meant "exists." The skip check
   now requires `status === 'created'` (`prepare.ts`).
+- **Per-box snapshot eviction nuked the shared base/checkpoint (410 on next create).**
+  Same root cause as the `destroy` bug but via the *automatic* retention policy: a box
+  boots from a shared snapshot (base or a `setup` checkpoint), which Vercel reports as
+  the box's `currentSnapshotId` until its first auto-snapshot — so it's the first member
+  of the box's `keepLastSnapshots` window. With `count: 1, deleteEvicted: true`, the box's
+  first stop/snapshot evicted **and deleted** that shared source, and every later `create`
+  hit `410 Snapshot expired or deleted.` Fixed by `deleteEvicted: false` + a sandbox-level
+  `snapshotExpiration: 0` so evicted snapshots are never deleted or re-stamped with a finite
+  expiry (`backend.ts`). Trade-off: a little snapshot accumulation across many pause cycles
+  instead of ever nuking a snapshot another box depends on.
+- **Stale checkpoint now self-heals instead of crashing create.** If a checkpoint snapshot
+  is gone anyway (reaped before this fix, or deleted from the dashboard), `create` no longer
+  dies with a raw 410. The wizard probes liveness (`backend.snapshotExists`) before announcing
+  "starting from checkpoint …", prunes the dangling local manifest, and re-asks the setup
+  wizard (`checkpoint-lookup.ts` → `probeCloudCheckpoint`). The non-interactive / `-y` path is
+  covered by a reactive fallback in `cloud-provider.ts`: a snapshot-gone error from
+  `provision()` prunes the manifest and re-provisions from the base image (start from scratch).
+  Detection is `isSnapshotGoneError` (`snapshot-error.ts`); covered by unit tests in
+  `packages/sandbox-cloud/test/checkpoint.test.ts` and `packages/sandbox-vercel/test/backend.test.ts`.
 
 The platform-side root causes (the AL2023 sudoers gap, the `Snapshot.get`
 tombstone behavior, the `currentSnapshotId === sourceSnapshotId` aliasing, the

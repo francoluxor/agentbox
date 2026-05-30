@@ -88,6 +88,21 @@ const BLANK: CellLike = {
  * cleanup so its 60-min ephemeral SSH token doesn't outlive the attach.
  */
 export class PtySession {
+  /** Box this session attaches to. Identifies it in the compositor's pool. */
+  readonly boxId: string;
+  /** When true, the compositor keeps this session alive (in its pool) across
+   *  box switches instead of disposing it — see {@link Compositor.liveSessions}. */
+  readonly keepAlive: boolean;
+  /** Agent/shell mode of this attach. The compositor restores `activeMode`
+   *  (drives the footer) from this when re-showing a pooled session. */
+  readonly mode: 'claude' | 'shell' | 'codex' | 'opencode';
+  /**
+   * Whether this session is the one currently shown in the right pane. A
+   * kept-alive hidden session (`active === false`) still consumes PTY output
+   * to keep its headless buffer current, but must NOT trigger right-pane
+   * repaints. The compositor flips this on show/hide.
+   */
+  active = true;
   private readonly term: XtermTerminal;
   private readonly pty: IPtyLike;
   private readonly cleanup?: () => Promise<void>;
@@ -99,14 +114,20 @@ export class PtySession {
   constructor(
     spawn: PtySpawn,
     TerminalClass: TerminalCtor,
+    boxId: string,
+    keepAlive: boolean,
+    mode: 'claude' | 'shell' | 'codex' | 'opencode',
     command: string,
     args: string[],
     cols: number,
     rows: number,
     onRenderable: () => void,
-    onExit: () => void,
+    onExit: (boxId: string) => void,
     cleanup?: () => Promise<void>,
   ) {
+    this.boxId = boxId;
+    this.keepAlive = keepAlive;
+    this.mode = mode;
     this.term = new TerminalClass({
       cols,
       rows,
@@ -122,8 +143,11 @@ export class PtySession {
       env: process.env,
     });
     this.pty.onData((d) => {
-      // Read the buffer only after the parser applied this chunk.
-      this.term.write(d, () => onRenderable());
+      // Always feed the parser so the headless buffer stays current even while
+      // hidden; only schedule a paint when this session is the shown one.
+      this.term.write(d, () => {
+        if (this.active) onRenderable();
+      });
     });
     this.term.onData((d) => {
       if (!this.disposed) this.pty.write(d);
@@ -131,8 +155,10 @@ export class PtySession {
     // Only surface *unexpected* exits. When we kill the pty ourselves (box
     // switch / teardown) `disposed` is already true; a stale exit from a
     // just-killed session must not tear down the session that replaced it.
+    // The boxId lets the compositor evict the right pool entry without
+    // assuming the dead session is the active one (a hidden box can die).
     this.pty.onExit(() => {
-      if (!this.disposed) onExit();
+      if (!this.disposed) onExit(this.boxId);
     });
   }
 

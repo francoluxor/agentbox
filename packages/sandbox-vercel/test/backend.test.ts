@@ -151,6 +151,53 @@ describe('vercelBackend.destroy', () => {
   });
 });
 
+describe('vercelBackend.provision', () => {
+  it('pins snapshots to never-expire and never auto-deletes evicted ones', async () => {
+    mocks.create.mockResolvedValue(fakeSandbox());
+    // The post-create credential push resolves a sandbox; give it the methods
+    // it touches so a push failure doesn't mask the assertions below.
+    mocks.get.mockResolvedValue(
+      fakeSandbox({
+        writeFiles: vi.fn(async () => undefined),
+        runCommand: vi.fn(async () => ({ exitCode: 0, stdout: async () => '', stderr: async () => '' })),
+      }),
+    );
+
+    await vercelBackend.provision({
+      name: 'box-1',
+      image: 'agentbox/box:dev',
+      snapshot: 'snap_base',
+      env: {},
+    } as never);
+
+    const arg = mocks.create.mock.calls[0]![0] as {
+      source: unknown;
+      snapshotExpiration: number;
+      keepLastSnapshots: { count: number; expiration: number; deleteEvicted: boolean };
+    };
+    expect(arg.source).toEqual({ type: 'snapshot', snapshotId: 'snap_base' });
+    expect(arg.snapshotExpiration).toBe(0);
+    expect(arg.keepLastSnapshots).toMatchObject({ count: 1, expiration: 0, deleteEvicted: false });
+  });
+});
+
+describe('vercelBackend.snapshotExists', () => {
+  it('is true only for a created snapshot', async () => {
+    mocks.snapshotGet.mockResolvedValue({ status: 'created' });
+    expect(await vercelBackend.snapshotExists!('snap_x')).toBe(true);
+  });
+
+  it('is false for a deleted/failed tombstone (Snapshot.get resolves it)', async () => {
+    mocks.snapshotGet.mockResolvedValue({ status: 'deleted' });
+    expect(await vercelBackend.snapshotExists!('snap_x')).toBe(false);
+  });
+
+  it('is false when the snapshot lookup throws', async () => {
+    mocks.snapshotGet.mockRejectedValue(new Error('404 not found'));
+    expect(await vercelBackend.snapshotExists!('snap_gone')).toBe(false);
+  });
+});
+
 describe('buildExposedPorts', () => {
   it('returns just the base ports when no expose ports are given', () => {
     expect(buildExposedPorts(undefined)).toEqual([6080, 8788]);

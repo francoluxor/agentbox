@@ -73,7 +73,7 @@ agentbox dashboard
 npm -g install @madarco/agentbox
 ```
 
-Requirements: macOS (arm64 or Intel), Docker ([Docker Desktop](https://www.docker.com/products/docker-desktop/) or [OrbStack](https://orbstack.dev/)), Node `>=20.10`. The first `agentbox create` / `agentbox claude` builds the `agentbox/box:dev` image (~1 GB, one-time).
+Requirements: macOS (arm64 or Intel) or Linux, Docker ([Docker Desktop](https://www.docker.com/products/docker-desktop/) or [OrbStack](https://orbstack.dev/)), Node `>=20.10`. The first `agentbox create` / `agentbox claude` builds the `agentbox/box:dev` image (~1 GB, one-time).
 Uses `portless` to give box web apps the same URL from inside the box and on the host.
 
 ## Cloud Providers

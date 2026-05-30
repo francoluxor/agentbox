@@ -37,7 +37,8 @@
   "files": [
     "dist",
     "share",
-    "runtime"
+    "runtime",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsup",
@@ -47,6 +48,7 @@
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist runtime .turbo",
     "prepublishOnly": "cd ../.. && pnpm -w build",
+    "version": "git add CHANGELOG.md",
     "publish:patch": "npm version patch && git push --follow-tags",
     "publish:minor": "npm version minor && git push --follow-tags"
   },
