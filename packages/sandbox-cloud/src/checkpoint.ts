@@ -17,6 +17,7 @@
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
+import type { CloudBackend } from '@agentbox/core';
 import { hashProjectPath, projectDirSegment, sanitizeMnemonic } from '@agentbox/config';
 
 export const CLOUD_CHECKPOINTS_ROOT = join(homedir(), '.agentbox', 'cloud-checkpoints');
@@ -153,4 +154,29 @@ export async function removeCloudCheckpointDir(
   if (!existed) return false;
   await rm(dir, { recursive: true, force: true });
   return true;
+}
+
+/**
+ * Probe whether a cloud checkpoint's underlying provider snapshot is still
+ * bootable, pruning the dangling local manifest when it has expired or been
+ * deleted out-of-band. Lets the create / wizard paths recover gracefully —
+ * fall back to a from-scratch box and re-ask the setup wizard — instead of
+ * letting `provision()` 410 on a snapshot that no longer exists.
+ *
+ * Returns `{ live: false }` when there is no manifest for `ref`. When the
+ * backend can't probe (`snapshotExists` unimplemented) the snapshot is assumed
+ * live: we never prune on uncertainty.
+ */
+export async function probeCloudCheckpoint(
+  backend: Pick<CloudBackend, 'name' | 'snapshotExists'>,
+  projectRoot: string,
+  ref: string,
+): Promise<{ live: boolean; pruned: boolean }> {
+  const found = await resolveCloudCheckpoint(projectRoot, backend.name, ref);
+  if (!found) return { live: false, pruned: false };
+  if (!backend.snapshotExists) return { live: true, pruned: false };
+  const live = await backend.snapshotExists(found.manifest.snapshotName);
+  if (live) return { live: true, pruned: false };
+  await removeCloudCheckpointDir(projectRoot, backend.name, ref);
+  return { live: false, pruned: true };
 }

@@ -56,6 +56,13 @@ export type RightTarget =
        *  ephemeral SSH token its `buildAttach` mints. */
       cleanup?: () => Promise<void>;
       mode?: 'claude' | 'shell' | 'codex' | 'opencode';
+      /** Keep this session alive (pooled) across box switches instead of
+       *  disposing it on switch-away. Set for providers where reconnecting is
+       *  expensive and has no per-attach cleanup (vercel) — see the dashboard's
+       *  `providerSupportsKeepAlive`. Reconnect-cheap providers (docker,
+       *  hetzner ControlMaster) and per-call-token providers (daytona) leave it
+       *  unset and keep the dispose-on-switch behaviour. */
+      keepAlive?: boolean;
     }
   | { kind: 'menu' }
   | { kind: 'lifecycle-menu'; state: 'paused' | 'stopped' }
@@ -103,6 +110,9 @@ export interface CompositorDeps {
 
 const POLL_MS = 1000;
 const FRAME_MS = 16;
+/** Max kept-alive (pooled) sessions. Each is a live remote attach process
+ *  (e.g. `sbx exec`) + a headless terminal, so the pool is LRU-bounded. */
+const KEEP_ALIVE_MAX = 6;
 const RESIZE_DEBOUNCE_MS = 120;
 /** Keep the expanded chord footer visible this long after the Ctrl-a leader
  *  resolves, so it's actually readable instead of flashing by. */
@@ -125,7 +135,17 @@ export class Compositor {
   private readonly inp = process.stdin;
   private boxes: SidebarBox[] = [];
   private selectedId: string;
+  /** The session currently shown in the right pane (may also be in
+   *  {@link liveSessions} when it's keep-alive). */
   private session: PtySession | null = null;
+  /**
+   * Pool of kept-alive sessions, keyed by box id, for providers whose attach
+   * is expensive to reconnect (vercel). Hidden entries keep their PTY + headless
+   * buffer alive so switching back is instant — no probe, no re-spawn. Map
+   * insertion order doubles as LRU recency (re-set on activate); bounded by
+   * {@link KEEP_ALIVE_MAX}. Reconnect-cheap providers never enter this map.
+   */
+  private readonly liveSessions = new Map<string, PtySession>();
   private placeholder: string[] | null = null;
   private menu: { boxName: string } | null = null;
   private lifecycleMenu: {
@@ -299,6 +319,23 @@ export class Compositor {
       /* keep last known list */
     }
     this.syncPromptSubscriptions();
+    this.reconcileLiveSessions();
+  }
+
+  /**
+   * Drop pooled (hidden) sessions whose box is gone or no longer running, so a
+   * paused/stopped/destroyed box can't keep its remote attach process alive.
+   * The *active* session is intentionally skipped — it's torn down on the next
+   * switch/re-resolve via {@link deactivateActive} (which checks box state),
+   * so evicting it here would blank the pane out from under the poll's
+   * re-resolve logic.
+   */
+  private reconcileLiveSessions(): void {
+    for (const boxId of [...this.liveSessions.keys()]) {
+      if (this.session && this.session.boxId === boxId) continue;
+      const running = this.boxes.some((b) => b.id === boxId && b.state === 'running');
+      if (!running) this.evictSession(boxId);
+    }
   }
 
   /**
@@ -425,14 +462,100 @@ export class Compositor {
     }
   }
 
-  private disposeSession(): void {
-    if (!this.session) return;
-    this.session.dispose();
+  /**
+   * Detach the active session from view. Keep-alive sessions (those in
+   * {@link liveSessions}) stay running in the background; everything else is
+   * disposed — matching the pre-pool dispose-on-switch behaviour for docker /
+   * hetzner / daytona.
+   */
+  private deactivateActive(): void {
+    const s = this.session;
+    if (!s) return;
+    s.active = false;
+    const pooled = this.liveSessions.get(s.boxId) === s;
+    const boxRunning = this.boxes.some((b) => b.id === s.boxId && b.state === 'running');
+    // Dispose unless it's a pooled session whose box is still running (then we
+    // keep it alive in the background for an instant switch-back). A pooled
+    // session whose box stopped/was destroyed is torn down here.
+    if (!pooled || !boxRunning) {
+      if (pooled) this.liveSessions.delete(s.boxId);
+      s.dispose();
+    }
     this.session = null;
   }
 
+  /** Dispose and drop the pooled session for `boxId` (box gone / stopped /
+   *  its attach died). Clears the active reference if it was the shown one. */
+  private evictSession(boxId: string): void {
+    const s = this.liveSessions.get(boxId);
+    if (s) {
+      this.liveSessions.delete(boxId);
+      s.dispose();
+    }
+    if (this.session && this.session.boxId === boxId) this.session = null;
+  }
+
+  /** Bound the pool: evict least-recently-used pooled sessions (Map insertion
+   *  order) until at most {@link KEEP_ALIVE_MAX} remain, never the active one. */
+  private evictLruIfNeeded(): void {
+    for (const boxId of this.liveSessions.keys()) {
+      if (this.liveSessions.size <= KEEP_ALIVE_MAX) break;
+      if (this.session && this.session.boxId === boxId) continue;
+      this.evictSession(boxId);
+    }
+  }
+
+  /** Dispose the active session plus every pooled one (teardown). */
+  private disposeAllSessions(): void {
+    const active = this.session;
+    if (active && this.liveSessions.get(active.boxId) !== active) active.dispose();
+    this.session = null;
+    for (const s of this.liveSessions.values()) s.dispose();
+    this.liveSessions.clear();
+  }
+
+  /**
+   * Show a pooled session in the right pane — the fast switch-back path: no
+   * probe, no re-spawn, instant repaint from its already-current headless
+   * buffer. Re-marks it most-recently-used and re-applies the current layout
+   * size (it may have changed while hidden).
+   */
+  private activateSession(sess: PtySession): void {
+    this.deactivateActive();
+    this.placeholder = null;
+    this.menu = null;
+    this.lifecycleMenu = null;
+    this.createMenu = null;
+    this.pendingConfirm = null;
+    this.session = sess;
+    sess.active = true;
+    this.activeMode = sess.mode;
+    sess.resize(Math.max(1, this.layout.right.w), Math.max(1, this.layout.right.h));
+    // Move to the MRU end so the LRU eviction in applyTarget picks idle boxes.
+    this.liveSessions.delete(sess.boxId);
+    this.liveSessions.set(sess.boxId, sess);
+    this.prevRows = null;
+    // The shown box may have a different alert-band height than the prior one;
+    // reflow if needed (matches applyTarget's tail).
+    if (!this.syncAlertLayout()) this.drawChrome();
+    this.scheduleRender();
+  }
+
+  /**
+   * Show the selected box. If a kept-alive session is pooled for it, re-show it
+   * synchronously (instant). Otherwise fall through to the async resolve+spawn.
+   */
+  private showSelected(): void {
+    const cached = this.liveSessions.get(this.selectedId);
+    if (cached) {
+      this.activateSession(cached);
+      return;
+    }
+    void this.spawnActive();
+  }
+
   private async spawnActive(): Promise<void> {
-    this.disposeSession();
+    this.deactivateActive();
     this.placeholder = null;
     this.menu = null;
     this.lifecycleMenu = null;
@@ -449,25 +572,38 @@ export class Compositor {
 
   /** Turn a resolved/started target into the right-pane state. */
   private applyTarget(target: RightTarget): void {
-    this.disposeSession();
+    this.deactivateActive();
     this.placeholder = null;
     this.menu = null;
     this.lifecycleMenu = null;
     this.createMenu = null;
     this.pendingConfirm = null;
     if (target.kind === 'attach') {
-      this.activeMode = target.mode ?? 'claude';
+      const boxId = this.selectedId;
+      const mode = target.mode ?? 'claude';
+      const keepAlive = target.keepAlive ?? false;
+      this.activeMode = mode;
       this.session = new PtySession(
         this.deps.ptySpawn,
         this.deps.termCtor,
+        boxId,
+        keepAlive,
+        mode,
         target.command,
         target.args,
         Math.max(1, this.layout.right.w),
         Math.max(1, this.layout.right.h),
         () => this.scheduleRender(),
-        () => this.onSessionExit(),
+        (id) => this.onSessionExit(id),
         target.cleanup,
       );
+      if (keepAlive) {
+        // A re-resolve can replace an existing pooled entry for this box.
+        const prev = this.liveSessions.get(boxId);
+        if (prev && prev !== this.session) prev.dispose();
+        this.liveSessions.set(boxId, this.session);
+        this.evictLruIfNeeded();
+      }
     } else if (target.kind === 'menu') {
       this.menu = { boxName: this.selectedBox()?.name ?? this.selectedId };
     } else if (target.kind === 'lifecycle-menu') {
@@ -861,10 +997,13 @@ export class Compositor {
     this.drawChrome();
   }
 
-  private onSessionExit(): void {
-    // Inner attach ended (container died / tmux session gone). Show a message;
-    // the next poll reconciles box state.
-    this.disposeSession();
+  private onSessionExit(boxId: string): void {
+    // Inner attach ended (container died / tmux session gone). Drop the pooled
+    // entry so a switch-back re-resolves instead of showing a dead session.
+    this.evictSession(boxId);
+    // Only repaint if the box that died is the one on screen — a hidden
+    // kept-alive box dying is silent; the next poll reconciles its state.
+    if (boxId !== this.selectedId) return;
     this.placeholder = ['', '  session ended — Ctrl-a ↑/↓ to switch boxes'];
     this.prevRows = null;
     this.scheduleRender();
@@ -881,7 +1020,7 @@ export class Compositor {
     const next = dir === 'prev' ? (i - 1 + n) % n : (i + 1) % n;
     this.selectedId = this.boxes[next]!.id;
     this.drawChrome();
-    void this.spawnActive();
+    this.showSelected();
   }
 
   /** Blank the right pane and drop the diff cache (next paint is full). */
@@ -1179,7 +1318,7 @@ export class Compositor {
     this.activePrompts.clear();
     this.activeNotices.clear();
     this.parser.dispose();
-    this.disposeSession();
+    this.disposeAllSessions();
     this.inp.off('data', this.onData);
     this.out.off('resize', this.onResize);
     if (this.inp.isTTY) this.inp.setRawMode(false);

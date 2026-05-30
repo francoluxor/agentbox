@@ -38,6 +38,15 @@ import { runPrepare } from './prepare.js';
  *  presence in an existing target means we wrote it and may overwrite freely. */
 const MANAGED_SENTINEL = '<!-- agentbox-managed:v1 -->';
 
+/** Compact half-block "agentbox" wordmark shown above the wizard's clack gutter.
+ *  Brand blue (256-color 39) echoes the dashboard sidebar; dropped when NO_COLOR. */
+const BANNER = (() => {
+  const art =
+    '▄▀█ █▀▀ █▀▀ █▄░█ ▀█▀ █▄▄ █▀█ ▀▄▀\n' + '█▀█ █▄█ ██▄ █░▀█ ░█░ █▄█ █▄█ █░█';
+  const tinted = process.env.NO_COLOR ? art : `\x1b[38;5;39m${art}\x1b[0m`;
+  return `\n${tinted}\n\n`;
+})();
+
 /** Substring unique to the pre-rename `agentbox` host skill. Lets `install`
  *  replace it in place during the agentbox → agentbox-info rename even though
  *  that old file predates the sentinel. */
@@ -55,7 +64,10 @@ function installTargets(): InstallTarget[] {
   const claudeSkills = join(home, '.claude', 'skills');
   return [
     { src: join('agentbox', 'SKILL.md'), dest: join(claudeSkills, 'agentbox', 'SKILL.md') },
-    { src: join('agentbox-info', 'SKILL.md'), dest: join(claudeSkills, 'agentbox-info', 'SKILL.md') },
+    {
+      src: join('agentbox-info', 'SKILL.md'),
+      dest: join(claudeSkills, 'agentbox-info', 'SKILL.md'),
+    },
     {
       src: join('codex', 'agentbox.md'),
       dest: join(home, '.codex', 'prompts', 'agentbox.md'),
@@ -84,9 +96,7 @@ function resolveHostSkillsDir(): string {
   for (const c of candidates) {
     if (existsSync(c)) return c;
   }
-  throw new Error(
-    `could not locate bundled host skills; tried:\n  ${candidates.join('\n  ')}`,
-  );
+  throw new Error(`could not locate bundled host skills; tried:\n  ${candidates.join('\n  ')}`);
 }
 
 function writableReason(target: string, force: boolean): 'new' | 'managed' | 'forced' | 'skip' {
@@ -235,10 +245,11 @@ function tutorialBody(provider: ProviderName): string {
   const startCmd = provider === 'docker' ? 'agentbox claude' : `agentbox ${provider} claude`;
   return (
     `Get started:\n` +
-    `  ${startCmd}        # or codex, opencode\n` +
-    `  Ctrl+a d                          # detach from the box\n` +
-    `  agentbox claude attach            # resume it later\n` +
-    `  agentbox install                  # set up another provider`
+    `  ${startCmd}                       # for claude, codex, opencode\n` +
+    `   -> Setup wizard? -> Yes          # install dependencies and setup agentbox.yaml\n` +
+    `   -> Ctrl+a d                      # to detach from the box and leave claude running\n` +
+    `  agentbox claude attach 1          # resume it later\n` +
+    `  agentbox install                  # to set up another provider`
   );
 }
 
@@ -258,7 +269,8 @@ function isProviderName(s: string): s is ProviderName {
 export async function runInstallWizard(opts: RunInstallWizardOptions = {}): Promise<boolean> {
   if (!ensureTty()) return false;
 
-  intro('AgentBox setup');
+  process.stdout.write(BANNER);
+  intro('setup');
 
   // 1) Compact system check (full detail lives in `agentbox doctor`).
   const sysResults = await runSystemChecks();
@@ -317,9 +329,7 @@ export async function runInstallWizard(opts: RunInstallWizardOptions = {}): Prom
     providerName === 'docker'
       ? 'Build the box image now? (~1GB, a few minutes)'
       : `Bake the ${providerName} base snapshot now? (a few minutes, uses cloud time)`;
-  const wantPrepare = opts.yes
-    ? true
-    : await confirm({ message: prepareMsg, initialValue: true });
+  const wantPrepare = opts.yes ? true : await confirm({ message: prepareMsg, initialValue: true });
   if (isCancel(wantPrepare)) {
     outro('cancelled');
     return false;
@@ -350,9 +360,9 @@ export async function runInstallWizard(opts: RunInstallWizardOptions = {}): Prom
   try {
     skillRes = installHostSkills({ force: opts.force, dryRun: opts.dryRun, quiet: true });
     if (skillRes.written.length > 0) {
-      sp.stop(`host skill: wrote ${String(skillRes.written.length)} file(s)`);
+      sp.stop(`Agentbox Skills: Installed in ${String(skillRes.written.length)} locations`);
     } else {
-      sp.stop(`host skill: nothing to write (${String(skillRes.skipped)} skipped)`);
+      sp.stop(`Agentbox Skills: nothing to write (${String(skillRes.skipped)} skipped)`);
     }
     if (skillRes.blocked.length > 0) {
       log.warn(
@@ -361,7 +371,7 @@ export async function runInstallWizard(opts: RunInstallWizardOptions = {}): Prom
       );
     }
   } catch (err) {
-    sp.stop('host skill: failed');
+    sp.stop('Agentbox Skills: failed');
     log.warn(err instanceof Error ? err.message : String(err));
   }
 
@@ -377,8 +387,8 @@ export async function runInstallWizard(opts: RunInstallWizardOptions = {}): Prom
 
   outro(
     opts.fromAutoTrigger
-      ? 'Setup complete — continuing with your command…'
-      : 'Setup complete',
+      ? '✨ Setup complete — continuing with your command…'
+      : '✨ Setup complete',
   );
   return true;
 }
@@ -395,7 +405,10 @@ export const installCommand = new Command('install')
   .description(
     'Interactive setup wizard: system check, pick a provider, log in, prepare its base image/snapshot, and install the host /agentbox skill. `--skills-only` runs just the skill install.',
   )
-  .option('--skills-only', 'only install the host /agentbox skill files (no wizard, no login, no prepare)')
+  .option(
+    '--skills-only',
+    'only install the host /agentbox skill files (no wizard, no login, no prepare)',
+  )
   .option('--force', 'overwrite existing skill files even if not AgentBox-managed')
   .option('--dry-run', 'print what would be written without changing anything')
   .option(

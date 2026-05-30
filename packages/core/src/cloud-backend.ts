@@ -233,6 +233,17 @@ export interface CloudBackend {
   deleteSnapshot?(snapshotName: string): Promise<void>;
 
   /**
+   * Optional: report whether a named provider snapshot is still bootable.
+   * Used to detect a stale cloud-checkpoint (the snapshot expired or was
+   * deleted out-of-band) *before* a `provision()` would 410 on it — so the
+   * caller can prune the dangling local manifest and re-ask the setup wizard
+   * instead of crashing mid-create. Must return `false` (never throw) for a
+   * missing / deleted / failed snapshot, and `true` only for one that can
+   * actually boot a sandbox.
+   */
+  snapshotExists?(snapshotName: string): Promise<boolean>;
+
+  /**
    * Optional: bring up a `portless` proxy *inside the sandbox* that mirrors
    * the host's Portless setup, so `https://<boxName>.localhost` resolves to
    * the same content from both the host browser and the in-box browser.

@@ -55,6 +55,7 @@ import {
   resolveCloudCheckpoint,
   writeCloudCheckpointManifest,
 } from './checkpoint.js';
+import { isSnapshotGoneError } from './snapshot-error.js';
 import { uploadEnvFiles } from './env-files.js';
 import { uploadCarryPaths } from './carry.js';
 import { readExposedServicePorts } from './expose-ports.js';
@@ -345,34 +346,67 @@ export function createCloudProvider(
       // the per-service preview-URL map. Best-effort: [] when there's no yaml.
       const exposeServicePorts = await readExposedServicePorts(req.workspacePath);
 
-      log(
-        snapshotName
-          ? `provisioning ${providerName} sandbox from snapshot`
-          : `provisioning ${providerName} sandbox`,
-      );
-      const handle = await backend.provision({
-        name,
-        image,
-        snapshot: snapshotName,
-        resources,
-        timeoutMs,
-        exposePorts: exposeServicePorts,
-        networkPolicy,
-        env: {
-          AGENTBOX_BOX_ID: id,
-          AGENTBOX_BOX_NAME: name,
-          AGENTBOX_BOX_KIND: 'cloud',
-          // In-sandbox relay is on the box's loopback at the in-box port.
-          // 8788 is distinct from the host relay's 8787 so a nested agentbox
-          // run inside the box can claim :8787 without colliding.
-          AGENTBOX_RELAY_URL: `http://127.0.0.1:${String(8788)}`,
-          AGENTBOX_RELAY_TOKEN: relayToken,
-          AGENTBOX_BRIDGE_TOKEN: bridgeToken,
-          ...agentVolumes.env,
-        },
-        volumes: agentVolumes.mounts,
-        onLog: log,
-      });
+      const provisionEnv = {
+        AGENTBOX_BOX_ID: id,
+        AGENTBOX_BOX_NAME: name,
+        AGENTBOX_BOX_KIND: 'cloud',
+        // In-sandbox relay is on the box's loopback at the in-box port.
+        // 8788 is distinct from the host relay's 8787 so a nested agentbox
+        // run inside the box can claim :8787 without colliding.
+        AGENTBOX_RELAY_URL: `http://127.0.0.1:${String(8788)}`,
+        AGENTBOX_RELAY_TOKEN: relayToken,
+        AGENTBOX_BRIDGE_TOKEN: bridgeToken,
+        ...agentVolumes.env,
+      };
+      const provisionFrom = async (snapshot: string | undefined): Promise<CloudHandle> => {
+        log(
+          snapshot
+            ? `provisioning ${providerName} sandbox from snapshot`
+            : `provisioning ${providerName} sandbox`,
+        );
+        return backend.provision({
+          name,
+          image,
+          snapshot,
+          resources,
+          timeoutMs,
+          exposePorts: exposeServicePorts,
+          networkPolicy,
+          env: provisionEnv,
+          volumes: agentVolumes.mounts,
+          onLog: log,
+        });
+      };
+
+      let handle: CloudHandle;
+      try {
+        handle = await provisionFrom(snapshotName);
+      } catch (err) {
+        // The checkpoint snapshot we tried to boot from is gone (expired or
+        // deleted out-of-band). Rather than crash, prune the dangling local
+        // manifest and fall back to a from-scratch box on the base image —
+        // the workspace seed below then runs as if no checkpoint existed.
+        // (No fallback for a base-image boot: there's nothing left to retry.)
+        if (snapshotName && isSnapshotGoneError(err)) {
+          log(
+            `checkpoint snapshot '${resolvedCheckpointRef ?? snapshotName}' has expired or been deleted; ` +
+              'starting a fresh box from the base image instead',
+          );
+          if (req.projectRoot && resolvedCheckpointRef) {
+            try {
+              await removeCloudCheckpointDir(req.projectRoot, backend.name, resolvedCheckpointRef);
+            } catch {
+              // best-effort: a stale manifest left behind only re-triggers this
+              // same fallback next time, which is still safe.
+            }
+          }
+          snapshotName = undefined;
+          resolvedCheckpointRef = undefined;
+          handle = await provisionFrom(undefined);
+        } else {
+          throw err;
+        }
+      }
 
       try {
         if (snapshotName) {

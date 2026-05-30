@@ -93,7 +93,9 @@ async function renderDocker(status: DockerStatus): Promise<string[]> {
     return out;
   }
   if (!status.image?.exists) {
-    out.push(`  image  ${DEFAULT_BOX_IMAGE}  (not built — run \`agentbox prepare --provider docker\`)`);
+    out.push(
+      `  image  ${DEFAULT_BOX_IMAGE}  (not built — run \`agentbox prepare --provider docker\`)`,
+    );
   } else {
     out.push(
       `  image  ${pad(DEFAULT_BOX_IMAGE, 30)} ${pad(humanBytes(status.image.sizeBytes), 10)} built ${humanAge(status.image.createdAt)}`,
@@ -103,7 +105,9 @@ async function renderDocker(status: DockerStatus): Promise<string[]> {
     if (v.exists) {
       out.push(`  vol    ${pad(v.name, 30)} present`);
     } else {
-      out.push(`  vol    ${pad(v.name, 30)} (none — seeded lazily on first \`agentbox claude/codex/opencode\`)`);
+      out.push(
+        `  vol    ${pad(v.name, 30)} (none — seeded lazily on first \`agentbox claude/codex/opencode\`)`,
+      );
     }
   }
   return out;
@@ -115,7 +119,13 @@ interface DaytonaStatusUnknown {
 }
 interface DaytonaStatusOk {
   configured: true;
-  snapshots: Array<{ name: string; state?: string; sizeGb?: number; createdAt?: string; errorReason?: string }>;
+  snapshots: Array<{
+    name: string;
+    state?: string;
+    sizeGb?: number;
+    createdAt?: string;
+    errorReason?: string;
+  }>;
   volumes: Array<{ name: string; state?: string; lastUsedAt?: string }>;
   reason?: string;
 }
@@ -126,7 +136,10 @@ async function daytonaStatus(): Promise<DaytonaStatusResult> {
     const mod = await import('@agentbox/sandbox-daytona');
     return (await mod.getDaytonaStatus()) as DaytonaStatusResult;
   } catch (err) {
-    return { configured: false, reason: err instanceof Error ? err.message.split('\n')[0] : String(err) };
+    return {
+      configured: false,
+      reason: err instanceof Error ? err.message.split('\n')[0] : String(err),
+    };
   }
 }
 
@@ -216,11 +229,12 @@ export interface RunPrepareOptions {
  * Caller is responsible for any `intro(...)` framing; this function manages
  * its own spinner inside.
  */
-export async function runPrepare(providerName: string, opts: RunPrepareOptions = {}): Promise<void> {
+export async function runPrepare(
+  providerName: string,
+  opts: RunPrepareOptions = {},
+): Promise<void> {
   if (!isKnownProvider(providerName)) {
-    process.stderr.write(
-      'error: --provider must be one of: docker, daytona, hetzner, vercel\n',
-    );
+    process.stderr.write('error: --provider must be one of: docker, daytona, hetzner, vercel\n');
     process.exit(1);
   }
 
@@ -251,12 +265,7 @@ export async function runPrepare(providerName: string, opts: RunPrepareOptions =
     if (result.snapshotName !== undefined) {
       sp.stop(`prepared ${providerName}: snapshot '${result.snapshotName}'`);
       try {
-        const written = await setConfigValue(
-          'project',
-          'box.image',
-          result.snapshotName,
-          cwd,
-        );
+        const written = await setConfigValue('project', 'box.image', result.snapshotName, cwd);
         log.success(`box.image = ${result.snapshotName} (written to ${written.path})`);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -266,7 +275,7 @@ export async function runPrepare(providerName: string, opts: RunPrepareOptions =
         );
       }
     } else {
-      sp.stop(`prepared ${providerName}`);
+      sp.stop(`${providerName} provider is ready`);
     }
 
     if (!opts.suppressStatus) {
@@ -293,10 +302,7 @@ export const prepareCommand = new Command('prepare')
     '-p, --provider <name>',
     'provider to prepare (docker | daytona | hetzner | vercel). Omit for status-only.',
   )
-  .option(
-    '-n, --name <name>',
-    'snapshot name (Daytona only; default: agentbox-base-<timestamp>)',
-  )
+  .option('-n, --name <name>', 'snapshot name (Daytona only; default: agentbox-base-<timestamp>)')
   .option('-f, --force', 'rebuild even if the image / snapshot already exists')
   .option('-y, --yes', 'skip confirmation prompts (cost / time warnings)')
   .option('--status', 'show status without preparing anything')
