@@ -76,6 +76,20 @@ export interface WrappedAttachOptions {
    *  this settles, so Claude Code reads the now-loaded clipboard. Omitted →
    *  Ctrl+V forwards verbatim. */
   onPasteImage?: () => Promise<'pasted' | 'no-image' | 'error'>;
+  /**
+   * Re-establish the connection after the inner PTY drops. The wrapper decides
+   * *whether* to call this (a checkpoint reboot — signalled by an active
+   * `checkpoint` notice — or a non-zero exit; a clean exit-0 on a healthy box,
+   * or an explicit `agentbox stop`, ends the wrapper instead). The callback then
+   * resumes the box if needed and returns a fresh spawn spec to re-attach with,
+   * or `null` to give up (box destroyed, cancelled, or timed out). `signal`
+   * aborts if the user hits Ctrl+C while reconnecting. Only cloud attaches wire
+   * this; docker omits it (exit-on-drop, unchanged).
+   */
+  reconnect?: (
+    signal: AbortSignal,
+    exitCode: number,
+  ) => Promise<{ command: string; argv: string[]; env?: Record<string, string> } | null>;
 }
 
 const FOOTER_ROWS = 1;
@@ -88,6 +102,13 @@ const STATUS_POLL_INTERVAL_MS = 3000;
 const SPINNER_INTERVAL_MS = 120;
 /** How long the post-action confirmation flash stays in the footer. */
 const FLASH_DURATION_MS = 2000;
+/** A respawned session that dies within this window counts as a rapid failure. */
+const RAPID_RECONNECT_MS = 8000;
+/** Give up reconnecting after this many consecutive rapid failures (crash loop). */
+const MAX_RAPID_RECONNECTS = 3;
+/** A drop within this long of a checkpoint notice is treated as a reboot
+ *  (the box snapshot stops it a beat before the host clears the notice). */
+const CHECKPOINT_DROP_GRACE_MS = 20_000;
 
 /** Per-action confirmation text shown in the footer flash. */
 const ACTION_FLASH: Record<Exclude<LeaderAction, 'detach'>, string> = {
@@ -179,12 +200,26 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
   const rows = process.stdout.rows ?? 24;
   const innerRows = Math.max(1, rows - FOOTER_ROWS);
 
-  const pty = backend.ptySpawn(command, opts.dockerArgv, {
+  let pty = backend.ptySpawn(command, opts.dockerArgv, {
     name: 'xterm-256color',
     cols,
     rows: innerRows,
     env: opts.env ? { ...process.env, ...opts.env } : process.env,
   });
+  // When the current pty was (re)spawned — feeds the crash-loop guard below.
+  let lastSpawnAt = Date.now();
+  // Resize the current pty, tolerating a dead one: during a reconnect the old
+  // pty has exited and the new one isn't spawned yet, and node-pty throws on a
+  // closed pty. A throw here used to propagate out of the band-relayout in
+  // reconnectFlow's finally and silently kill the wrapper. The next spawn uses
+  // the correct size regardless.
+  const resizePty = (c: number, r: number): void => {
+    try {
+      pty.resize(c, r);
+    } catch {
+      // pty exited / mid-respawn
+    }
+  };
 
   // Mirror the agent's session title to the host terminal/tab title (iTerm2
   // etc.). tmux swallows the inner OSC title (set-titles off), so the host
@@ -228,6 +263,21 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
   // Transient confirmation shown after a Ctrl+a action fires.
   let flashMessage: string | null = null;
   let flashTimer: ReturnType<typeof setTimeout> | null = null;
+  // True while the inner pty has dropped and we're re-establishing it. Stdin is
+  // swallowed (no live pty to write to) except Ctrl+C, which aborts the wait.
+  let reconnecting = false;
+  let reconnectAbort: AbortController | null = null;
+  // Set when the user deliberately detaches (Ctrl+a d) — that exit must end the
+  // wrapper, never trigger a reconnect.
+  let userDetached = false;
+  // When a `checkpoint` notice last set / cleared (epoch ms; 0 = never). A pty
+  // drop while one is active, or within CHECKPOINT_DROP_GRACE_MS of it clearing,
+  // is a box reboot (snapshot stopped it) → reconnect; otherwise an exit-0 drop
+  // on a healthy box is a clean session end → exit. Plain numbers so the loop's
+  // check doesn't trip TS's null-narrowing on `activeNotice` (assigned only in a
+  // callback).
+  let checkpointNoticeAt = 0;
+  let checkpointNoticeClearedAt = 0;
 
   /** Reserved rows above the inner pty: footer (always 1) + band (3 or 0). */
   const reservedRows = (): number => FOOTER_ROWS + bandReservedRows;
@@ -305,7 +355,7 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
     const cs = process.stdout.columns ?? cols;
     const rs = process.stdout.rows ?? rows;
     const inner = Math.max(1, rs - reservedRows());
-    pty.resize(cs, inner);
+    resizePty(cs, inner);
     process.stdout.write(`\x1b[1;${String(inner)}r`);
     // Clear the chrome area (band + footer rows) so stale agent output left
     // over from the previous scroll region doesn't show through under the
@@ -367,10 +417,15 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
   // wrapped in synchronized output (DECSET 2026) so the user never sees a
   // half-painted frame on terminals that support it (iTerm2/WezTerm/kitty/
   // Apple Terminal/Ghostty).
-  pty.onData((d: string) => {
-    process.stdout.write(d);
-    redrawChrome();
-  });
+  // Wire the inner pty's output -> stdout. Factored out so a respawned pty
+  // (after a reconnect) can be re-wired the same way.
+  const wireOutput = (): void => {
+    pty.onData((d: string) => {
+      process.stdout.write(d);
+      redrawChrome();
+    });
+  };
+  wireOutput();
 
   // Ctrl+a leader chord map — keys mirror the dashboard's (`c`/`s`/`u`).
   // A detachable (tmux-backed) session also gets `d: detach`; a plain
@@ -386,7 +441,10 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
   // long-running open/launch never blocks (or corrupts) this terminal.
   const runAction = (name: LeaderAction): void => {
     if (name === 'detach') {
-      pty.write('\x02d');
+      if (!reconnecting) {
+        userDetached = true;
+        pty.write('\x02d');
+      }
       return;
     }
     const cliEntry = process.argv[1];
@@ -455,6 +513,12 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
   // Wire stdin -> pty (through the router so prompts + the leader can intercept).
   const router: InputRouter = createInputRouter({
     onForward: (b) => {
+      // While reconnecting there's no live pty to write to. Swallow input, but
+      // let Ctrl+C (0x03) abort the reconnect wait so the user can bail out.
+      if (reconnecting) {
+        if (b.includes(0x03)) reconnectAbort?.abort();
+        return;
+      }
       // node-pty wants utf8 strings; stdin is binary safe via Buffer.
       pty.write(b.toString('utf8'));
     },
@@ -498,7 +562,7 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
     // tracks the new reserve.
     bandReservedRows = bandState && bandFits() ? ALERT_BAND_ROWS : 0;
     const inner = Math.max(1, rs - reservedRows());
-    pty.resize(cs, inner);
+    resizePty(cs, inner);
     process.stdout.write(`\x1b[1;${String(inner)}r`);
     recomputeFooter();
     redrawChrome();
@@ -534,12 +598,14 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
       }
     },
     onNotice: (ev: BoxNoticeEvent) => {
+      if (ev.kind === 'checkpoint') checkpointNoticeAt = Date.now();
       activeNotice = ev;
       startSpinner();
       applyBandChange();
     },
     onNoticeCleared: (id: string) => {
       if (activeNotice && activeNotice.id === id) {
+        if (activeNotice.kind === 'checkpoint') checkpointNoticeClearedAt = Date.now();
         activeNotice = null;
         stopSpinner();
         applyBandChange();
@@ -633,10 +699,100 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
   // Initial paint so the idle footer appears immediately.
   redrawChrome();
 
-  // Wait for the pty to exit, then tear down everything.
-  const exitCode = await new Promise<number>((resolve) => {
-    pty.onExit(({ exitCode }) => resolve(exitCode));
-  });
+  /**
+   * Keep the wrapper open across a drop: show the "box rebooting — reconnecting…"
+   * band and let `opts.reconnect` resume the box + hand back a fresh spawn spec
+   * (or null to give up). Only called once the loop has decided the drop is a
+   * reboot/blip, so the band always shows here.
+   */
+  const reconnectFlow = async (
+    code: number,
+  ): Promise<{ command: string; argv: string[]; env?: Record<string, string> } | null> => {
+    const controller = new AbortController();
+    reconnecting = true; // swallow stdin (no live pty) while we re-establish
+    reconnectAbort = controller;
+    activeNotice = { id: 'reconnect', kind: 'checkpoint', message: 'box rebooting — reconnecting…' };
+    startSpinner();
+    applyBandChange();
+    let spec: { command: string; argv: string[]; env?: Record<string, string> } | null = null;
+    try {
+      spec = (await opts.reconnect?.(controller.signal, code)) ?? null;
+    } catch (e) {
+      logErr(`reconnect failed: ${(e as Error).message}`);
+    } finally {
+      reconnecting = false;
+      reconnectAbort = null;
+      activeNotice = null;
+      stopSpinner();
+      applyBandChange();
+    }
+    if (spec) {
+      flashMessage = 'reconnected';
+      if (flashTimer) clearTimeout(flashTimer);
+      flashTimer = setTimeout(() => {
+        flashTimer = null;
+        flashMessage = null;
+        recomputeFooter();
+        redrawChrome();
+      }, FLASH_DURATION_MS);
+      if (typeof flashTimer.unref === 'function') flashTimer.unref();
+      recomputeFooter();
+      redrawChrome();
+    }
+    return spec;
+  };
+
+  // Wait for the pty to exit. Reconnect only on a real drop: a checkpoint reboot
+  // (an active/just-cleared `checkpoint` notice — vercel's snapshot stops the
+  // box and its `sbx exec` exits 0, so the notice is the signal, not the code)
+  // or a non-zero exit (connection blip). A clean exit-0 on a healthy box (agent
+  // exited) or an explicit `agentbox stop` (no notice) ends the wrapper. A
+  // crash-loop guard bails if respawned sessions keep dying immediately.
+  let exitCode = 0;
+  let rapidFails = 0;
+  for (;;) {
+    const code = await new Promise<number>((resolve) => {
+      pty.onExit(({ exitCode }) => resolve(exitCode));
+    });
+    if (userDetached || !opts.reconnect) {
+      exitCode = code;
+      break;
+    }
+    // Checkpoint notice currently active (set more recently than cleared) or
+    // cleared within the grace window → this drop is a box reboot.
+    const checkpointing =
+      checkpointNoticeAt > checkpointNoticeClearedAt ||
+      Date.now() - checkpointNoticeClearedAt < CHECKPOINT_DROP_GRACE_MS;
+    if (!checkpointing && code === 0) {
+      exitCode = code; // clean session end on a healthy box
+      break;
+    }
+    rapidFails = Date.now() - lastSpawnAt < RAPID_RECONNECT_MS ? rapidFails + 1 : 0;
+    if (rapidFails >= MAX_RAPID_RECONNECTS) {
+      logErr('giving up reconnect after repeated rapid failures');
+      exitCode = code;
+      break;
+    }
+    const next = await reconnectFlow(code);
+    if (!next) {
+      exitCode = code;
+      break;
+    }
+    const rsNow = process.stdout.rows ?? rows;
+    const innerNow = Math.max(1, rsNow - reservedRows());
+    pty = backend.ptySpawn(next.command, next.argv, {
+      name: 'xterm-256color',
+      cols: process.stdout.columns ?? cols,
+      rows: innerNow,
+      env: next.env ? { ...process.env, ...next.env } : process.env,
+    });
+    wireOutput();
+    lastSpawnAt = Date.now();
+    // Re-assert the scroll region (the fresh session repaints into it) and
+    // repaint chrome so the footer/band survive the respawn.
+    process.stdout.write(`\x1b[1;${String(innerNow)}r`);
+    redrawChrome();
+  }
 
   // Teardown order: stop reading stdin, restore cooked mode, drop SSE,
   // dispose the router (rejects any in-flight capture), clear the footer
