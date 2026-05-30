@@ -41,8 +41,7 @@ const MANAGED_SENTINEL = '<!-- agentbox-managed:v1 -->';
 /** Compact half-block "agentbox" wordmark shown above the wizard's clack gutter.
  *  Brand blue (256-color 39) echoes the dashboard sidebar; dropped when NO_COLOR. */
 const BANNER = (() => {
-  const art =
-    '▄▀█ █▀▀ █▀▀ █▄░█ ▀█▀ █▄▄ █▀█ ▀▄▀\n' + '█▀█ █▄█ ██▄ █░▀█ ░█░ █▄█ █▄█ █░█';
+  const art = '▄▀█ █▀▀ █▀▀ █▄░█ ▀█▀ █▄▄ █▀█ ▀▄▀\n' + '█▀█ █▄█ ██▄ █░▀█ ░█░ █▄█ █▄█ █░█';
   const tinted = process.env.NO_COLOR ? art : `\x1b[38;5;39m${art}\x1b[0m`;
   return `\n${tinted}\n\n`;
 })();
@@ -270,7 +269,7 @@ export async function runInstallWizard(opts: RunInstallWizardOptions = {}): Prom
   if (!ensureTty()) return false;
 
   process.stdout.write(BANNER);
-  intro('setup');
+  intro('Check system compatibility');
 
   // 1) Compact system check (full detail lives in `agentbox doctor`).
   const sysResults = await runSystemChecks();
@@ -285,8 +284,6 @@ export async function runInstallWizard(opts: RunInstallWizardOptions = {}): Prom
       outro('aborted');
       return false;
     }
-  } else {
-    log.info('run `agentbox doctor` for the full per-check report');
   }
 
   // 2) Provider picker.

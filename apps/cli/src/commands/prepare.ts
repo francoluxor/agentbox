@@ -275,7 +275,7 @@ export async function runPrepare(
         );
       }
     } else {
-      sp.stop(`${providerName} provider is ready`);
+      sp.stop(`${providerName.slice(0, 1).toUpperCase() + providerName.slice(1)} provider ready`);
     }
 
     if (!opts.suppressStatus) {
