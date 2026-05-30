@@ -109,7 +109,12 @@ async function animateBanner(): Promise<void> {
     process.stdout.write(SHOW_CURSOR);
   };
   process.once('exit', restoreCursor);
-  process.once('SIGINT', restoreCursor);
+  // Adding a SIGINT listener suppresses Node's default terminate-on-Ctrl+C, so
+  // restore the cursor and exit explicitly (130 = terminated by SIGINT).
+  process.once('SIGINT', () => {
+    restoreCursor();
+    process.exit(130);
+  });
 
   const frameMs = 45;
   // Band starts just off the left edge and exits past the right edge.
@@ -130,7 +135,7 @@ async function animateBanner(): Promise<void> {
     `  \x1b[38;5;51m${spin}\x1b[0m \x1b[38;5;245mChecking system…\x1b[0m`;
 
   for (let center = start; center <= end; center++) {
-    const spin = SPIN[Math.floor((center - start) / 2) % SPIN.length];
+    const spin = SPIN[Math.floor((center - start) / 2) % SPIN.length] ?? SPIN[0]!;
     const frame =
       SYNC_BEGIN +
       paintLine(LOGO_L1, center) +
