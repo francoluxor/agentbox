@@ -359,7 +359,7 @@ async function runProviderLogin(name: ProviderName): Promise<boolean> {
 function tutorialBody(provider: ProviderName): string {
   // Docker is the default provider, so the prefix is implicit; the cloud
   // providers need the explicit `agentbox <provider> claude` shorthand.
-  const startCmd = provider === 'docker' ? 'agentbox claude' : `agentbox ${provider} claude`;
+  const startCmd = provider === 'docker' ? 'agentbox claude    ' : `agentbox ${provider} claude`;
   return (
     `Get started:\n` +
     `  ${startCmd}                       # for claude, codex, opencode\n` +
