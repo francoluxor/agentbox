@@ -9,6 +9,15 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [0.11.2] - 2026-05-31
+
+### Added
+
+- The `-i` / `--initial-prompt` background queue now works on the cloud
+  providers (Daytona, Hetzner, Vercel), not just docker. Queued cloud jobs
+  create the box and pre-start a prompt-seeded detached session, with any
+  post-`--` args (e.g. `--permission-mode=plan`) forwarded through.
+
 ## [0.11.1] - 2026-05-31
 
 ### Fixed
