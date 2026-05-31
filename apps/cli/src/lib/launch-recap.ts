@@ -38,6 +38,20 @@ function homeShorten(p: string): string {
   return p === home || p.startsWith(home + '/') ? '~' + p.slice(home.length) : p;
 }
 
+/**
+ * clack's `note` wraps every body line in `color.dim`, which renders dark gray.
+ * Prefix each line with reset + bright-white so the recap reads in plain white;
+ * the leading reset cancels the dim attribute clack opened. `strip-ansi` length
+ * (clack's padding math) ignores these codes, so box alignment is unaffected.
+ */
+function whiten(text: string): string {
+  if (process.env.NO_COLOR) return text;
+  return text
+    .split('\n')
+    .map((line) => `\x1b[0m\x1b[97m${line}\x1b[0m`)
+    .join('\n');
+}
+
 export async function printLaunchRecap(args: LaunchRecapArgs): Promise<void> {
   const { record } = args;
   const rows: Array<[string, string]> = [];
@@ -68,5 +82,5 @@ export async function printLaunchRecap(args: LaunchRecapArgs): Promise<void> {
     ? `Ctrl+a d to detach. Reattach with: agentbox ${args.mode} attach ${args.reattach}`
     : `Attach with: agentbox ${args.mode} attach ${args.reattach}`;
 
-  note(`${body}\n\n${instruction}`);
+  note(whiten(`${body}\n\n${instruction}`));
 }
