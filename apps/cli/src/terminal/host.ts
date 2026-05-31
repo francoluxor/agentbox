@@ -108,7 +108,7 @@ async function spawnInTmux(args: SpawnInNewTerminalArgs): Promise<SpawnInNewTerm
   }
   return {
     launched: true,
-    note: `Attached in new ${noteKind} — Ctrl+a d to detach the box's tmux session.`,
+    note: `Attached in new ${noteKind}.`,
   };
 }
 
@@ -169,7 +169,7 @@ async function spawnInITerm2(args: SpawnInNewTerminalArgs): Promise<SpawnInNewTe
   }
   return {
     launched: true,
-    note: `Attached in new ${noteKind} — Ctrl+a d to detach the box's tmux session.`,
+    note: `Attached in new ${noteKind}.`,
   };
 }
 
