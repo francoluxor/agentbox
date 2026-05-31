@@ -9,11 +9,13 @@ import {
 import { Command } from 'commander';
 import { detectExecutionMethod, type ExecMethod } from '../exec-method.js';
 import { handleLifecycleError } from './_errors.js';
+import { installHostSkills } from './install.js';
 
 interface UpdateOptions {
   yes?: boolean;
   dryRun?: boolean;
   skipSelf?: boolean;
+  skipSkills?: boolean;
 }
 
 /** The published npm package name (apps/cli/package.json `name`). */
@@ -48,11 +50,12 @@ function runInherit(cmd: string, args: string[]): Promise<number> {
 
 export const updateCommand = new Command('self-update')
   .description(
-    'Update agentbox: self-update via npm/pnpm (unless run via npx), wipe the box image so it rebuilds, and reload the relay',
+    'Update agentbox: self-update via npm/pnpm (unless run via npx), refresh the host skills, wipe the box image so it rebuilds, and reload the relay',
   )
   .option('-y, --yes', 'skip the confirmation prompt')
   .option('--dry-run', "show what would happen, don't change anything")
-  .option('--skip-self', 'skip the package self-update; only refresh the image + relay')
+  .option('--skip-self', 'skip the package self-update; only refresh the skills + image + relay')
+  .option('--skip-skills', 'skip refreshing the host skill files in ~/.claude, ~/.codex, ~/.config/opencode')
   .action(async (opts: UpdateOptions) => {
     try {
       const method = detectExecutionMethod({
@@ -65,10 +68,14 @@ export const updateCommand = new Command('self-update')
       const selfStep = opts.skipSelf
         ? 'self-update: skipped (--skip-self)'
         : describeSelfUpdate(method);
+      const skillsStep = opts.skipSkills
+        ? 'skills: skipped (--skip-skills)'
+        : 'skills: refresh agentbox-managed host skill files in ~/.claude (and Codex/OpenCode)';
       log.info(
         [
           'plan:',
           `  ${selfStep}`,
+          `  ${skillsStep}`,
           `  image: docker image rm -f ${DEFAULT_BOX_IMAGE} (rebuilds on next create/claude)`,
           '  relay: stop, then respawn unless a self-update ran',
         ].join('\n'),
@@ -105,6 +112,43 @@ export const updateCommand = new Command('self-update')
           }
           selfUpdated = true;
           log.success(`updated ${PKG} via ${cmd.cmd}`);
+        }
+      }
+
+      // Step 1.5: refresh the host skill files. After a real self-update this
+      // process is the old build, so its bundled skills are stale — shell out
+      // to the freshly-installed binary (new code + new share/ files), the same
+      // "next fresh process" reasoning the relay respawn uses below. When no
+      // update ran (npx / source / --skip-self) this process is already current,
+      // so copy in-process.
+      if (opts.skipSkills) {
+        log.info('skipping skills refresh (--skip-skills)');
+      } else if (selfUpdated) {
+        const code = await runInherit('agentbox', ['install', '--skills-only']);
+        if (code === 0) {
+          log.success('refreshed host skills (via updated build)');
+        } else {
+          log.warn(
+            `host skills not refreshed (agentbox install --skills-only exited ${String(code)}) — run it manually to pick up the new versions`,
+          );
+        }
+      } else {
+        try {
+          const res = installHostSkills({ quiet: true });
+          if (res.written.length > 0) {
+            log.success(`refreshed host skills (${String(res.written.length)} file(s))`);
+          } else {
+            log.info(`host skills already current (${String(res.skipped)} skipped)`);
+          }
+          if (res.blocked.length > 0) {
+            log.warn(
+              `user-modified skill file(s) left in place: ${res.blocked.join(', ')} — run \`agentbox install --skills-only --force\` to overwrite`,
+            );
+          }
+        } catch (err) {
+          log.warn(
+            `host skills not refreshed (${err instanceof Error ? err.message : String(err)})`,
+          );
         }
       }
 
