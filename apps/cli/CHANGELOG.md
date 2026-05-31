@@ -9,6 +9,16 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [0.11.1] - 2026-05-31
+
+### Fixed
+
+- Queue runner no longer starts boxes past `--max-running`. Just-started jobs
+  whose box was still provisioning weren't counted by the running-box gate, so
+  during that window (≈25s on cloud, an image pull on docker) the per-tick
+  scheduler could re-fill the same slot and run over the cap. In-flight jobs are
+  now counted toward the limit.
+
 ## [0.11.0] - 2026-05-31
 
 ### Added
