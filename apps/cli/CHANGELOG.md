@@ -9,6 +9,22 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [0.11.3] - 2026-05-31
+
+### Changed
+
+- `agentbox self-update` now refreshes the host skill files in `~/.claude`
+  (and the Codex / OpenCode copies) as part of the update, so an updated CLI
+  no longer keeps serving stale skill content until you separately ran
+  `agentbox install --skills-only`. Pass `--skip-skills` to opt out.
+
+### Fixed
+
+- The `agentbox` host reference skill was out of date — it omitted the Vercel
+  provider, still described `-i` background runs as docker-only, and was
+  missing the PR-through-relay (`agentbox-ctl git pr`) and HTTPS-origin push
+  notes. It now reflects the current feature set.
+
 ## [0.11.2] - 2026-05-31
 
 ### Added
