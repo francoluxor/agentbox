@@ -231,14 +231,18 @@ async function listAllProjects(): Promise<void> {
   let first = true;
   for (const [segment, m] of entries) {
     // Resolve per-provider defaults only when the project root is known; an
-    // orphan segment (config GC'd) has no config to resolve against.
+    // orphan segment (config GC'd) has no config to resolve against. The
+    // `*default` marker is cosmetic, so a single corrupt config falls back to
+    // empty defaults rather than aborting the whole global listing.
     let defDocker = '';
     const defCloud = new Map<CloudBackend, string>();
     if (m.projectRoot) {
-      const cfg = await loadEffectiveConfig(m.projectRoot);
-      defDocker = resolveDefaultCheckpoint(cfg.effective, 'docker');
-      for (const { backend } of m.cloud) {
-        defCloud.set(backend, resolveDefaultCheckpoint(cfg.effective, backend));
+      const cfg = await loadEffectiveConfig(m.projectRoot).catch(() => null);
+      if (cfg) {
+        defDocker = resolveDefaultCheckpoint(cfg.effective, 'docker');
+        for (const { backend } of m.cloud) {
+          defCloud.set(backend, resolveDefaultCheckpoint(cfg.effective, backend));
+        }
       }
     }
     const label = m.projectRoot ? basename(m.projectRoot) : segment;
