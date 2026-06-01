@@ -87,7 +87,8 @@ Add `--print` to `url`, `screen`, or `code` to print the URL instead of opening 
 
 <Callout title="TIP">`agentbox screen` needs VNC, which is on by default — boxes created with `--no-vnc` can't use it.</Callout>
 
-<Figure caption="agentbox dashboard — the box list plus the selected box's live session." />
+{/* SCREENSHOT /screenshots/dashboard.png — REPRO: drive the TUI via the PTY harness — pnpm drive start --cols 96 --rows 19 --cwd <project> -- agentbox dashboard <box> ; pnpm drive screen <id> ; strip the pnpm/tsx wrapper lines ; render via /tmp/gen-term.js and screenshot headlessly. */}
+<Figure src="/screenshots/dashboard.png" caption="agentbox dashboard — the box list plus the actions for the selected box." />
 
 See [Access your box](/docs/access-your-box), [Web apps & tunnels](/docs/web-apps-and-tunnels), and [Browser & screen](/docs/browser-and-screen).
 

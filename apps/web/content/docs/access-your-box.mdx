@@ -66,7 +66,8 @@ agentbox screen mybox --print
 
 This is distinct from `agentbox url`: `url` opens the web app, while `screen` opens the desktop. A box created with `--no-vnc` has no screen. The shared `--loopback` / `--ttl` flags are in [CLI commands](/docs/cli).
 
-<Figure caption="noVNC view of a box's desktop with the agent-driven Chromium open" />
+{/* SCREENSHOT /screenshots/novnc-desktop.png — REPRO: agentbox screen <box> --print to get the noVNC URL (https://<box>.localhost/vnc.html?autoconnect=1&password=...), open it in a headless browser, wait for the canvas to connect, screenshot (~1044x800 to trim borders). */}
+<Figure src="/screenshots/novnc-desktop.png" caption="noVNC view of a box's desktop, with the in-box Chromium open." />
 
 The deeper VNC and agent-browser story lives in [Browser and screen](/docs/browser-and-screen).
 
@@ -84,7 +85,8 @@ agentbox dashboard --project
 
 Switch boxes with `Control+Option+↑/↓`. Everything else is a `Ctrl+a` leader chord — press `Ctrl+a` to show the which-key menu in the footer, then a single key (`c` code, `s` screen, `u` url, `p` pause, and so on). These shell out to the same commands above, so they inherit the same behavior.
 
-<Figure caption="The dashboard: box sidebar on the left, the selected box's live agent session on the right, chord hints in the footer" />
+{/* SCREENSHOT /screenshots/dashboard.png — REPRO: drive the TUI via the PTY harness — pnpm drive start --cols 96 --rows 19 --cwd <project> -- agentbox dashboard <box> ; pnpm drive screen <id> ; strip the pnpm/tsx wrapper lines ; render via /tmp/gen-term.js and screenshot headlessly. */}
+<Figure src="/screenshots/dashboard.png" caption="The dashboard: box sidebar on the left, actions for the selected box on the right, chord hints in the footer." />
 
 <Callout title="TIP">
 The dashboard is the cockpit for parallel work — see [Background and parallel](/docs/background-and-parallel) for running many boxes at once, and [Run an agent](/docs/run-an-agent) for the agent session shown on the right. The full command reference is in the [CLI](/docs/cli) page.

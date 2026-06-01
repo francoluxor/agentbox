@@ -24,7 +24,8 @@ It's one agent per box, but a box can hold multiple shell sessions — see [acce
 These run with **no concurrency cap** — they all start immediately and each consumes CPU, RAM, and agent quota. To have AgentBox pace the runs for you, use the `-i` background queue below.
 </Callout>
 
-<Figure caption="agentbox ls showing three boxes, each on its own agentbox/<name> branch" />
+{/* SCREENSHOT /screenshots/agentbox-ls.png — REPRO: create boxes across providers in one project (agentbox create -n web; agentbox create --provider vercel -n cloud; agentbox create --provider hetzner -n remote), run `agentbox ls`, then render its output through the terminal-card template (/tmp/gen-term.js) and screenshot it headlessly. */}
+<Figure src="/screenshots/agentbox-ls.png" caption="agentbox ls — boxes running in parallel across docker, vercel, and hetzner, each in its own sandbox." />
 
 ## Queue background runs with `-i`
 
@@ -200,7 +201,8 @@ SYSTEM: ~/.agentbox: 3.4GiB - checkpoints: 1.1GiB
 
 Per-box live CPU/mem metrics are docker-only; cloud boxes show `—` for those columns.
 
-<Figure caption="agentbox dashboard: box list on the left, the selected box's live agent session on the right" />
+{/* SCREENSHOT /screenshots/dashboard.png — REPRO: drive the TUI via the PTY harness — pnpm drive start --cols 96 --rows 19 --cwd <project> -- agentbox dashboard <box> ; pnpm drive screen <id> ; strip the pnpm/tsx wrapper lines ; render via /tmp/gen-term.js and screenshot headlessly. */}
+<Figure src="/screenshots/dashboard.png" caption="agentbox dashboard: the box list on the left; the panel on the right acts on the selected box (start an agent, open a shell)." />
 
 <Callout title="NOTE">
 The `dashboard` compositor is Claude-only today. `agentbox codex` / `opencode` runs work in parallel but aren't shown in the dashboard panes yet — use `agentbox top` / `agentbox ls` to monitor those.
