@@ -15,6 +15,7 @@
     "background-and-parallel",
     "docker-in-docker",
     "browser-and-screen",
+    "skills",
     "---Providers---",
     "local-docker",
     "hetzner",

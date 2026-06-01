@@ -124,7 +124,7 @@ agentbox wait 1
 | `logs` | `-n, --tail <n>`, `-f, --follow`, `--daemon` |
 | `wait` | `--timeout <ms>`, `--units <names...>`, `-j, --json` |
 
-The `agent` group is a scripting surface for the agent's live state: `agent state`, `agent wait-for <state>`, and `agent get-plan-question`, all with `--json`.
+The `agent` group is a scripting surface for the agent's live state: `agent state`, `agent wait-for <state>`, and `agent get-plan-question`, all with `--json`. Pair it with `agentbox drive` (snapshot the screen / send keystrokes) to drive one agent from another — see [Orchestration & queue boxes](/docs/background-and-parallel).
 
 <Callout title="TIP">Most inspect commands take `-j/--json` for scripting; `top` and `list` also offer `--live` to probe real cloud state (slower) instead of last-known host state.</Callout>
 

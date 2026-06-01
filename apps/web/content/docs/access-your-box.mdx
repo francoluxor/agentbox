@@ -3,7 +3,7 @@ title: Access your box
 description: Reach into a running box with a shell, your IDE, the web URL, the live screen, files, and the dashboard
 ---
 
-A box is a full computer, not just an agent REPL. Once it's running you can reach into it many ways — an interactive shell, your desktop IDE, the box's web app, its live desktop over VNC, the workspace files in Finder, and one TUI that ties them all together.
+A box is a full computer, not just an agent REPL. Once it's running you can reach into it many ways — an interactive shell, the box's web app, its live desktop over VNC, one TUI that ties them all together, your desktop IDE, and the workspace files in Finder.
 
 Every command below takes an optional `<box>`. Omit it for the project's only box, or pass a project index (`1`, `2`, …), a name, an id prefix, or the container name. Run [`agentbox list`](/docs/cli) to see indices and names.
 
@@ -33,26 +33,6 @@ A one-shot `-- <cmd>` is never tmux-wrapped, so stdout stays clean for scripts. 
 <Callout title="TIP">
 Same detach chord as the agent: `Ctrl+a d`. See [Background and parallel](/docs/background-and-parallel) for juggling many boxes.
 </Callout>
-
-## VS Code / Cursor
-
-`agentbox code [box]` opens VS Code or Cursor Desktop attached to the box via the Dev Containers extension, with `/workspace` as a remote folder. It auto-detects your IDE (prefers `code`, falls back to `cursor`); force a flavor with `--ide`. See [CLI commands](/docs/cli) for all flags.
-
-```bash
-# open the box in your IDE (auto-detects code, falls back to cursor)
-agentbox code mybox
-
-# force a flavor
-agentbox code mybox --ide cursor
-```
-
-It also writes `/workspace/.vscode/tasks.json` so the IDE auto-opens terminal panels tailing each service's log, from the [services and tasks](/docs/services-and-tasks) you declare in `agentbox.yaml`.
-
-<Callout type="warn" title="HEADS UP">
-The first attach to a fresh box downloads the IDE server (~70MB, keyed to your desktop IDE version). It's a one-time cost per box; later attaches are instant.
-</Callout>
-
-<Figure caption="Cursor attached to a box's /workspace via Dev Containers, with service-log terminal panels auto-opened" />
 
 ## Web app URL
 
@@ -90,22 +70,6 @@ This is distinct from `agentbox url`: `url` opens the web app, while `screen` op
 
 The deeper VNC and agent-browser story lives in [Browser and screen](/docs/browser-and-screen).
 
-## Open files
-
-`agentbox open [box]` opens the box's `/workspace` in Finder. The merged `/workspace` only exists inside the container, so `open` first rsyncs it to a per-box host directory and then launches Finder. The export is a snapshot, refreshed on demand — re-run to re-sync. See [CLI commands](/docs/cli) for flags like `--no-refresh`, `--include-node-modules`, and `--path`.
-
-```bash
-# rsync /workspace and open it in Finder
-agentbox open mybox
-
-# print the host path without opening Finder (for editors/scripts)
-agentbox open mybox --path --no-refresh
-```
-
-<Callout type="warn" title="HEADS UP">
-`agentbox open` is a snapshot for browsing, not a sync-back. To merge box changes into your host workspace use `agentbox download` (see [Sync and git](/docs/sync-and-git)), and capture state with [checkpoints](/docs/checkpoints-and-pausing) before you destroy — the export under `~/.agentbox/boxes/<id>/` is wiped on destroy.
-</Callout>
-
 ## Dashboard
 
 `agentbox dashboard` is the interactive TUI: a sidebar box list grouped by project on the left, and the selected box's live agent session on the right.
@@ -124,4 +88,40 @@ Switch boxes with `Control+Option+↑/↓`. Everything else is a `Ctrl+a` leader
 
 <Callout title="TIP">
 The dashboard is the cockpit for parallel work — see [Background and parallel](/docs/background-and-parallel) for running many boxes at once, and [Run an agent](/docs/run-an-agent) for the agent session shown on the right. The full command reference is in the [CLI](/docs/cli) page.
+</Callout>
+
+## VS Code / Cursor
+
+`agentbox code [box]` opens VS Code or Cursor Desktop attached to the box via the Dev Containers extension, with `/workspace` as a remote folder. It auto-detects your IDE (prefers `code`, falls back to `cursor`); force a flavor with `--ide`. See [CLI commands](/docs/cli) for all flags.
+
+```bash
+# open the box in your IDE (auto-detects code, falls back to cursor)
+agentbox code mybox
+
+# force a flavor
+agentbox code mybox --ide cursor
+```
+
+It also writes `/workspace/.vscode/tasks.json` so the IDE auto-opens terminal panels tailing each service's log, from the [services and tasks](/docs/services-and-tasks) you declare in `agentbox.yaml`.
+
+<Callout type="warn" title="HEADS UP">
+The first attach to a fresh box downloads the IDE server (~70MB, keyed to your desktop IDE version). It's a one-time cost per box; later attaches are instant.
+</Callout>
+
+<Figure caption="Cursor attached to a box's /workspace via Dev Containers, with service-log terminal panels auto-opened" />
+
+## Open files
+
+`agentbox open [box]` opens the box's `/workspace` in Finder. The merged `/workspace` only exists inside the container, so `open` first rsyncs it to a per-box host directory and then launches Finder. The export is a snapshot, refreshed on demand — re-run to re-sync. See [CLI commands](/docs/cli) for flags like `--no-refresh`, `--include-node-modules`, and `--path`.
+
+```bash
+# rsync /workspace and open it in Finder
+agentbox open mybox
+
+# print the host path without opening Finder (for editors/scripts)
+agentbox open mybox --path --no-refresh
+```
+
+<Callout type="warn" title="HEADS UP">
+`agentbox open` is a snapshot for browsing, not a sync-back. To merge box changes into your host workspace use `agentbox download` (see [Sync and git](/docs/sync-and-git)), and capture state with [checkpoints](/docs/checkpoints-and-pausing) before you destroy — the export under `~/.agentbox/boxes/<id>/` is wiped on destroy.
 </Callout>
