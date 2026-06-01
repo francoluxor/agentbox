@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { isAbsolute, join, relative } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { execa } from 'execa';
 import {
@@ -126,17 +126,39 @@ async function volumeHasClaudeJson(volume: string, image: string): Promise<boole
   return res.exitCode === 0;
 }
 
+function isUnder(parent: string, child: string): boolean {
+  const rel = relative(parent, child);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
 /**
- * Walk `root` and return rsync-style relative paths of every symlink whose
- * target doesn't resolve. We pass these to rsync as `--exclude` patterns so
- * the broken-symlink set (e.g. claude's `debug/latest` once an older debug
- * file is reaped) doesn't abort the whole sync under `--copy-unsafe-links`.
+ * Walk `root` and return rsync-style relative paths of every symlink the
+ * in-container sync can't dereference, so we can `--exclude` them. Two cases
+ * abort the whole sync under `--copy-unsafe-links` if left in:
+ *
+ *  - Broken on the host (e.g. claude's `debug/latest` once an older debug file
+ *    is reaped).
+ *  - Valid on the host but pointing OUTSIDE the trees the helper container
+ *    mounts (`reachableRoots`: `~/.claude` itself and, when present, `~/.agents`
+ *    at `/.agents`). The referent then has "no referent" inside the box — e.g. a
+ *    dev's `~/.claude/skills/*` symlinked into an agentbox source checkout.
  *
  * Crosses into subdirs; doesn't follow symlinks (the whole point is to test
  * them rather than traverse them).
  */
-async function findBrokenSymlinks(root: string): Promise<string[]> {
-  const broken: string[] = [];
+async function findUnsyncableSymlinks(root: string, reachableRoots: string[]): Promise<string[]> {
+  // realpath the reachable roots so a symlinked ancestor (e.g. macOS
+  // /var -> /private/var) doesn't make a containment check spuriously fail.
+  const reachable = await Promise.all(
+    reachableRoots.map(async (r) => {
+      try {
+        return await realpath(r);
+      } catch {
+        return r;
+      }
+    }),
+  );
+  const unsyncable: string[] = [];
   async function walk(dir: string): Promise<void> {
     let entries;
     try {
@@ -147,10 +169,15 @@ async function findBrokenSymlinks(root: string): Promise<string[]> {
     for (const ent of entries) {
       const full = join(dir, ent.name);
       if (ent.isSymbolicLink()) {
+        let real: string;
         try {
-          await stat(full);
+          real = await realpath(full);
         } catch {
-          broken.push(relative(root, full));
+          unsyncable.push(relative(root, full)); // broken on the host
+          continue;
+        }
+        if (!reachable.some((r) => isUnder(r, real))) {
+          unsyncable.push(relative(root, full)); // target not mounted in the box
         }
       } else if (ent.isDirectory()) {
         await walk(full);
@@ -158,7 +185,7 @@ async function findBrokenSymlinks(root: string): Promise<string[]> {
     }
   }
   await walk(root);
-  return broken;
+  return unsyncable;
 }
 
 /**
@@ -306,12 +333,15 @@ export async function ensureClaudeVolume(
     if (filteredHookCount > 0 || installMethodFixed || aliasedProjectKey || workspaceTrusted) {
       args.push('-v', `${filterDir}:/src-filter:ro`);
     }
-    // Pre-scan for broken symlinks. With --copy-unsafe-links rsync errors out
-    // and exits 23 when any unsafe symlink's referent is missing — e.g.
-    // `~/.claude/debug/latest` regularly points to a debug file that's been
-    // reaped. We can't predict every such case, so we walk once and tell
-    // rsync to skip exactly those entries.
-    const brokenSymlinks = await findBrokenSymlinks(hostClaude);
+    // Pre-scan for symlinks the in-container rsync can't dereference. With
+    // --copy-unsafe-links rsync errors out and exits 23 when an unsafe
+    // symlink's referent is missing inside the box — either broken on the host
+    // (`~/.claude/debug/latest` points at a reaped debug file) or valid on the
+    // host but pointing outside the mounted trees (`~/.claude` + `~/.agents`),
+    // e.g. a dev's skills symlinked into an agentbox source checkout. We can't
+    // predict every case, so we walk once and tell rsync to skip those entries.
+    const reachableRoots = hasAgents ? [hostClaude, hostAgents] : [hostClaude];
+    const brokenSymlinks = await findUnsyncableSymlinks(hostClaude, reachableRoots);
     const rsyncExcludes = ['--exclude=node_modules'];
     for (const rel of brokenSymlinks) rsyncExcludes.push(`--exclude=/${rel}`);
     const rsyncFlags = `-a --copy-unsafe-links ${rsyncExcludes.join(' ')}`;
