@@ -9,6 +9,20 @@ import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import { getMDXComponents } from '@/mdx-components';
 
+// The sidebar groups are flat `---Label---` separators in meta.json, so the page
+// tree is a flat list. A page's group is the nearest separator that precedes it.
+function groupForUrl(url: string): string | undefined {
+  let current: string | undefined;
+  for (const node of source.pageTree.children) {
+    if (node.type === 'separator') {
+      current = typeof node.name === 'string' ? node.name : undefined;
+    } else if (node.type === 'page' && node.url === url) {
+      return current;
+    }
+  }
+  return current;
+}
+
 export default async function Page(props: {
   params: Promise<{ slug?: string[] }>;
 }) {
@@ -17,13 +31,18 @@ export default async function Page(props: {
   if (!page) notFound();
 
   const MDX = page.data.body;
+  const group = groupForUrl(page.url);
 
   return (
     <DocsPage toc={page.data.toc} full={page.data.full}>
       <nav className="agb-crumbs" aria-label="Breadcrumb">
         <a href="/docs">Docs</a>
-        <span className="sep">/</span>
-        <span>Getting started</span>
+        {group ? (
+          <>
+            <span className="sep">/</span>
+            <span>{group}</span>
+          </>
+        ) : null}
         <span className="sep">/</span>
         <span className="cur">{page.data.title}</span>
       </nav>

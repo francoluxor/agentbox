@@ -1,4 +1,29 @@
 {
   "title": "Documentation",
-  "pages": ["---Getting started---", "index", "installation"]
+  "pages": [
+    "---Getting started---",
+    "index",
+    "core-concepts",
+    "---Guides---",
+    "teleport-a-project",
+    "run-an-agent",
+    "access-your-box",
+    "web-apps-and-tunnels",
+    "checkpoints-and-pausing",
+    "sync-and-git",
+    "services-and-tasks",
+    "background-and-parallel",
+    "docker-in-docker",
+    "browser-and-screen",
+    "---Providers---",
+    "local-docker",
+    "hetzner",
+    "daytona",
+    "vercel",
+    "---Reference---",
+    "cli",
+    "agentbox-yaml",
+    "configuration",
+    "environment"
+  ]
 }

@@ -15,11 +15,13 @@ the **local Docker** provider, which needs no account.
 
 - **Docker** — Desktop or OrbStack, running.
 - **Node** `>=20.10` on your `PATH`.
-- An agent CLI logged in once on the host — e.g. `claude`.
+- **MacOS** or **Linux**
+- An agent CLI — e.g. `claude`, `codex` or `opencode`. Agentbox will open a link for OAuth and acquire the token.
+- (Optional) an account for Vercel, Hetzner or Daytona. Agentbox will open a link to retrieve the API key.
 
 <Callout title="NOTE">
-  The first run builds the `agentbox/box:dev` image (~1&nbsp;GB). It's a one-time download — later
-  boxes start from a warm checkpoint in under a second.
+  The first run builds the `agentbox/box:dev` image (~1&nbsp;GB). It's a one-time download. On cloud
+  boxes it will create a base snapshot directly online.
 </Callout>
 
 ## Install the CLI
@@ -55,24 +57,33 @@ on your computer, and each write operation needs to be authorized from the foote
 
 ### Watch it work
 
-Open the box's live screen to follow the agent's browser and IDE in real time. The
-viewer streams the box's full desktop over noVNC.
+You can attach to any running Claude / Codex / OpenCode session, and also open the box's live screen to follow the agent's browser and IDE in real time.
+
+The viewer streams the box's full desktop over noVNC.
 
 ## Useful commands
 
 A handful of commands cover most day-to-day work. Run `agentbox --help` for the full
 list.
 
-| Command                    | What it does                                           |
-| -------------------------- | ------------------------------------------------------ |
-| `agentbox claude attach 1` | Reattach to the running Claude session on box 1.       |
-| `agentbox shell 1`         | Open an interactive bash shell inside the box.         |
-| `agentbox url`             | Open the box's web app URL in your browser.            |
-| `agentbox pause 1`         | Freeze the box to save resources — resumes sub-second. |
-| `agentbox destroy 1`       | Tear down the box and discard its upper volume.        |
+| Keys       | What it does                                                           |
+| ---------- | ---------------------------------------------------------------------- |
+| `Ctrl+a d` | Detach from the box                                                    |
+| `Ctrl+v`   | Paste an image or screenshot, even on clout boxes                      |
+| `Ctrl+a u` | Open the web preview in your computer browser with a transparent proxy |
+| `Ctrl+a s` | Open a screen sharing of the box browser shared with your agent        |
+| `Ctrl+a c` | Attach to the VSCode server running inside the box                     |
+
+| Command                    | What it does                                                            |
+| -------------------------- | ----------------------------------------------------------------------- |
+| `agentbox claude attach 1` | Reattach to the running Claude session on box 1 in the current project. |
+| `agentbox shell 1`         | Open an interactive bash shell inside the box.                          |
+| `agentbox url`             | Open the box's web app URL in your browser.                             |
+| `agentbox pause 1`         | Freeze the box to save resources — resumes sub-second.                  |
+| `agentbox destroy 1`       | Tear down the box and discard its upper volume.                         |
 
 Want to run the same agent on a cloud provider instead? Prefix the command with the
-provider name — for example `agentbox hetzner claude`. See [Installation](/docs/installation)
+provider name — for example `agentbox hetzner claude`. See [Hetzner](/docs/hetzner)
 to get set up.
 
 <Callout type="warn" title="HEADS UP">
