@@ -1,0 +1,310 @@
+---
+title: CLI commands
+description: Every agentbox command grouped by task, with the flags you reach for most
+---
+
+This is the command catalog. Conceptual depth lives in the linked task pages — here you get what each command does and the flags worth knowing.
+
+<Callout title="TIP">Run `agentbox --help` for the grouped command list, or `agentbox <command> --help` for every flag on a specific command. This page covers the commands you'll reach for most.</Callout>
+
+## Two conventions that apply everywhere
+
+**Box references.** Almost every command takes an optional `[box]` argument: a project index (`1`, `2`, …), the box name, an id (or id prefix), or the container name. Omit it and AgentBox uses the only box in the current project. Paused or stopped boxes are auto-resumed when you act on them.
+
+**Provider sugar.** `agentbox <provider> <subcommand>` is rewritten to `--provider <provider>` before parsing. So `agentbox hetzner claude`, `agentbox vercel codex`, and `agentbox docker create` all work — they're identical to passing `--provider`.
+
+## Create & run
+
+`create` makes a box but launches no agent. `claude`, `codex`, and `opencode` create (or reuse) a box *and* launch that agent in a detachable tmux session — they mirror `create`'s entire flag surface, so you can swap the verb without relearning flags. `fork` teleports the agent session you're running on the host right now into a fresh box.
+
+```bash
+# Create a box, no agent
+agentbox create
+
+# Create a box and launch an agent (tmux, detachable — Ctrl+a d to detach)
+agentbox claude
+agentbox codex
+agentbox opencode
+```
+
+Each agent command has three subcommands: `attach` reattaches to a running session (never re-syncs config), `start` (re)starts a session in an existing box (rsyncs host config unless `--no-sync-config`), and `login` runs that agent's auth flow.
+
+```bash
+# Name the box and drop into a shell once it's ready
+agentbox create -n smoke --attach
+
+# Reattach to / restart a session in box 1
+agentbox claude attach 1
+agentbox claude start 1
+
+# Teleport + resume your most recent host Claude session into the box
+agentbox claude -c
+agentbox claude --resume <session-id>
+
+# Fork the host session you're in now into a new box (opens a new tab)
+agentbox fork
+agentbox fork --agent codex --attach-in background
+
+# Anything after -- is forwarded to the in-box agent
+agentbox claude -- --model sonnet
+```
+
+Shared create/agent flags include `-n, --name`, `-w, --workspace <path>`, `--provider <name>`, `--snapshot <ref>` (start from a checkpoint), `--image <ref>`, `--build` (build the base image locally instead of pulling), `-y, --yes`, `--with-env`, `--with-playwright`, `--no-vnc`, `--portless` / `--no-portless`, `--from-branch <ref>`, `-b, --use-branch <name>`, `--memory`, `--cpus`, `--disk`, `--size <spec>` (cloud), and `--carry-yes` / `--carry <mode>`.
+
+Agent-specific: `--attach-in <split|window|tab|same>`, `-d, --no-attach`, `-i, --initial-prompt <text>` (background queue), and for `claude` only `-c, --continue`, `--resume <id>`, `--plan <path>`, and `--dangerously-skip-permissions` (on by default in boxes). `fork` adds `--agent`, `--session <id>`, and `--attach-in` (default `tab`).
+
+<Callout type="warn" title="HEADS UP">`-i` / `--initial-prompt` is AgentBox's background-queue prompt, not the agent's own `-p` print mode. To run the agent headless, pass it after `--` (e.g. `agentbox claude -- -p "..."`). Note also that `-i` means `--inline` on the `attach`/`start` subcommands.</Callout>
+
+<Figure caption="agentbox claude creates the box and drops you into a detachable Claude Code session." />
+
+These commands tee progress to `~/.agentbox/logs/<command>.log` and print `log: <path>` at startup; `~/.agentbox/logs/latest.log` always points at the most recent run.
+
+See [Run an agent](/docs/run-an-agent), [Teleport a project](/docs/teleport-a-project), [Background & parallel](/docs/background-and-parallel), and [Sync & git](/docs/sync-and-git).
+
+## Access
+
+```bash
+# Interactive shell in box 1 (tmux session)
+agentbox shell 1
+agentbox shell 1 -n logs     # a second, named shell
+agentbox shell 1 --new
+
+# Open the box's web app / desktop / IDE
+agentbox url 2
+agentbox screen 2
+agentbox code 2
+
+# Open /workspace in Finder
+agentbox open 2
+
+# Multiplexed box dashboard (TUI)
+agentbox dashboard
+```
+
+`url` opens the box's web app in your browser even with no `expose:` service. `screen` opens the in-box desktop over noVNC. `code` opens the box in VS Code or Cursor via Dev Containers. `dashboard` shows a box list alongside the selected box's live session.
+
+Add `--print` to `url`, `screen`, or `code` to print the URL instead of opening it. `url`/`screen` accept `--loopback` (docker: use `127.0.0.1` instead of the OrbStack/Portless URL) and `--ttl <seconds>` (cloud signed-URL expiry). `shell` has `attach`, `ls`, and `kill` subcommands.
+
+<Callout title="TIP">`agentbox screen` needs VNC, which is on by default — boxes created with `--no-vnc` can't use it.</Callout>
+
+<Figure caption="agentbox dashboard — the box list plus the selected box's live session." />
+
+See [Access your box](/docs/access-your-box), [Web apps & tunnels](/docs/web-apps-and-tunnels), and [Browser & screen](/docs/browser-and-screen).
+
+## Inspect
+
+```bash
+# List boxes (this project, then all projects)
+agentbox ls
+agentbox ls -g
+
+# Service + task status from the box's supervisor
+agentbox status 1
+agentbox status 1 --inspect
+
+# Live cpu/mem/pids/disk monitor
+agentbox top
+agentbox top --once
+
+# Tail (and stream) a service log
+agentbox logs 1 web
+agentbox logs 1 web -f
+
+# Block until the box's autostart units are ready
+agentbox wait 1
+```
+
+`list` (alias `ls`) lists boxes in the current project; `-g` spans all projects. `status` shows live service/task state from the in-box `agentbox-ctl` daemon, and `status --inspect` adds detailed box info (volumes, limits, paths). `top` is a live resource monitor, `logs` tails a service log, and `wait` blocks until autostart units are ready.
+
+| Command | Useful flags |
+| --- | --- |
+| `list` / `ls` | `-j, --json`, `-g, --global`, `--watch`, `--live` |
+| `status` | `-j, --json`, `--inspect` |
+| `top` | `--once`, `-j, --json`, `--interval <s>`, `--live` |
+| `logs` | `-n, --tail <n>`, `-f, --follow`, `--daemon` |
+| `wait` | `--timeout <ms>`, `--units <names...>`, `-j, --json` |
+
+The `agent` group is a scripting surface for the agent's live state: `agent state`, `agent wait-for <state>`, and `agent get-plan-question`, all with `--json`.
+
+<Callout title="TIP">Most inspect commands take `-j/--json` for scripting; `top` and `list` also offer `--live` to probe real cloud state (slower) instead of last-known host state.</Callout>
+
+See [Services & tasks](/docs/services-and-tasks) and [Background & parallel](/docs/background-and-parallel).
+
+## Lifecycle
+
+```bash
+# Cheap freeze / resume
+agentbox pause 1
+agentbox unpause 1
+
+# Full stop / start (volumes preserved)
+agentbox stop 1
+agentbox start 1
+
+# Destroy (discard the box; alias rm)
+agentbox destroy 1
+agentbox rm 1 -y
+```
+
+`pause`/`unpause` is the cheap context switch (docker freezes the cgroup, sub-second resume; cloud archives and rehydrates, slower). `stop`/`start` is a full stop that preserves the upper volume, including `node_modules`. `destroy` (alias `rm`) wipes the box and its writable layer; `--keep-snapshot` leaves the snapshot dir under `~/.agentbox/snapshots/` in place.
+
+<Callout title="TIP">Prefer `pause`/`unpause` to switch between boxes — it frees CPU and RAM while frozen and resumes instantly on docker. Use `stop` when you want the box off but kept.</Callout>
+
+See [Checkpoints & pausing](/docs/checkpoints-and-pausing) and the provider pages for cloud pause/stop semantics.
+
+## Sync & state
+
+```bash
+# Pull the box's /workspace back to the host (gitignore-aware)
+agentbox download 1
+agentbox download 1 --dry-run
+agentbox download 1 --with-env
+
+# Copy single files (direction inferred from the box: prefix)
+agentbox cp mybox:/workspace/.env      # download to cwd
+agentbox cp ./local.txt mybox:/workspace/   # upload
+
+# Git/gh through the host relay (your credentials stay on the host)
+agentbox git push 1
+agentbox git fetch 1
+agentbox git pull 1 main --ff-only
+agentbox git checkout 1 feature-x
+agentbox git status 1
+agentbox git pr create 1
+```
+
+`download` pulls `/workspace` back into your host workspace, honouring `.gitignore`. It has typed subcommands for agent state: `download env`, `download claude`, `download codex`, `download opencode`, `download config`. `cp` copies individual files in either direction, like `docker cp`. `git` runs git/gh operations against the box from the host through the relay, so push and fetch use your host credentials and the box never sees them.
+
+Useful flags: `download` takes `--dry-run`, `--no-respect-gitignore`, `--include-node-modules`, `--with-env`, `--pattern <glob>`; `git push`/`fetch` take `--remote <name>` (default `origin`) and forward extra args like `--force-with-lease`.
+
+<Callout title="TIP">`agentbox git push` runs through the host relay — your git/SSH credentials stay on your machine. The box requests the push; the host performs it (and prompts for approval per the relay's host-action gate).</Callout>
+
+See [Sync & git](/docs/sync-and-git) and [Environment](/docs/environment).
+
+## Checkpoints
+
+A checkpoint is warm box state that new boxes start from instantly. `checkpoint` (alias `checkpoints`) defaults to `ls`.
+
+```bash
+# List this project's checkpoints; -g spans all projects
+agentbox checkpoint ls
+agentbox checkpoint ls -g
+
+# Capture box 1 and pin it as the project default
+agentbox checkpoint create 1 --set-default
+
+# Capture with a name; recapture idempotently
+agentbox checkpoint create 1 --name warm --replace
+
+# Pin / clear / scope the default
+agentbox checkpoint set-default warm
+agentbox checkpoint set-default --clear
+agentbox checkpoint set-default --provider hetzner warm
+
+# Delete a checkpoint
+agentbox checkpoint rm warm
+
+# Start a box from a checkpoint
+agentbox create --snapshot warm
+agentbox claude --snapshot warm
+```
+
+Checkpoints are per-project and provider-aware. `set-default --provider <name>` pins for one provider; otherwise it sets the cross-provider fallback. Docker stacks `docker commit` layers; cloud providers use native snapshots.
+
+<Callout type="warn" title="HEADS UP">`--merged` (flatten layers) is docker-only — cloud snapshots are always flattened. On vercel, creating a checkpoint stops and reboots the box; pass `-y` to skip the confirmation. Cloud snapshots can't be used by docker boxes, so pin them with `--provider`.</Callout>
+
+See [Checkpoints & pausing](/docs/checkpoints-and-pausing).
+
+## Config
+
+`config` reads and writes layered config; precedence is **CLI flag > workspace `defaults:` > per-project > global > built-in default**.
+
+```bash
+# Read / write keys (--project is the default layer)
+agentbox config get box.hostSnapshot
+agentbox config set box.memory 2g
+agentbox config set box.memory 2g --global
+agentbox config unset box.memory
+
+# Inspect layers and file locations
+agentbox config get box.provider --all
+agentbox config list
+agentbox config path --project
+agentbox config edit
+```
+
+```bash
+# First-run wizard (auto-runs on first command; or run it explicitly)
+agentbox install
+agentbox install --skills-only   # just (re)install the host /agentbox skill
+
+# Diagnose system + provider readiness
+agentbox doctor
+agentbox doctor -p hetzner
+
+# Prepare base images / snapshots, or just show status
+agentbox prepare
+agentbox prepare -p hetzner
+agentbox prepare -p docker --build
+```
+
+`install` is the first-run setup wizard (system check, pick a provider, log in, prepare its base image, install the host skill). `doctor` diagnoses system and provider readiness. `prepare` builds base images or snapshots — omit `--provider` for status only.
+
+<Callout title="TIP">`agentbox config get <key> --all` shows which layer each value comes from. See the full key reference in [Configuration](/docs/configuration).</Callout>
+
+See [Configuration](/docs/configuration), [agentbox.yaml](/docs/agentbox-yaml), and [Environment](/docs/environment).
+
+## Providers
+
+The provider commands are both credential/management groups and sugar prefixes. `agentbox <provider> <verb>` is rewritten to `--provider <provider>`, so `agentbox hetzner claude` ≡ `agentbox claude --provider hetzner`.
+
+```bash
+# Sugar prefix — identical to passing --provider
+agentbox docker create
+agentbox hetzner claude
+agentbox vercel codex
+
+# Log in / rotate credentials (saved to ~/.agentbox/secrets.env)
+agentbox hetzner login
+agentbox vercel login
+agentbox daytona login
+agentbox hetzner login --status   # show what's configured (masked)
+
+# Provider tools
+agentbox hetzner firewall show <box>
+agentbox hetzner firewall sync <box>
+agentbox daytona resync             # re-sync the credential volume
+```
+
+`docker` is the default and is pure sugar (no login). Each cloud provider has a `login` subcommand (run by default); hetzner adds `firewall`, daytona adds `resync`.
+
+See [Local Docker](/docs/local-docker), [Hetzner](/docs/hetzner), [Daytona](/docs/daytona), and [Vercel](/docs/vercel).
+
+## Maintenance
+
+```bash
+# Clean orphan state records (dry run first)
+agentbox prune --dry-run
+agentbox prune --all -y
+agentbox prune --provider hetzner
+
+# Background jobs (agentbox claude|codex|opencode -i)
+agentbox queue list
+agentbox queue show <id>
+agentbox queue cancel <id>
+agentbox queue clear --all
+
+# Host relay process
+agentbox relay status
+agentbox relay restart
+
+# Update agentbox (wipes the box image so it rebuilds, reloads the relay)
+agentbox self-update
+agentbox self-update --dry-run
+```
+
+`prune` cleans up orphan state records; `--all` also removes orphan docker resources, and `--provider <cloud>` lists untracked cloud sandboxes and offers to delete them. `queue` manages background `-i` jobs. `relay` manages the host relay (`status`, `stop`, `start`, `restart`). `self-update` updates the CLI.
+
+<Callout type="warn" title="HEADS UP">`agentbox queue cancel` only cancels *queued* jobs — a job that's already running is not killed; destroy its box (`agentbox destroy <box>`) to stop it. And `prune --all` removes docker containers, volumes, and snapshots — run `--dry-run` first.</Callout>
+
+See [Background & parallel](/docs/background-and-parallel), [Core concepts](/docs/core-concepts), and [Configuration](/docs/configuration).

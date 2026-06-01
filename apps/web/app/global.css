@@ -226,6 +226,49 @@ kbd {
   border-radius: 999px;
 }
 
+/* Figure: screenshot or a dashed placeholder (replaced once a src is added). */
+#nd-page .agb-figure {
+  margin: 26px 0;
+}
+
+#nd-page .agb-figure img {
+  width: 100%;
+  display: block;
+  border: 1px solid var(--agb-line);
+  border-radius: 10px;
+}
+
+#nd-page .agb-figure-ph {
+  width: 100%;
+  height: 300px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--agb-line);
+  border-radius: 10px;
+  background: var(--agb-panel);
+  color: var(--agb-faint);
+  font-family: var(--font-agb-mono), 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+#nd-page .agb-figure figcaption {
+  margin-top: 11px;
+  font-family: var(--font-agb-mono), 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  color: var(--agb-muted);
+}
+
+.dark #nd-page .agb-figure img,
+.dark #nd-page .agb-figure-ph {
+  border-color: var(--color-fd-border);
+}
+
+.dark #nd-page .agb-figure-ph {
+  background: var(--color-fd-card);
+}
+
 /* ---------------------------------------------------------------------------
  * Content typography — aligned to AgentBox Docs.html.
  * Scoped to #nd-page so chrome (nav/sidebar/toc) is untouched.

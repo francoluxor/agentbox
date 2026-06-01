@@ -1,0 +1,189 @@
+---
+title: Vercel
+description: A Firecracker microVM per box with persistent snapshots and public preview URLs
+---
+
+Use Vercel when you want a fast snapshot-based remote env with public HTTPS preview URLs and persistent pause/resume. Each box is one Vercel Sandbox — a Firecracker microVM on Amazon Linux 2023 — with first-class snapshots and a public `*.vercel.run` URL reachable from your browser and from inside the [box](/docs/core-concepts).
+
+Switch per box with `--provider vercel`, or pin it project-wide with `box.provider: vercel` in [`agentbox.yaml`](/docs/agentbox-yaml). The rest of the CLI (`shell`, `claude`, `url`, `cp`, `checkpoint`, …) routes on `box.provider` automatically. Comparing options? See [local-docker](/docs/local-docker), [hetzner](/docs/hetzner), and [daytona](/docs/daytona).
+
+## Set up
+
+The first time you use `--provider vercel` AgentBox prompts you to log in; you can also run it explicitly. There are three auth modes:
+
+- **Sign in with Vercel (CLI login)** — the default interactive mode. It drives the official Vercel `sandbox` CLI (`npm i -g sandbox`) through its browser OAuth, then reuses the CLI's own credentials — no token to paste. Only the marker `VERCEL_AUTH_SOURCE=cli` plus `VERCEL_TEAM_ID` and `VERCEL_PROJECT_ID` are cached in `~/.agentbox/secrets.env`; the live `vca_` access token is read from the Vercel CLI store on every call, so it self-refreshes.
+- **Access-token trio** — `VERCEL_TOKEN` + `VERCEL_TEAM_ID` + `VERCEL_PROJECT_ID`, persisted to `~/.agentbox/secrets.env`. Mint a token at [vercel.com/account/settings/tokens](https://vercel.com/account/settings/tokens); the team id is in the team's General settings and the project id in the project's General settings.
+- **OIDC** — `vercel link && vercel env pull` mints `VERCEL_OIDC_TOKEN`; export it in your shell or add it to `~/.agentbox/secrets.env`.
+
+Credentials are read only from your shell env or `~/.agentbox/secrets.env`. Project-local `.env` / `.env.local` files are never harvested.
+
+```bash
+agentbox vercel login
+```
+
+```bash
+# show what's configured: masked token, auth mode, team/project, store path, expiry
+agentbox vercel login --status
+```
+
+Without a TTY, `vercel login` errors and tells you to set the trio or `VERCEL_OIDC_TOKEN`. For CI/headless use, put the trio in `~/.agentbox/secrets.env` or the shell env directly.
+
+<Callout title="WHICH AUTH">
+OIDC is quickest for short interactive work, but its dev token expires on a ~12h cycle with no headless auto-refresh. For long-running ops — especially `agentbox prepare --provider vercel`, whose bake can outlive a token — use the access-token trio. CLI login self-refreshes via the `sbx` store, so it's fine for interactive use.
+</Callout>
+
+See [environment](/docs/environment) for where the `VERCEL_*` vars and `~/.agentbox/secrets.env` live.
+
+## Prepare the base snapshot
+
+Vercel can't build a Dockerfile image, so the base environment is a one-time Vercel snapshot (like Hetzner's prepare). `agentbox prepare --provider vercel` boots a fresh sandbox, provisions it (deps, the `vscode` user, `agentbox-ctl` + relay shims, Claude native installer, Codex, OpenCode, the VNC stack, Chromium for the agent browser), then snapshots it.
+
+The snapshot id is saved to `~/.agentbox/vercel-prepared.json` and written to the per-provider key `box.imageVercel` — never the generic `box.image`, which would collide across providers. Every `create --provider vercel` boots from it.
+
+```bash
+agentbox prepare --provider vercel
+```
+
+```bash
+# rebuild even if a snapshot already exists
+agentbox prepare --provider vercel --force
+```
+
+```bash
+# inventory the prepared snapshots across all providers
+agentbox prepare --status
+```
+
+A repeat `prepare` returns the existing snapshot if it's still present and you didn't pass `--force`. The bake takes a few minutes; the base snapshot is around 1.3 GB.
+
+<Callout title="TIP">
+Run `prepare` with the access-token trio in env — the bake can outlive a 12h OIDC dev token.
+</Callout>
+
+## Create a box
+
+Once you're logged in and prepared, the flow is standard. The workspace is seeded from a host git bundle plus your stash and untracked files (see [teleport-a-project](/docs/teleport-a-project)). The box runs as user `vscode`, and `/workspace` is checked out on branch `agentbox/<box-name>`.
+
+```bash
+agentbox create --provider vercel
+```
+
+```bash
+# sugar: argv-prefix rewrite equivalent to --provider vercel
+agentbox vercel claude
+```
+
+`agentbox vercel create|claude|codex|opencode` all map to the same provider. From there, [run an agent](/docs/run-an-agent) and [access your box](/docs/access-your-box) as usual.
+
+## Limits
+
+- **No nested containers.** Seccomp blocks the namespace syscalls a container runtime needs (no `CAP_SYS_ADMIN`), so the provider sets `launchDockerd: false`. In-box `docker` is unavailable by design. Everything else (node, python, git, tmux, VNC, Claude Code) runs as plain processes.
+- **No SSH.** `@vercel/sandbox` exposes no SSH or PTY channel; attach goes through the Vercel `sandbox` CLI's real PTY. It just works for `shell` / `claude` / `codex` / `opencode`.
+- **Four exposed ports, fixed at create.** AgentBox reserves 8080 (in-box WebProxy → `agentbox url`), 6080 (noVNC → `agentbox screen`), and 8788 (the relay/ctl bridge the host poller reaches). That leaves room for one or two `services.*.expose.port` from `agentbox.yaml`. Privileged ports below 1024 are rejected, so services must listen on a non-privileged port to get a preview URL, and ports can't be added to a running box.
+- **Region `iad1` only.**
+
+| Limit | Value |
+| --- | --- |
+| Region | `iad1` only |
+| Disk | 32 GB fixed |
+| RAM | 2048 MB per vCPU (coupled) |
+| Exposed ports | ≤4 (8080 / 6080 / 8788 + ~1 free) |
+| Session length | 45 min (Hobby) / 5 hr (Pro+) |
+| Nested containers | none (`docker` unavailable) |
+| SSH | none (CLI-PTY attach) |
+
+<Callout type="warn" title="NO IN-BOX DOCKER">
+If your `agentbox.yaml` needs Docker-in-Docker — say a `postgres:16` service — use the [docker](/docs/local-docker) or [hetzner](/docs/hetzner) provider instead. DinD is impossible on Vercel. See [docker-in-docker](/docs/docker-in-docker).
+</Callout>
+
+## Sizing & network policy
+
+A few shipped config keys are Vercel-only:
+
+- `box.vercelVcpus` (default `2`) — vCPUs for new boxes; Vercel couples RAM at 2048 MB per vCPU. Only `1`, `2`, `4`, or `8` are valid; an unsupported value (e.g. `3`) fails create with a 400.
+- `box.vercelTimeoutMs` (default `2700000`, i.e. 45 min, the Hobby ceiling) — max session length before the VM auto-snapshots; persistent mode auto-resumes on the next call.
+- `box.vercelNetworkPolicy` (default unset = `allow-all`) — egress lock: `allow-all`, `deny-all`, or a comma-separated domain allowlist (e.g. `github.com,*.npmjs.org`) that denies everything else.
+
+```bash
+agentbox config set box.vercelVcpus 4 --project
+```
+
+```bash
+agentbox config set box.vercelNetworkPolicy "github.com,*.npmjs.org" --project
+```
+
+```bash
+# raise the session ceiling to 5 hours (Pro+)
+agentbox config set box.vercelTimeoutMs 18000000 --project
+```
+
+Region stays fixed at `iad1`, so `--size` / `box.sizeVercel` are reserved no-ops — use `box.vercelVcpus` for sizing. See [configuration](/docs/configuration) for the full key list and precedence (CLI > workspace > project > global > default).
+
+<Callout title="TIP">
+`deny-all` plus a tight allowlist gives you egress lockdown without any firewall setup — a `deny-all` box can't reach `example.com`, while an `example.com`-allowlist box reaches it but not `api.github.com`.
+</Callout>
+
+## Pause / resume
+
+Vercel sandboxes are created persistent, keeping the last snapshot. `pause` / `stop` calls `sb.stop()` (auto-snapshot, then shut down); `resume` / `start` calls `Sandbox.get({ resume: true })` and brings back the same `/workspace` on the same branch. So `pause == stop` and `resume == start` — free pause/resume, with no per-hour billing.
+
+```bash
+agentbox pause <box>
+```
+
+```bash
+agentbox start <box>
+```
+
+```bash
+agentbox destroy <box>
+```
+
+Stop auto-snapshots in roughly 18s, and the public `*.vercel.run` URL stays stable across a stop/start — it doesn't rotate. `destroy` deletes the sandbox and purges its own auto-snapshot; it never touches the shared base snapshot or a checkpoint snapshot.
+
+<Callout title="NOTE">
+Persistence means `pause` is essentially free here — unlike [hetzner](/docs/hetzner), where a stopped VPS still bills ~€4/mo. The canonical guide is [checkpoints-and-pausing](/docs/checkpoints-and-pausing).
+</Callout>
+
+## Checkpoints
+
+Cloud checkpoints map to Vercel snapshots, which are id-addressed: AgentBox writes the snapshot id into the cloud-checkpoint manifest under `~/.agentbox/cloud-checkpoints/vercel/<project>/<name>/`. `agentbox checkpoint create` snapshots the box; `agentbox create --checkpoint <name>` (or `--snapshot <ref>`) boots from it with `/workspace` intact and skips workspace seeding.
+
+This is the per-project snapshot tier: `checkpoint create` plus `box.defaultCheckpointVercel` makes repeat creates boot from your project-ready snapshot.
+
+```bash
+agentbox checkpoint create --name setup
+```
+
+```bash
+agentbox checkpoint set-default --provider vercel <ref>
+```
+
+```bash
+agentbox create --provider vercel --checkpoint setup
+```
+
+<Callout type="warn" title="HEADS UP">
+`checkpoint create` stops the source box to capture the snapshot (it auto-resumes on the next call), so expect a brief pause on a running box. AgentBox self-heals a stale checkpoint: `create` probes liveness, prunes the dangling manifest, and falls back to the base snapshot.
+</Callout>
+
+## Caveats
+
+- **No live stats.** `agentbox top` and `dashboard` don't surface CPU/mem for cloud boxes (rows render `—`), and `agentbox list` reports cloud boxes optimistically as `running` without a live probe.
+- **No in-box `docker`** — use [docker](/docs/local-docker) or [hetzner](/docs/hetzner) for DinD.
+- **Privileged ports are rejected.** The in-box WebProxy runs on 8080 (not 80), and `services.*.expose` ports must be non-privileged to get a preview URL. `agentbox url` resolves the 8080 domain.
+- **Push through the relay.** Use `agentbox-ctl git push` (the host relay path) to push from a box; the relay holds the credentials. See [sync-and-git](/docs/sync-and-git).
+- **OIDC tokens expire on a ~12h cycle** with no headless refresh — prefer the access-token trio for long jobs.
+- **Vercel-only config keys are ignored by other providers** (and vice versa). Don't expect `--size` to change a vercel box.
+
+## Related
+
+- [core-concepts](/docs/core-concepts) — what a box, branch, and worktree are.
+- [teleport-a-project](/docs/teleport-a-project) — how `/workspace` is seeded.
+- [run-an-agent](/docs/run-an-agent) · [access-your-box](/docs/access-your-box) — work in a cloud box.
+- [web-apps-and-tunnels](/docs/web-apps-and-tunnels) — preview URLs, the 8080 WebProxy, `expose:` ports.
+- [browser-and-screen](/docs/browser-and-screen) — `agentbox screen` over noVNC on 6080.
+- [checkpoints-and-pausing](/docs/checkpoints-and-pausing) — pause/resume and checkpoints.
+- [sync-and-git](/docs/sync-and-git) — relay-backed push/pull.
+- [services-and-tasks](/docs/services-and-tasks) — `agentbox.yaml` services and `expose`.
+- [cli](/docs/cli) · [agentbox-yaml](/docs/agentbox-yaml) · [configuration](/docs/configuration) · [environment](/docs/environment) — reference.

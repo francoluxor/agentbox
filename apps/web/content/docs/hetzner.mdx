@@ -1,0 +1,176 @@
+---
+title: Hetzner
+description: A bare VPS per box with an auto-locked firewall, over pure OpenSSH
+---
+
+Use Hetzner when you want a real, inexpensive cloud VM you fully control. With `--provider hetzner`, each box is its own Hetzner Cloud VPS (1:1), reached over pure OpenSSH. No third-party agent runs inside the box — you own root.
+
+Pick Hetzner for bare-VPS control (full kernel, your own region), a Cloud Firewall locked to your egress IP, and full [Docker-in-Docker](/docs/docker-in-docker). Cost is roughly €4/mo per *running* box. The siblings: a managed-SDK sandbox is [Daytona](/docs/daytona); a Firecracker microVM with public HTTPS URLs but no in-box Docker is [Vercel](/docs/vercel); free and local is [local Docker](/docs/local-docker).
+
+The whole CLI surface (`shell`, `claude`, `url`, `cp`, `checkpoint`, …) routes on `box.provider` and works identically across backends — see [core concepts](/docs/core-concepts) and the [CLI reference](/docs/cli).
+
+<Callout title="TIP">
+Pin Hetzner project-wide with `box.provider: hetzner` in [`agentbox.yaml`](/docs/agentbox-yaml) (or `agentbox config set box.provider hetzner --project`), or pass `--provider hetzner` per box. See [configuration](/docs/configuration).
+</Callout>
+
+## Set up
+
+`agentbox hetzner login` stores your `HCLOUD_TOKEN` — a **Read & Write** API token from a Hetzner project's **Security → API Tokens** page. The command is interactive, validates the token with a `GET /locations` call, and persists it to `~/.agentbox/secrets.env` (chmod 600).
+
+```bash
+agentbox hetzner login
+```
+
+Check what's configured (masked token plus its source):
+
+```bash
+agentbox hetzner login --status
+```
+
+The token is project-scoped on Hetzner's side, so boxes are created in whichever Hetzner project minted it. First use of `--provider hetzner` triggers this login automatically, so the explicit step is optional but recommended. Credentials are read only from the shell env or `~/.agentbox/secrets.env` — a project-local `.env` is never harvested.
+
+<Callout title="NOTE">
+Mint the token under the specific Hetzner *project* you want boxes to live in, and make it **Read & Write**. Read-only tokens can't create servers.
+</Callout>
+
+<Figure caption="Mint a Read & Write API token under Security → API Tokens in the Hetzner console." />
+
+## Prepare snapshot
+
+Hetzner can't build an image from a Dockerfile, so a one-time base snapshot must be baked before the first `create`. `agentbox prepare --provider hetzner` boots a throwaway VPS, runs the install script, snapshots the result, then deletes the VPS and its firewall.
+
+```bash
+agentbox prepare --provider hetzner
+```
+
+The snapshot is a shell mirror of the Docker box image: Node 24, Python, Docker (with the same `agentbox-dockerd-start`), the TigerVNC + noVNC stack, Playwright Chromium + agent-browser + portless, Claude Code (native installer) + Codex + OpenCode, the `agentbox-ctl` supervisor, sshd hardening, and the `vscode` user (UID 1000, passwordless sudo).
+
+First run takes ~10–15 minutes (the Chromium download dominates) and a couple euro-cents of VPS time. The snapshot id is persisted to `~/.agentbox/hetzner-prepared.json` and pinned to the per-provider key `box.imageHetzner` — never the generic `box.image` — so preparing Hetzner can't break other providers.
+
+Re-running is idempotent: it returns the existing record without rebuilding when `prepared.json` records a base, that image still exists on Hetzner, and the install-script SHA256 matches. Force a rebake with `--force`:
+
+```bash
+agentbox prepare --provider hetzner --force
+```
+
+Watch progress — the command prints `log: <path>` at startup, and `latest.log` always points at the most recent run:
+
+```bash
+tail -f ~/.agentbox/logs/latest.log
+```
+
+Every error path tears down the temp VPS and firewall, so a transient failure never leaves you paying for a forgotten box.
+
+<Callout type="warn" title="HEADS UP">
+The bake costs a few minutes and a couple euro-cents, but you only do it once per account. After it's baked, every `create --provider hetzner` boots from it in ~15–20s.
+</Callout>
+
+## Create a box and run an agent
+
+Once login and prepare are done, `create`/`claude`/`codex`/`opencode`/`shell` behave exactly like local Docker — only `--provider hetzner` (or the pinned config) differs. The workspace is seeded from a host git bundle plus your uncommitted and untracked changes, the same mechanism as the other clouds (see [teleport a project](/docs/teleport-a-project) and [sync & git](/docs/sync-and-git)).
+
+Provisioning is ~30–60s cold (cloud-init) and ~15–20s from the base snapshot.
+
+```console
+$ agentbox create -y -n smoke --provider hetzner
+# VPS provisioned + firewall locked to host egress IP + SSH ControlMaster up (~90s)
+
+$ agentbox shell smoke --no-tmux -- uname -a
+Linux smoke ... x86_64 GNU/Linux
+```
+
+Or jump straight into an agent, which auto-creates the box:
+
+```bash
+agentbox claude --provider hetzner
+```
+
+See [run an agent](/docs/run-an-agent), [access your box](/docs/access-your-box), and [background & parallel](/docs/background-and-parallel).
+
+## Sizes and regions
+
+The default VM is `cx23` (2 vCPU / 4 GB RAM / 40 GB disk, x86, ~€4/mo while running), in location `nbg1` (Nuremberg). Override the size per box with `--size`, or set `box.sizeHetzner` (per-provider) or `box.size` (generic fallback) in config. Precedence is `--size` > `box.sizeHetzner` > `box.size` > built-in `cx23`.
+
+```bash
+agentbox create -y -n big --provider hetzner --size cx33
+```
+
+The value passes straight through as Hetzner's `server_type` (e.g. `cx33`, `cx43`); an unknown type fails create with Hetzner's `invalid_input` error. Pin a size project-wide:
+
+```bash
+agentbox config set box.sizeHetzner cx33 --project
+```
+
+<Callout title="NOTE">
+`box.sizeHetzner` only affects Hetzner boxes; `box.size` is the cross-provider fallback. Hetzner deprecated `cx22` in early 2026 — `cx23` is the same shape and the current default. See [configuration](/docs/configuration) for precedence.
+</Callout>
+
+## Firewall
+
+Every box gets its own Hetzner Cloud Firewall, minted at provision time. The single inbound rule allows **TCP port 22 only**, sourced from your host's egress IP as a `/32`. Outbound is unrestricted.
+
+The egress IP is auto-detected via a three-probe race (api.ipify.org → ifconfig.io → icanhazip.com). If all three fail, create fails loud rather than silently opening `0.0.0.0/0` — safe by default. All box traffic flows over one persistent SSH ControlMaster (`ssh -fNT -M`) per box, and preview URLs are on-demand `ssh -L` local forwards. So port 22 from your IP is genuinely all that's exposed.
+
+If you change networks (new Wi-Fi, VPN toggle), your egress IP changes and SSH to existing boxes times out. `agentbox hetzner firewall show <box>` is the diagnostic, and `firewall sync` re-detects your IP and updates that box's rule with no VPS reboot:
+
+```console
+$ agentbox hetzner firewall show smoke
+rule: in tcp/22 from 94.62.212.253/32
+host egress IP: 203.0.113.7
+WARN: firewall source does not match current egress IP
+
+$ agentbox hetzner firewall sync smoke
+# firewall updated to 203.0.113.7/32
+```
+
+Force a specific CIDR (e.g. an office range) with `--source` on `firewall sync`, or `--firewall-source` / the `AGENTBOX_HETZNER_FIREWALL_SOURCE` env var at prepare/create time:
+
+```bash
+agentbox hetzner firewall sync smoke --source 203.0.113.0/24
+```
+
+<Callout title="TIP">
+Moved networks and `agentbox shell` suddenly times out? Run `agentbox hetzner firewall sync <box>` — that's almost always it.
+</Callout>
+
+## Web apps, checkpoints, and Docker
+
+The box's standard capabilities work as on any provider, with a few Hetzner specifics:
+
+- **Web apps / preview URLs.** `agentbox url <box>` returns a URL backed by an on-demand SSH local forward, and the in-box portless proxy mirrors it so `https://<box-name>.localhost` resolves the same content from your host browser and from inside the box. `agentbox screen` works too (in-box VNC stack on port 6080). See [web apps & tunnels](/docs/web-apps-and-tunnels) and [browser & screen](/docs/browser-and-screen).
+- **Checkpoints** map to Hetzner `create_image` snapshots, no-pause by default (snapshot a running server, matching `docker commit`). Manifests live under `~/.agentbox/cloud-checkpoints/hetzner/<project>/<name>/`. Set a per-provider default with `agentbox checkpoint set-default --provider hetzner <ref>` (key `box.defaultCheckpointHetzner`, falling back to `box.defaultCheckpoint`). See [checkpoints & pausing](/docs/checkpoints-and-pausing).
+- **Docker-in-Docker works** unmodified — the install script bakes the same `agentbox-dockerd-start` the Docker provider ships. See [Docker-in-Docker](/docs/docker-in-docker).
+- **Services & tasks** from `agentbox.yaml` run via the in-box supervisor as on every provider. See [services & tasks](/docs/services-and-tasks).
+
+```bash
+agentbox checkpoint create smoke setup
+```
+
+```bash
+agentbox create -y -n smoke2 --provider hetzner --checkpoint setup
+```
+
+```bash
+agentbox shell smoke -- docker run --rm hello-world
+```
+
+<Callout title="TIP">
+Because Hetzner checkpoints are full-disk snapshots, capturing one after your project's setup (`agentbox checkpoint set-default --provider hetzner setup`) lets later boxes boot ready-to-go and skip workspace seeding.
+</Callout>
+
+## Caveats
+
+- **Pause still bills.** `pause`/`stop` is a poweroff and `resume`/`start` a poweron, but Hetzner charges ~€4/mo even for a *stopped* VPS — there's no free archive. Destroy the box to stop billing entirely. (`agentbox destroy <box> -y` deletes the VPS, its firewall, and the per-box SSH key.)
+- **No live stats.** `agentbox top` and `dashboard` render `—` for CPU/mem on Hetzner boxes; the basic API doesn't expose per-server metrics.
+- **No shared credential volume.** Agent credentials are pushed to each box via scp at create time (Hetzner has no shared-volume primitive).
+- **IPv4 only.** SSH targets the VPS's IPv4 address today; IPv6-only host networks aren't exercised yet.
+- **`agentbox prune --provider hetzner` isn't wired yet.** Clean up orphans from the Hetzner dashboard or the REST API. `$HCLOUD_TOKEN` lives in `~/.agentbox/secrets.env`:
+
+```console
+$ curl -s -H "Authorization: Bearer $HCLOUD_TOKEN" \
+    https://api.hetzner.cloud/v1/servers | jq '.servers[].name'
+```
+
+<Callout type="warn" title="HEADS UP">
+Destroying is the only way to stop billing. A stopped box keeps accruing the ~€4/mo charge.
+</Callout>

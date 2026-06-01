@@ -16,8 +16,10 @@ the **local Docker** provider, which needs no account.
 - **Docker** — Desktop or OrbStack, running.
 - **Node** `>=20.10` on your `PATH`.
 - **MacOS** or **Linux**
-- An agent CLI — e.g. `claude`, `codex` or `opencode`. Agentbox will open a link for OAuth and acquire the token.
-- (Optional) an account for Vercel, Hetzner or Daytona. Agentbox will open a link to retrieve the API key.
+- An agent CLI — e.g. `claude`, `codex` or `opencode`.
+- (Optional) an account for Vercel, Hetzner or Daytona.
+
+NB: Agentbox will open a link for OAuth and acquire the tokens for your AI subscription and for cloud providers API keys.
 
 <Callout title="NOTE">
   The first run builds the `agentbox/box:dev` image (~1&nbsp;GB). It's a one-time download. On cloud
@@ -69,7 +71,7 @@ list.
 | Keys       | What it does                                                           |
 | ---------- | ---------------------------------------------------------------------- |
 | `Ctrl+a d` | Detach from the box                                                    |
-| `Ctrl+v`   | Paste an image or screenshot, even on clout boxes                      |
+| `Ctrl+v`   | Paste an image or screenshot, even on cloud boxes                      |
 | `Ctrl+a u` | Open the web preview in your computer browser with a transparent proxy |
 | `Ctrl+a s` | Open a screen sharing of the box browser shared with your agent        |
 | `Ctrl+a c` | Attach to the VSCode server running inside the box                     |

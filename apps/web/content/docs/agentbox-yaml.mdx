@@ -1,0 +1,313 @@
+---
+title: agentbox.yaml
+description: Reference for the in-box services and tasks configuration file
+---
+
+`agentbox.yaml` lives at your workspace root and is read inside the box by the supervisor (`@agentbox/ctl`, shipped as `agentbox-ctl`). It declares **tasks** (one-shot setup units) and **services** (long-running processes) run under a DAG scheduler, plus a few host-side blocks (`carry`, `defaults`, `ide`).
+
+The file is validated twice: the host CLI pre-validates it before any box work on `agentbox create` (a config error aborts the run), and the in-box daemon re-validates on start. Editor autocomplete and validation come free from the JSON Schema. For the conceptual guide, see [services and tasks](/docs/services-and-tasks).
+
+<Callout title="TIP">
+Point the file at the published schema on the first line so editors (e.g. the Red Hat YAML extension) give you completion and validation:
+
+```yaml
+# yaml-language-server: $schema=https://agent-box.sh/schema/agentbox.schema.json
+```
+
+In-repo examples use a local relative path instead; published projects use the URL above.
+</Callout>
+
+## Top-level keys
+
+All four top-level keys are optional, and unknown keys are rejected (`additionalProperties: false`). A missing or empty `agentbox.yaml` is completely fine — `create` does not fail without one.
+
+| Key | Read by | Purpose |
+| --- | --- | --- |
+| `services` | supervisor | Long-running processes (map of name → spec). |
+| `tasks` | supervisor | One-shot units that run to completion before dependents. |
+| `ide` | host (`agentbox code`) | VS Code attach customizations; the supervisor ignores it. |
+| `defaults` | host (`@agentbox/config`) | Project-level AgentBox config defaults. |
+
+`carry` is also declared at the top level but is host-applied and parsed separately — see its [own section](#carry) below. Service and task **names** must match `[A-Za-z0-9_-]+`.
+
+A minimal valid file can be just one task — no web app or port required:
+
+```yaml
+# yaml-language-server: $schema=https://agent-box.sh/schema/agentbox.schema.json
+tasks:
+  install:
+    command: pnpm install
+```
+
+## Services
+
+A service is a long-running process. The spec requires `command`; unknown fields are rejected.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `command` | (required) | Shell string (run via `bash -c`) or an argv array. |
+| `cwd` | `/workspace` | Working directory; relative paths resolve against `/workspace`. |
+| `env` | — | Extra env vars; scalar values, coerced to strings. |
+| `autostart` | `true` | Start automatically when the daemon boots. |
+| `restart` | `on-failure` | Restart policy — see [needs and restart](#needs-and-restart). |
+| `backoff` | — | Exponential backoff between restarts. |
+| `needs` | — | DAG dependencies. |
+| `ready_when` | — | Readiness probe — see [ready_when](#ready_when). |
+| `expose` | — | Mark the one web service — see [expose](#expose). |
+| `ide` | — | Per-service VS Code hints (host-side only). |
+
+A service moves through `pending → waiting → starting → running → ready`, and can land in `unhealthy`, `crashed`, `backoff`, or `stopped`. Logs land at `/var/log/agentbox/<svc>.log` inside the box.
+
+Here is the `web` service from `examples/express-ready`:
+
+```yaml
+services:
+  web:
+    command: 'set -a; [ -f .env ] && . ./.env; set +a; node server.js'
+    needs: [install]
+    env:
+      PORT: '3000'
+      GREETING: 'hello from agentbox'
+    expose:
+      port: 3000
+      as: 80
+    ready_when:
+      port: 3000
+      timeout_ms: 60000
+    restart: on-failure
+```
+
+Manage a service from inside the box:
+
+```console
+$ agentbox-ctl restart web
+$ agentbox-ctl stop web
+$ agentbox-ctl start web
+```
+
+`stop` does not exit the daemon; `start` restarts a previously-stopped service.
+
+<Callout title="TIP">
+Use the array form of `command` to avoid shell quoting; use the string form (`bash -c`) when you need shell features like pipes, `&&`, or sourcing env files.
+</Callout>
+
+## Tasks
+
+A task is a one-shot unit that runs to completion. It accepts **only** four fields: `command`, `cwd`, `env`, and `needs`. Tasks cannot have `restart`, `autostart`, `backoff`, or `ready_when` — the schema rejects them. That is the key distinction from services.
+
+A task moves through `pending → waiting → running → done`, and can land in `failed` or `skipped`. Tasks run before dependent services via `needs:`. Typical use: install deps, build, seed a database.
+
+Make tasks **idempotent** — they re-run on every supervisor restart (which happens on box start, not just create). Guard slow paths with a marker file, as in the repo-root `agentbox.yaml`:
+
+```yaml
+tasks:
+  install:
+    command: |
+      set -e
+      MARKER=node_modules/.agentbox-installed
+      if [ -f "$MARKER" ]; then
+        echo "deps already installed (marker present) — skipping"
+        exit 0
+      fi
+      corepack enable >/dev/null 2>&1 || true
+      pnpm install --frozen-lockfile || pnpm install
+      touch "$MARKER"
+
+  build:
+    command: pnpm build
+    needs: [install]
+```
+
+Re-run a task in-box:
+
+```console
+$ agentbox-ctl run-task install
+$ agentbox-ctl run-task install --force
+```
+
+`run-task` resets the task to pending so the scheduler reruns it; it is a no-op on an already-`done` task unless you pass `--force`.
+
+<Callout type="warn" title="HEADS UP">
+Tasks re-run on every daemon start, not just at create. A non-idempotent task (an unguarded `git init`, a destructive migration) will fire repeatedly — guard it with a marker file.
+</Callout>
+
+## ready_when
+
+A per-service readiness probe. Exactly one of `port`, `log_match`, or `http` must be present.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `port` | — | TCP connect probe to `host:<port>`. |
+| `host` | `127.0.0.1` | Host for the `port` probe; ignored otherwise. |
+| `log_match` | — | Regex matched against the service's output; first match flips to `ready`. |
+| `http` | — | HTTP(S) URL; sends GET, waits for `expect_status` (default: any 2xx). |
+| `expect_status` | — | Specific status to wait for; only valid with `http`. |
+| `interval_ms` | `500` | Poll interval (ignored for `log_match`). |
+| `initial_delay_ms` | `0` | Delay before the first probe. |
+| `timeout_ms` | `60000` | Total time before timing out. |
+| `on_timeout` | `kill` | `kill` re-enters the restart policy; `mark_unhealthy` leaves the process running but flagged. |
+
+```yaml
+services:
+  api:
+    command: 'node server.js'
+    ready_when:
+      http: http://127.0.0.1:3000/health
+      expect_status: 200
+      timeout_ms: 60000
+```
+
+The `port` and `log_match` variants are one-liners: `port: 3000` or `log_match: 'listening on'`. Use `on_timeout: mark_unhealthy` as the escape hatch for legitimately slow cold starts.
+
+<Callout title="TIP">
+Downstream units gated with `needs: [api]` start only once the probe reports `ready`, not merely when the process spawns.
+</Callout>
+
+## expose
+
+`expose` marks a service as **the** web service. At most one service may set it.
+
+```yaml
+expose:
+  port: 3000
+  as: 80
+```
+
+`port` (1–65535) is the port the service listens on inside the box. `as` is the container port AgentBox forwards to it. The supervisor runs an in-process TCP forwarder binding container `:80` → `127.0.0.1:<port>` (the box's node binary has `cap_net_bind_service`, so binding `:80` works as non-root).
+
+Because `expose` is wired by the supervisor, not the container runtime, adding or changing it and running `agentbox-ctl reload` activates the web service with no box restart. The setup wizard relies on this when it writes `agentbox.yaml` after create.
+
+<Callout type="warn" title="HEADS UP">
+`as` must be `80` — it is the single container port AgentBox reserves for the published web URL. Any other value is rejected.
+</Callout>
+
+See [web apps and tunnels](/docs/web-apps-and-tunnels) for how the exposed port becomes a published URL on the host. VNC and screen sharing are separate — see [browser and screen](/docs/browser-and-screen).
+
+## needs and restart
+
+**`needs`** is an array of task/service names that must reach their terminal-good state before this unit starts, forming a DAG. Independent units launch in parallel. Cycles and unknown references are rejected at config load.
+
+**`restart`** (services only) controls relaunch:
+
+| Value | Behavior |
+| --- | --- |
+| `always` | Restart regardless of exit code. |
+| `on-failure` | (default) Restart only on a non-zero exit. |
+| `never` | Leave it dead after it exits. |
+
+**`backoff`** (services only) sets exponential backoff between restarts: `initial_ms` (default `500`), `max_ms` (default `30000`), `factor` (default `2`). The runtime enforces `max_ms >= initial_ms` — a cross-field rule the JSON Schema cannot express.
+
+The `examples/test-workspace` file contrasts all three restart modes:
+
+```yaml
+services:
+  ticker:
+    command: 'i=0; while true; do echo "tick $i"; i=$((i+1)); sleep 1; done'
+    restart: always
+
+  flaky:
+    command: 'echo starting; sleep 2; echo crashing; exit 1'
+    restart: on-failure
+    backoff:
+      initial_ms: 200
+      max_ms: 2000
+      factor: 2
+
+  one-shot:
+    command: 'echo "hello from one-shot"; sleep 1'
+    restart: never
+```
+
+After editing the DAG, apply the diff without restarting the box:
+
+```console
+$ agentbox-ctl reload
+added: (none)
+removed: (none)
+changed: web
+```
+
+<Callout type="warn" title="HEADS UP">
+A `needs` cycle or a reference to a non-existent unit fails validation — the daemon will not start, and on the host `agentbox create` aborts before doing any docker work.
+</Callout>
+
+See [background and parallel](/docs/background-and-parallel) for running multiple boxes, and [services and tasks](/docs/services-and-tasks) for the DAG model in prose.
+
+## defaults
+
+`defaults` is a host-side block: project-level AgentBox config defaults, with the **same shape as `~/.agentbox/config.yaml`**. The in-box supervisor ignores it entirely; `@agentbox/config` validates it strictly when the host loads it.
+
+It sits in AgentBox's layered precedence — CLI flag > workspace > **project (this block)** > global `~/.agentbox/config.yaml` > built-in default — so it is the place to pin per-project box-creation defaults.
+
+```yaml
+defaults:
+  box:
+    provider: docker
+```
+
+The full key set lives at `https://agent-box.sh/schema/user-config.schema.json`.
+
+<Callout title="TIP">
+Use `defaults` to make a repo "remember" its provider and checkpoint so teammates get the same box without passing flags.
+</Callout>
+
+See [configuration](/docs/configuration) for the full key set and precedence. Note the cross-provider gotcha: pinning provider-native snapshot ids in shared keys can collide — the configuration page covers the per-provider `box.defaultCheckpointDocker` / `...Daytona` / `...Hetzner` / `...Vercel` overrides.
+
+## carry
+
+`carry` is declared at the top level but is **host-applied**, not parsed by the supervisor (it has its own parser). It is a declarative host→box file copy that bypasses `.gitignore`. Each entry maps a host `src` to an in-box `dest`:
+
+| Field | Rule |
+| --- | --- |
+| `src` | Must start with `/`, `~/`, or `./`. `~/` = host home; `./` = project root. |
+| `dest` | Must start with `/` or `~/`. `~/` expands to `/home/vscode`. |
+| `mode` | Octal — accepts `0o600`, `"0600"`, or `"600"`. |
+| `user` | Numeric uid that owns the file in-box (default `1000` = `vscode`; `0` keeps it root-owned). |
+| `optional` | `true` skips a missing `src` silently instead of erroring. |
+
+A shorthand string form `"src=dest"` (or just `"src"` to mirror) is also accepted.
+
+```yaml
+carry:
+  - src: ~/.agentbox/carry-smoke/marker.txt
+    dest: ~/carried-marker.txt
+    mode: 0o600
+    optional: true
+```
+
+The canonical use case is developing AgentBox inside an AgentBox: carry `~/.agentbox/secrets.env` and `~/.agentbox/claude-credentials.json` so the in-box CLI is already authenticated.
+
+The host resolver blocks `..` traversal, denies `/proc|/sys|/dev|/etc/passwd|/etc/shadow`, caps each entry at 50 MiB (raise with `AGENTBOX_CARRY_MAX_BYTES`), and flags symlinks that escape `$HOME` and the project root. On `create`, `claude`, `codex`, and `opencode` the host prompts once — listing each src→dest with size, mode, and symlink warnings — before copying.
+
+```bash
+# auto-approve every carry entry for this box
+agentbox claude --carry-yes
+
+# skip the carry block entirely
+agentbox claude --carry skip
+```
+
+You can also set `AGENTBOX_CARRY_YES=1` or `AGENTBOX_CARRY=skip`. Note that `-y`/`--yes` does **not** auto-approve carry — a non-TTY `-y` with non-empty entries fails loud and asks for the explicit env var. `agentbox fork` is the exception: it sends carry by default (opt out with `agentbox fork --carry skip`).
+
+<Callout type="warn" title="HEADS UP">
+`carry` deliberately bypasses `.gitignore` and copies host files into the box. Treat the box as the untrusted side and only carry what the agent genuinely needs (credentials, env files). The per-entry cap is 50 MiB unless you raise `AGENTBOX_CARRY_MAX_BYTES`.
+</Callout>
+
+Mark credential entries `optional: true` so a box still comes up when a given file or agent isn't installed on the host. For how non-carry env files reach the box, see [environment](/docs/environment); for how git state is seeded, see [sync and git](/docs/sync-and-git) and [teleport a project](/docs/teleport-a-project).
+
+## Validating the file
+
+Editor validation is automatic via the schema modeline. The host CLI also pre-validates on `agentbox create` before any docker work — a config error aborts with a formatted message — and the in-box daemon re-validates on start. You can validate by hand inside the box without starting the daemon:
+
+```console
+$ agentbox-ctl validate
+OK: 1 service(s)
+```
+
+The path argument is optional and defaults to `/workspace/agentbox.yaml`. The command exits with code `2` on a syntax or shape error, or a missing file.
+
+<Callout title="TIP">
+The runtime parser and the JSON Schema are kept in lockstep by a drift test, so what your editor flags and what the daemon enforces agree — except cross-field rules like `max_ms >= initial_ms`, which only the runtime validator can catch.
+</Callout>
+
+See [cli](/docs/cli) for the host-side `agentbox status` and `agentbox logs` commands that proxy into the in-box supervisor.
