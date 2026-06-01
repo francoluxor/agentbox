@@ -19,6 +19,7 @@ import {
 } from './claude-pull.js';
 import { ensureVolume, volumeExists } from './docker.js';
 import { detectEngine, orbstackVolumePath } from './host-export.js';
+import { encodeClaudeProjectsKey } from './host-stage.js';
 
 export const SHARED_CLAUDE_VOLUME = 'agentbox-claude-config';
 export const DEFAULT_CLAUDE_SESSION = 'claude';
@@ -342,9 +343,26 @@ export async function ensureClaudeVolume(
     // predict every case, so we walk once and tell rsync to skip those entries.
     const reachableRoots = hasAgents ? [hostClaude, hostAgents] : [hostClaude];
     const brokenSymlinks = await findUnsyncableSymlinks(hostClaude, reachableRoots);
-    const rsyncExcludes = ['--exclude=node_modules'];
+    // Exclude the host-keyed `projects/` tree: its dir name encodes the host
+    // cwd, but the in-box claude (cwd /workspace) reads the `-workspace` key,
+    // so a verbatim copy never lines up and just leaks host paths into the
+    // volume. We re-add only the current project's memory below, rekeyed to
+    // -workspace. (Box-written -workspace sessions stay put — rsync has no
+    // --delete; session-teleport still uploads its single jsonl directly.)
+    const rsyncExcludes = ['--exclude=node_modules', '--exclude=/projects'];
     for (const rel of brokenSymlinks) rsyncExcludes.push(`--exclude=/${rel}`);
     const rsyncFlags = `-a --copy-unsafe-links ${rsyncExcludes.join(' ')}`;
+    // Rekey the host project's memory/ -> /dst/projects/-workspace/memory.
+    // The key is [A-Za-z0-9-] only (encodeClaudeProjectsKey), so it's shell-safe
+    // to interpolate. Empty snippet when no workspace or the helper finds no
+    // host memory dir (the `[ -d ... ]` guard).
+    const memoryKey = opts.hostWorkspace ? encodeClaudeProjectsKey(opts.hostWorkspace) : null;
+    const memoryRekeyStep = memoryKey
+      ? ` && { [ -d "/src-claude/projects/${memoryKey}/memory" ] && ` +
+        `mkdir -p /dst/projects/-workspace && ` +
+        `rm -rf /dst/projects/-workspace/memory && ` +
+        `cp -a "/src-claude/projects/${memoryKey}/memory" /dst/projects/-workspace/memory; true; }`
+      : '';
     args.push(
       opts.image,
       'sh',
@@ -389,6 +407,7 @@ export async function ensureClaudeVolume(
         ' && { [ -d /dst/plugins ] && [ -n "$HOST_HOME" ] && ' +
         'find /dst/plugins -maxdepth 1 -type f -name "*.json" ' +
         '-exec sed -i "s|$HOST_HOME/.claude/plugins/|/home/vscode/.claude/plugins/|g" {} +; true; }' +
+        memoryRekeyStep +
         ' && chown -R 1000:1000 /dst',
     );
     await execa('docker', args);
