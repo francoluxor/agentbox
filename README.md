@@ -6,6 +6,8 @@
 </h1>
 
 Run multiple agents in parallel, with a single command, on your PC, self-hosted, or in the cloud
+
+Works with [iterm2](https://agent-box.sh/docs/integrations-iterm2) - [cmux](https://agent-box.sh/docs/integrations-cmux) - [tmux](https://agent-box.sh/docs/integrations-tmux)
 <br>
 
 <p align="center">
