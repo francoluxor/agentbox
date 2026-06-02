@@ -6,6 +6,8 @@
 </h1>
 
 Run multiple agents in parallel, with a single command, on your PC, self-hosted, or in the cloud
+
+📚 **Full documentation: [agent-box.sh/docs](https://agent-box.sh/docs)**
 <br>
 
 <p align="center">
@@ -141,6 +143,18 @@ Uses `portless` to give box web apps the same URL from inside the box and on the
 - `agentbox relay` — Manage the host relay process (`status` / `stop` / `start` / `restart`)
 
 Run `agentbox <command> --help` for command-specific options.
+
+## Documentation
+
+Full documentation lives at **[agent-box.sh/docs](https://agent-box.sh/docs)**:
+
+- [Quickstart](https://agent-box.sh/docs) and [Core concepts](https://agent-box.sh/docs/core-concepts)
+- [Teleport a project](https://agent-box.sh/docs/teleport-a-project), [Run an agent](https://agent-box.sh/docs/run-an-agent), [Access your box](https://agent-box.sh/docs/access-your-box)
+- [Configuration](https://agent-box.sh/docs/configuration), [Services & tasks](https://agent-box.sh/docs/services-and-tasks), [Sync & git](https://agent-box.sh/docs/sync-and-git)
+- Cloud providers: [Hetzner](https://agent-box.sh/docs/hetzner), [Daytona](https://agent-box.sh/docs/daytona), [Vercel](https://agent-box.sh/docs/vercel)
+- Full [CLI reference](https://agent-box.sh/docs/cli)
+
+The docs are authored in [`apps/web/content/docs/`](./apps/web/content/docs).
 
 ## Development
 

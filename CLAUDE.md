@@ -62,6 +62,15 @@ When verifying a change:
 
 Each topic has a dedicated file under [`docs/`](./docs). Read the relevant one before changing that area.
 
+> **Keep the public docs in sync — every change.** The user-facing documentation
+> site lives in [`apps/web/content/docs/`](./apps/web/content/docs) (Fumadocs,
+> published at https://agent-box.sh/docs). Whenever you add or change a CLI
+> command, flag, config key, default, or provider/lifecycle behavior, update the
+> matching `.mdx` page (and `meta.json`/CLI reference) in the **same** change —
+> stale public docs are a bug. When the UI a figure shows changes, recapture it
+> per [`apps/web/images.md`](./apps/web/images.md). See [`apps/web/CLAUDE.md`](./apps/web/CLAUDE.md)
+> for the site's structure, theming, and build.
+
 - [`docs/architecture.md`](./docs/architecture.md) — the design doc: *why* the box/worktree/checkpoint model is shaped the way it is, and what was rejected.
 - [`docs/create-and-checkpoints.md`](./docs/create-and-checkpoints.md) — implementation reference for `agentbox create` (file/git handling) and the checkpoint capture/restore mechanics.
 - [`docs/repo-layout.md`](./docs/repo-layout.md) — the package tree, build wiring, and box-identifier / per-project-index resolution rules.
