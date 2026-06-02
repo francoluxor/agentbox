@@ -8,6 +8,7 @@ import {
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import { getMDXComponents } from '@/mdx-components';
+import { SITE } from '@/lib/site';
 
 // The sidebar groups are flat `---Label---` separators in meta.json, so the page
 // tree is a flat list. A page's group is the nearest separator that precedes it.
@@ -66,8 +67,30 @@ export async function generateMetadata(props: {
   const page = source.getPage(params.slug);
   if (!page) notFound();
 
+  const title = page.data.title;
+  const description = page.data.description;
+
+  // Re-specify siteName + image: Next shallowly merges the `openGraph`/`twitter`
+  // keys, so a page-level object replaces the root defaults rather than deep-
+  // merging into them.
   return {
-    title: page.data.title,
-    description: page.data.description,
+    title,
+    description,
+    alternates: { canonical: page.url },
+    openGraph: {
+      type: 'article',
+      siteName: SITE.name,
+      url: `${SITE.url}${page.url}`,
+      title,
+      description,
+      images: [SITE.ogImage],
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title,
+      description,
+      images: [SITE.ogImage.url],
+      creator: SITE.twitterCreator,
+    },
   };
 }
