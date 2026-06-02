@@ -1,0 +1,74 @@
+---
+title: Docker-in-Docker
+description: Run containers inside a box — storage drivers, caching, and cloud parity
+---
+
+Every AgentBox box ships its own `dockerd`, so an agent can `docker build`, `docker run`, and bring up Compose stacks without ever seeing your host's Docker daemon. The inner daemon lives in the box's own mount + network namespaces, so anything it spawns is contained — the same isolation guarantee described in [core-concepts](/docs/core-concepts).
+
+## Running Docker inside a box
+
+Docker-in-Docker is on by default — no flag needed. The box images bake `docker.io` + `iptables`, and an in-box `dockerd` is launched automatically once the supervisor comes up (`agentbox-dockerd-start`). It is relaunched on `agentbox start`, since `dockerd` dies with the container.
+
+The in-container `vscode` user is in the `docker` group, so the agent runs `docker` with no `sudo`.
+
+```bash
+agentbox shell mybox -- docker run --rm hello-world
+agentbox shell mybox -- bash -lc 'cd /workspace && docker compose up -d'
+```
+
+The inner daemon never touches your host Docker daemon. Use [`agentbox shell`](/docs/access-your-box) to drive it, let an [agent](/docs/run-an-agent) use it directly, or prefer the supervisor for long-lived processes — see [services-and-tasks](/docs/services-and-tasks) for Compose vs the supervisor.
+
+<Callout title="WHY">
+AgentBox never runs the outer container with `--privileged`. It grants only the capabilities DinD needs, which is exactly why the same setup works on cloud providers that reject privileged containers.
+</Callout>
+
+## Storage driver
+
+The storage driver is chosen automatically at runtime, not pinned in the image: the box prefers kernel-native `overlay2` and falls back to `fuse-overlayfs` only when the kernel can't support it. You don't configure anything.
+
+```bash
+agentbox shell mybox -- docker info --format '{{.Driver}}'
+```
+
+That prints `overlay2` on most hosts, but the result is host-dependent.
+
+<Callout type="warn" title="HEADS UP">
+Don't try to force `fuse-overlayfs` — it's broken on recent kernels (notably Docker Desktop's 6.x linuxkit kernel), where inner `docker run` fails at `execve()`. AgentBox auto-selects `overlay2` whenever the kernel supports it for exactly this reason. The host engine matters here — see [local-docker](/docs/local-docker).
+</Callout>
+
+## Shared build cache
+
+By default the data root `/var/lib/docker` is a per-box named volume, `agentbox-docker-<id>`, wiped on `agentbox destroy` — a clean slate per box.
+
+To make pulled image layers and build cache persist across boxes, opt into the shared cache. This swaps to the shared `agentbox-docker-cache` volume, which is preserved on `destroy` and allowlisted in `prune --all`.
+
+```bash
+agentbox create --shared-docker-cache -n cached-box   # uses agentbox-docker-cache volume
+# or set it as the default for every box
+agentbox config set box.dockerCacheShared true --global
+```
+
+`box.dockerCacheShared` works in any config layer — see [configuration](/docs/configuration) for precedence and [CLI commands](/docs/cli) for all flags.
+
+<Callout type="warn" title="HEADS UP">
+The shared cache is mutually exclusive at runtime: only one box can mount `agentbox-docker-cache` at a time. It's great for serial workflows but will conflict if you run boxes in [parallel](/docs/background-and-parallel).
+</Callout>
+
+## Cloud parity & limits
+
+[Daytona](/docs/daytona) and [Hetzner](/docs/hetzner) get the same DinD setup as the default docker provider — `dockerd` is auto-launched with no opt-in, and the data root lives on the sandbox/VPS filesystem (wiped with the box on `destroy`). [Vercel](/docs/vercel) cannot run nested containers at all.
+
+| Provider | DinD |
+|----------|------|
+| docker (default) | Yes — per-box volume; `--shared-docker-cache` available |
+| daytona | Yes — auto-launched; no shared-cache option |
+| hetzner | Yes — runs inside the VPS, baked into the prepare snapshot |
+| vercel | No — `CAP_SYS_ADMIN` + seccomp block nested containers |
+
+```bash
+agentbox shell <cloud-box> -- docker info
+```
+
+<Callout title="NOTE">
+`--shared-docker-cache` is a docker-provider feature only. The Vercel provider sets `launchDockerd: false`, so if your workflow needs `docker` inside the box, choose docker, daytona, or hetzner.
+</Callout>

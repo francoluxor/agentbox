@@ -1,0 +1,106 @@
+---
+title: Checkpoints & pausing
+description: Freeze a live box for sub-second context switches, and capture warm state new boxes can start from
+---
+
+Beyond "running," a box has four lifecycle states — **paused**, **stopped**, **checkpointed**, and **destroyed** — each a different cost and permanence trade-off.
+
+Two mechanisms are at play, and they're orthogonal. **Pause** and **stop** freeze a *single live box* for cheap context switching. **Checkpoints** capture a box's accumulated state into a reusable image so *new* boxes start warm. This builds on the box lifecycle from [Core concepts](/docs/core-concepts).
+
+## Pause & resume
+
+`agentbox pause <box>` runs `docker pause` — the cgroup freezer stops every process. Zero CPU, RAM stays mapped but pageable, nothing is lost. `agentbox unpause <box>` runs `docker unpause` and resumes in under a second: `vscode-server`, the TypeScript server, and any running agent pick up mid-instruction with no cache to rehydrate.
+
+This is the core trick for working across many boxes. Pause the one you're leaving, unpause the one you're entering — each switch is sub-second.
+
+```bash
+agentbox pause alpha     # docker pause — 0 CPU, RAM stays mapped
+agentbox unpause alpha   # docker unpause — resumes mid-instruction
+```
+
+The `<box>` argument is optional — it defaults to the only box in the current project, otherwise resolves by name, id, or project index (see [CLI commands](/docs/cli) for all flags).
+
+<Callout title="TIP">
+Pausing is the right move when juggling boxes in parallel — see [Background & parallel runs](/docs/background-and-parallel). A paused box keeps its full RAM working set, so resuming is instant but it still consumes memory. `stop` a box you won't touch for a while. On [Daytona](/docs/daytona), `pause` instead archives the sandbox to cold storage — it uses no quota while archived, but the first resume is slower.
+</Callout>
+
+## Stop & start
+
+`agentbox stop <box>` runs `docker stop`: zero cost. The container's writable layer persists, so `/workspace` — including `node_modules`, `.next`, `target`, `.venv`, and in-box `.env` files — survives the stop/start cycle natively. It's the writable layer, not a volume.
+
+`agentbox start <box>` runs `docker start` and relaunches the in-box daemons that die with the container: `agentbox-ctl` (the supervisor), the in-box `dockerd`, and `Xvnc`.
+
+The difference from pause: stop fully shuts the box down, freeing RAM and killing running processes, but everything on disk is intact. Pause keeps processes frozen in place.
+
+```bash
+agentbox stop alpha    # docker stop — writable layer (node_modules included) preserved
+agentbox start alpha   # docker start — relaunches ctl/dockerd/vnc daemons
+```
+
+On cloud providers, `stop` leaves the sandbox in your account with disk preserved; `start` re-resolves preview URLs and re-registers with the host relay.
+
+<Callout type="warn" title="HEADS UP">
+Stopping kills any running agent process and live services inside the box — only on-disk state survives. If a Claude or Codex session was running, you'll start a fresh one on next attach. To freeze a running agent in place instead, use `pause`.
+</Callout>
+
+## Checkpoints
+
+A checkpoint captures a box's accumulated state — all of `/workspace` (deps installed, project built, build caches) plus everything else the agent wrote into the writable layer — so a *new* box can start warm instead of from bare host code. Under the hood it's a `docker commit` into a project-scoped image; only metadata lives on the host.
+
+The primary workflow: after the setup wizard runs or a PR merges, capture a checkpoint with `--set-default` so every future box in the project inherits the warm state.
+
+```bash
+# Capture box `alpha` and pin it as the default for new boxes in this project
+agentbox checkpoint create alpha --set-default
+```
+
+See [CLI commands](/docs/cli) for the rest (`ls`, `set-default`, `rm`, `--name`, `--merged`, `--replace`). In-box agents capture through the host relay (`agentbox-ctl checkpoint`), so no host credentials leak into the box.
+
+```console
+$ agentbox checkpoint create alpha --set-default
+checkpoint alpha-1 (layered) -> /Users/you/.agentbox/checkpoints/<hash>/alpha-1  [project default]
+```
+
+<Callout title="TIP">
+`--set-default` writes the per-provider config key `box.defaultCheckpointDocker` (cloud providers get their own — `...Daytona`, `...Hetzner`, `...Vercel`). The bare `box.defaultCheckpoint` is the cross-provider fallback. See [Configuration](/docs/configuration).
+</Callout>
+
+## Warm starts
+
+The payoff of a checkpoint is booting a new box *from* it instead of building from scratch — workspace seeding is skipped entirely since the image already has `/workspace` populated. Two ways to start warm:
+
+- **Explicit** — `agentbox create --snapshot <ref>` (also works on `claude` / `codex` / `opencode`); overrides any configured default.
+- **Implicit** — once a checkpoint is `set-default`, every plain `agentbox create` in that project starts from it automatically.
+
+By default, starting from a checkpoint still merges the host's current branch and overlays your uncommitted changes on top of the captured state. `--no-resync` uses the frozen tree as-is.
+
+```bash
+# Start a fresh box from an explicit checkpoint
+agentbox create --snapshot warm -n beta
+```
+
+<Callout title="NOTE">
+Don't confuse `--snapshot <ref>` (start from a checkpoint — box-side warm state) with `--host-snapshot` (a per-box APFS clone of the host workspace, used only as a stable copy source in the no-git case). They're orthogonal. See [Teleport a project](/docs/teleport-a-project).
+</Callout>
+
+## Lifecycle & cost
+
+The writable layer is the agent's diff against the base image: it persists across pause and stop, and is discarded on `destroy`.
+
+| State | Trigger | Cost | What survives |
+| --- | --- | --- | --- |
+| Running | attached / agent working | full CPU + RAM | everything |
+| Paused | `agentbox pause` | 0 CPU, RAM pageable | processes frozen in place |
+| Stopped | `agentbox stop` | 0 | writable layer (`/workspace`, `node_modules`, in-box `.env`) |
+| Destroyed | `agentbox destroy` | container + per-box volumes purged | only checkpoints (project assets) |
+
+`agentbox destroy <box>` purges the container and all per-box state, but checkpoint images stay — they're cross-box project assets. To reclaim them, `agentbox prune --all` reaps unreferenced checkpoint images, or `agentbox checkpoint rm <ref>` deletes one explicitly.
+
+```bash
+agentbox destroy alpha          # purge container + per-box volumes (checkpoints kept)
+agentbox prune --all            # also reap unreferenced checkpoint images
+```
+
+<Callout type="warn" title="HEADS UP">
+`agentbox destroy` is irreversible for box-side state. Anything in the writable layer that wasn't committed to git, pushed, downloaded, or checkpointed is gone. Capture a checkpoint, or `git push` / `agentbox download` first — see [Sync & git](/docs/sync-and-git).
+</Callout>

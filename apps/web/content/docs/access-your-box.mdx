@@ -1,0 +1,129 @@
+---
+title: Access your box
+description: Reach into a running box with a shell, your IDE, the web URL, the live screen, files, and the dashboard
+---
+
+A box is a full computer, not just an agent REPL. Once it's running you can reach into it many ways — an interactive shell, the box's web app, its live desktop over VNC, one TUI that ties them all together, your desktop IDE, and the workspace files in Finder.
+
+Every command below takes an optional `<box>`. Omit it for the project's only box, or pass a project index (`1`, `2`, …), a name, an id prefix, or the container name. Run [`agentbox list`](/docs/cli) to see indices and names.
+
+<Callout title="NOTE">
+Most access commands auto-unpause a paused box and start a stopped one before connecting — `shell`, `code`, `url`, `screen`, and `open` all wake the box for you. See [Core concepts](/docs/core-concepts) for what a box actually is, and [Run an agent](/docs/run-an-agent) for the agent session specifically.
+</Callout>
+
+## Shell
+
+`agentbox shell [box]` drops you into `bash -l` as `vscode` in `/workspace`, inside a detachable tmux session. `Ctrl+a d` detaches without killing it, and closing the terminal doesn't kill it either — reattach later with `agentbox shell attach [box]`.
+
+A box can hold many shells (the agent is still exactly one per box): `--new` opens an auto-numbered shell, `-n <label>` opens or attaches a named one.
+
+```bash
+# interactive detachable shell (Ctrl+a d to detach)
+agentbox shell mybox
+
+# a second, named shell in the same box
+agentbox shell mybox -n logs
+
+# run a one-shot command (no tmux, machine-readable output)
+agentbox shell mybox -- npm run build
+```
+
+A one-shot `-- <cmd>` is never tmux-wrapped, so stdout stays clean for scripts. See [CLI commands](/docs/cli) for all flags.
+
+<Callout title="TIP">
+Same detach chord as the agent: `Ctrl+a d`. See [Background and parallel](/docs/background-and-parallel) for juggling many boxes.
+</Callout>
+
+## Web app URL
+
+`agentbox url [box]` opens the box's web app in your host browser. This works even when no service declares `expose:` — every box reserves the web port at create time, so the URL is always openable (you'll just get a connection error until something listens).
+
+```bash
+# open the box's web app in your browser
+agentbox url mybox
+
+# just print the URL (pipe into scripts)
+agentbox url mybox --print
+```
+
+The URL form depends on the engine (OrbStack `.orb.local`, Docker Desktop Portless `<box-name>.localhost`, cloud preview HTTPS). See [CLI commands](/docs/cli) for `--loopback`, `--ttl`, and other flags.
+
+<Callout title="WHY">
+On Docker Desktop, AgentBox uses [Portless](https://portless.sh) so the box's web app gets the same `<box-name>.localhost` URL from inside the box and on the host — one origin for OAuth, CORS, and `allowedDevOrigins`. The full story is in [Web apps and tunnels](/docs/web-apps-and-tunnels).
+</Callout>
+
+## Live screen
+
+`agentbox screen [box]` opens the box's live desktop in your browser over noVNC. This is where you watch the in-box headed Chromium the agent drives, or any other GUI process. The per-box VNC password is embedded in the auto-connect URL, so the browser jumps straight to the desktop.
+
+```bash
+# watch the box's desktop (in-box browser, GUI apps) in your browser
+agentbox screen mybox
+
+# print the noVNC URL instead of opening
+agentbox screen mybox --print
+```
+
+This is distinct from `agentbox url`: `url` opens the web app, while `screen` opens the desktop. A box created with `--no-vnc` has no screen. The shared `--loopback` / `--ttl` flags are in [CLI commands](/docs/cli).
+
+{/* SCREENSHOT /screenshots/novnc-desktop.png — REPRO: agentbox screen <box> --print to get the noVNC URL (https://<box>.localhost/vnc.html?autoconnect=1&password=...), open it in a headless browser, wait for the canvas to connect, screenshot the ~1044x800 canvas, then wrap that capture in a fake browser chrome (browser-in-browser). Full recipe in apps/web/images.md → Phase A. */}
+<Figure src="/screenshots/novnc-desktop.png" caption="noVNC view of a box's desktop, with the in-box Chromium open." />
+
+The deeper VNC and agent-browser story lives in [Browser and screen](/docs/browser-and-screen).
+
+## Dashboard
+
+`agentbox dashboard` is the interactive TUI: a sidebar box list grouped by project on the left, and the selected box's live agent session on the right.
+
+```bash
+# the box list + live agent session TUI
+agentbox dashboard
+
+# scope to the current project only
+agentbox dashboard --project
+```
+
+Switch boxes with `Control+Option+↑/↓`. Everything else is a `Ctrl+a` leader chord — press `Ctrl+a` to show the which-key menu in the footer, then a single key (`c` code, `s` screen, `u` url, `p` pause, and so on). These shell out to the same commands above, so they inherit the same behavior.
+
+{/* SCREENSHOT /screenshots/dashboard.png — REPRO: drive the TUI via the PTY harness — pnpm drive start --cols 96 --rows 19 --cwd <project> -- agentbox dashboard <box> ; pnpm drive screen <id> ; strip the pnpm/tsx wrapper lines ; render via /tmp/gen-term.js and screenshot headlessly. */}
+<Figure src="/screenshots/dashboard.png" caption="The dashboard: box sidebar on the left, actions for the selected box on the right, chord hints in the footer." />
+
+<Callout title="TIP">
+The dashboard is the cockpit for parallel work — see [Background and parallel](/docs/background-and-parallel) for running many boxes at once, and [Run an agent](/docs/run-an-agent) for the agent session shown on the right. The full command reference is in the [CLI](/docs/cli) page.
+</Callout>
+
+## VS Code / Cursor
+
+`agentbox code [box]` opens VS Code or Cursor Desktop attached to the box via the Dev Containers extension, with `/workspace` as a remote folder. It auto-detects your IDE (prefers `code`, falls back to `cursor`); force a flavor with `--ide`. See [CLI commands](/docs/cli) for all flags.
+
+```bash
+# open the box in your IDE (auto-detects code, falls back to cursor)
+agentbox code mybox
+
+# force a flavor
+agentbox code mybox --ide cursor
+```
+
+It also writes `/workspace/.vscode/tasks.json` so the IDE auto-opens terminal panels tailing each service's log, from the [services and tasks](/docs/services-and-tasks) you declare in `agentbox.yaml`.
+
+<Callout type="warn" title="HEADS UP">
+The first attach to a fresh box downloads the IDE server (~70MB, keyed to your desktop IDE version). It's a one-time cost per box; later attaches are instant.
+</Callout>
+
+<Figure src="/screenshots/cursor.png" caption="Cursor attached to a box's /workspace via Dev Containers, with service-log terminal panels auto-opened" />
+
+## Open files
+
+`agentbox open [box]` opens the box's `/workspace` in Finder. The merged `/workspace` only exists inside the container, so `open` first rsyncs it to a per-box host directory and then launches Finder. The export is a snapshot, refreshed on demand — re-run to re-sync. See [CLI commands](/docs/cli) for flags like `--no-refresh`, `--include-node-modules`, and `--path`.
+
+```bash
+# rsync /workspace and open it in Finder
+agentbox open mybox
+
+# print the host path without opening Finder (for editors/scripts)
+agentbox open mybox --path --no-refresh
+```
+
+<Callout type="warn" title="HEADS UP">
+`agentbox open` is a snapshot for browsing, not a sync-back. To merge box changes into your host workspace use `agentbox download` (see [Sync and git](/docs/sync-and-git)), and capture state with [checkpoints](/docs/checkpoints-and-pausing) before you destroy — the export under `~/.agentbox/boxes/<id>/` is wiped on destroy.
+</Callout>

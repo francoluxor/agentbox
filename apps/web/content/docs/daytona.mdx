@@ -1,0 +1,115 @@
+---
+title: Daytona
+description: Managed cloud sandboxes seeded from a git bundle, with shared credential volumes
+---
+
+Use Daytona when the work outgrows your laptop, a teammate needs to attach, or you want a snapshot-ready remote environment. A Daytona box is a managed cloud sandbox (default **2 vCPU / 4 GB RAM / 8 GB disk**) seeded from your host repo, with agent static config baked into a published snapshot and renewable tokens on a shared per-org volume.
+
+Daytona is one of AgentBox's four backends — see [the provider model](/docs/core-concepts) and its siblings [local Docker](/docs/local-docker), [Hetzner](/docs/hetzner), and [Vercel](/docs/vercel).
+
+<Callout title="TIP">
+Switch one box with `--provider daytona`, or pin a project with `box.provider: daytona` in [`agentbox.yaml`](/docs/agentbox-yaml). The rest of the CLI (`shell`, `claude`, `url`, `cp`, `checkpoint`, …) routes on `box.provider` automatically. See [configuration](/docs/configuration).
+</Callout>
+
+## Set up
+
+`agentbox daytona login` prompts for your `DAYTONA_API_KEY` (required) and `DAYTONA_ORGANIZATION_ID` (optional), and persists them to `~/.agentbox/secrets.env`. Your project `.env` is never harvested.
+
+```bash
+agentbox daytona login
+```
+
+`agentbox daytona create|claude|codex|opencode` is sugar for the same command with `--provider daytona`. The first time you use `--provider daytona`, the login prompt fires automatically.
+
+## Prepare image
+
+Unlike Docker, Daytona does **not** auto-build the box image on first `create`. Run `agentbox prepare --provider daytona` once per org: it builds a **base snapshot** server-side (runtime + your agent static config — plugins, skills, settings, Codex/OpenCode config) and pins it into project config as `box.image`, so later creates boot in seconds.
+
+```bash
+# one-off, ~7 min — bakes the base snapshot
+agentbox prepare --provider daytona
+```
+
+See [CLI commands](/docs/cli) for all flags.
+
+<Callout type="warn" title="HEADS UP">
+Without `prepare`, every first box in a new project eats a ~7-minute cold Dockerfile build on Daytona (Playwright + Chromium). Run `prepare` once.
+</Callout>
+
+The base snapshot is shared org-wide and holds only runtime + agent config. A later **project setup snapshot** captured with `agentbox checkpoint create` also includes `/workspace`. See [checkpoints & pausing](/docs/checkpoints-and-pausing).
+
+## Workspace seeding
+
+Docker bind-mounts your `.git/`; Daytona can't, so each box is seeded from a host git clone plus your uncommitted and untracked files. Booting from a checkpoint skips the seed entirely. See [teleport a project](/docs/teleport-a-project) for how files reach the box.
+
+<Callout title="WHY">
+`git push` from inside a Daytona box works without your SSH keys ever entering the sandbox — pushes tunnel back through the host relay. See [sync & git](/docs/sync-and-git).
+</Callout>
+
+## Credentials & resync
+
+Agent *static config* is baked into the snapshot at `prepare` time. *Renewable tokens* (Claude `.credentials.json`, Codex/OpenCode `auth.json`) live on a shared per-org volume, kept separate so they refresh without republishing the snapshot.
+
+After re-authing an agent on the host, run `agentbox daytona resync` to re-upload the tokens.
+
+```bash
+# re-upload all agent credentials after a host re-auth
+agentbox daytona resync
+```
+
+See [run an agent](/docs/run-an-agent) for logging agents in on the host first, and [CLI commands](/docs/cli) for all flags.
+
+## Preview URLs
+
+Cloud boxes run the same `@agentbox/relay` in box mode, reached over preview URLs:
+
+- **Signed** — token embedded in the URL; a browser attaches by click. Used by `agentbox url` and `agentbox screen`.
+- **Header-token** — used by programmatic clients (the poller, cp/upload helpers).
+- **Per-service** — every `services.*.expose.port` in `agentbox.yaml` gets its own URL, alongside the WebProxy URL on port **8080**.
+
+```bash
+# open / print the box's web preview URL
+agentbox url
+```
+
+```bash
+# the noVNC desktop (port 6080)
+agentbox screen
+```
+
+<Callout title="TIP">
+AgentBox gives the host browser and the in-box agent **symmetric** `https://<box-name>.localhost` URLs via Portless, so a URL doesn't change depending on which side you're on. See [web apps & tunnels](/docs/web-apps-and-tunnels) and [browser & screen](/docs/browser-and-screen).
+</Callout>
+
+## Checkpoints & snapshots
+
+Cloud checkpoints map to Daytona snapshots, each paired with a local host manifest. The box must be running to capture one, so AgentBox resumes or starts it first.
+
+```bash
+# capture /workspace state (deps installed, DB seeded, …) and make it the default
+agentbox checkpoint create --set-default
+```
+
+`--set-default` writes `box.defaultCheckpointDaytona`, a per-provider key so Docker creates in the same project don't pick up a snapshot they can't resolve. Booting from a snapshot **skips workspace seeding** entirely — cold create is seconds.
+
+```bash
+# boot a fresh box straight from a saved snapshot (no reseed)
+agentbox create --provider daytona --checkpoint setup
+```
+
+Two differences from Docker: there is no `--merged` (Daytona snapshots are flattened by construction) and no `--replace` (deletes are async — `checkpoint rm` then recreate). Full mechanics live in [checkpoints & pausing](/docs/checkpoints-and-pausing).
+
+## Caveats
+
+- **Custom `--size` only applies on the from-image create** — snapshot-based creates inherit the snapshot's baked size, so bake the size you want at first create or `prepare` time.
+- **No base image auto-build** — `prepare --provider daytona` is required, unlike Docker.
+- **No live stats** — `agentbox top` and `dashboard` render `—` for cloud CPU/mem and no live attach pane.
+- **Destroy lag in the dashboard** — the resource is gone immediately, but the Daytona web UI lags ~30s (cosmetic).
+- **`download.env|config|claude` not implemented for cloud** — `download.workspace` works.
+
+```bash
+# find and clean up Daytona sandboxes AgentBox no longer tracks
+agentbox prune --provider daytona
+```
+
+Every command honors `box.provider`, so once a project pins Daytona the whole CLI routes there. Flag-level detail is in the [CLI reference](/docs/cli); the per-provider config keys (`box.imageDaytona`, `box.sizeDaytona`, `box.defaultCheckpointDaytona`, `box.bundleDepth`, `box.provider`) are in [configuration](/docs/configuration).

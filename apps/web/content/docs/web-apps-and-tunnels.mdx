@@ -1,0 +1,101 @@
+---
+title: Web apps & tunnels
+description: Expose a box web app at the same URL inside the box and on your host
+---
+
+A box can run a web app and reach it from your host browser at the same URL the box itself sees. You declare the service in [`agentbox.yaml`](/docs/agentbox-yaml) with `expose:`; the in-box [supervisor](/docs/services-and-tasks) forwards it to the box's reserved port `80`, and `agentbox url` opens it. With Portless (Docker) or cloud preview URLs, the same `https://<box>.localhost` (or public HTTPS) URL works from inside the box and from your host — so OAuth callbacks, CORS, and Next.js dev origins line up on both sides.
+
+## Expose a web service
+
+Mark exactly one service in `agentbox.yaml` with an `expose:` block to make it *the* web service for the box. `expose.port` is the port the service listens on **inside the box**; `expose.as` is the container port the supervisor forwards to, which must be `80` (the only port AgentBox reserves).
+
+```yaml
+services:
+  web:
+    command: 'npm run dev'
+    needs: [install]
+    env:
+      PORT: '3000'
+    expose:
+      port: 3000
+      as: 80
+    restart: on-failure
+```
+
+Every box reserves container `:80` at create time, so you can add `expose:` to an existing box — no recreate, just `agentbox-ctl reload` inside the box (the setup wizard does this for you). Until a service declares `expose:`, `agentbox list` and `agentbox status` show the web endpoint as `web  reserved (...)`.
+
+See [agentbox.yaml](/docs/agentbox-yaml) for the full `expose` schema and [Services & tasks](/docs/services-and-tasks) for the service model.
+
+## Readiness
+
+Gate the URL behind a readiness probe so it isn't considered live until the service is actually up. Add a `ready_when:` probe (TCP port, log regex, or HTTP check) to the service — see [agentbox.yaml](/docs/agentbox-yaml) for the full probe spec.
+
+To gate a script on the whole box, `agentbox wait` blocks until all autostart tasks and services are ready.
+
+```bash
+agentbox wait my-box
+```
+
+<Callout title="TIP">
+Use `on_timeout: mark_unhealthy` for slow cold starts (heavy frameworks, first-run compilation) so the supervisor doesn't kill-and-restart a process that's simply still booting.
+</Callout>
+
+## Same URL inside & out
+
+The box and the host see the **same** URL for the web app, so OAuth redirects, CORS allowlists, and Next.js `allowedDevOrigins` line up. How that URL is produced depends on your Docker runtime: **OrbStack** gives every container auto-DNS (`http://agentbox-<name>.orb.local`), while **Docker Desktop** has no per-container DNS, so AgentBox offers **Portless** on first run — a proxy that yields `https://<box-name>.localhost` (or `http://<box-name>.localhost:1355` on the no-TLS fallback).
+
+The in-box browser (`agentbox screen`) loads the **same** `<box-name>.localhost` URL the host uses, so the app is one origin from both sides.
+
+```bash
+agentbox url my-box
+agentbox url my-box --print
+```
+
+`agentbox url` opens the web app; `--print` prints the URL instead of launching the browser. See [CLI commands](/docs/cli) for all flags.
+
+<Figure src="/screenshots/web-app.png" caption="The web app at https://my-box.localhost — the same URL resolves from the host browser and from the in-box browser shown via agentbox screen." />
+
+<Callout title="WHY">
+Same origin on both sides means OAuth callbacks and CORS just work. Point your provider's redirect URI at `https://<box-name>.localhost` and it resolves correctly whether the request comes from your host browser or the in-box browser.
+</Callout>
+
+See [Local Docker](/docs/local-docker) / [Configuration](/docs/configuration) for Portless setup and the `portless.*` config keys.
+
+## Cloud preview URLs
+
+On cloud providers the web app gets a **public HTTPS preview URL** instead of a `.localhost` route. `agentbox url` and `agentbox screen` route on `box.provider` automatically, and `--loopback` is ignored for cloud boxes.
+
+- **[Daytona](/docs/daytona):** a *signed* preview URL with the token embedded; default TTL 3600s, override with `--ttl <seconds>`.
+- **[Vercel](/docs/vercel):** a public token-free `sandbox.domain(port)` URL, reachable from host and box.
+- **[Hetzner](/docs/hetzner):** an SSH local port-forward over the per-box ControlMaster, decorated with a Portless `<box-name>.localhost` alias for the same symmetric URL as Docker.
+
+```bash
+agentbox url my-cloud-box
+agentbox url my-cloud-box --ttl 86400
+```
+
+<Callout title="TIP">
+`agentbox url` and `agentbox screen` route on the box's provider automatically — the same command opens an `.orb.local` route, a Portless `.localhost` URL, a Daytona signed proxy URL, or a Vercel public domain depending on where the box lives.
+</Callout>
+
+## Extra ports
+
+`expose:` covers *one* web service on container `:80`. Reaching any *additional* port depends on the provider:
+
+| Provider | Extra ports |
+| --- | --- |
+| Docker | Only `:80` (web) and `:6080` (noVNC) are host-published; shell in to hit other ports |
+| Hetzner | On-demand SSH forwards reach *any* in-box port |
+| Vercel | Up to 4 exposed ports (3 already spent on `80`/`6080`/`8788`) |
+| Daytona | Per-service preview URLs for each `expose.port` |
+
+```bash
+# Reach the box from a shell and hit an internal port directly
+agentbox shell my-box -- curl -s http://127.0.0.1:9000/health
+```
+
+<Callout type="warn" title="HEADS UP">
+Docker boxes only publish the web port (`:80`) and noVNC (`:6080`) to the host. Put the service you want exposed on the `expose: as: 80` web slot, or use a cloud provider when you genuinely need multiple host-reachable ports.
+</Callout>
+
+See [Access your box](/docs/access-your-box) for getting a shell, and the [Hetzner](/docs/hetzner), [Vercel](/docs/vercel), and [Daytona](/docs/daytona) pages for each provider's port model.

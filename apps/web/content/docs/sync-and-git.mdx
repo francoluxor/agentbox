@@ -1,0 +1,127 @@
+---
+title: Sync & git push
+description: Get untracked work back to the host and reach remotes through the host relay with explicit approval
+---
+
+Commits made inside a box land on your host the instant the agent runs `git commit`. The box's `/workspace` is a git worktree on branch `agentbox/<box-name>` against the **same `.git/`** that is bind-mounted from your host, so committed work needs no sync step. See [core concepts](/docs/core-concepts) for the worktree model.
+
+Two things do not cross automatically: **untracked files** (gitignored artifacts, env files, build output) and **anything that needs your credentials** — `git push`, `git fetch`, and pull-request operations. SSH keys and tokens never enter the box. This page covers both: pulling untracked work back to the host, and reaching the network through the [host relay](/docs/core-concepts).
+
+<Callout title="TIP">
+Tracked commits are already on your host. You only need the tools on this page for untracked files and for anything that talks to a remote (push, fetch, PR ops).
+</Callout>
+
+## Download your workspace
+
+`agentbox download [box]` copies `/workspace` from the box back into your host workspace. It is gitignore-aware by default — it brings down tracked and relevant files while respecting `.gitignore`.
+
+The `[box]` argument is optional and defaults to the box for the current project (or pass an index, name, id-prefix, or container). The command prompts for confirmation and shows a change list; `--dry-run` prints that list and exits without writing, and `-y` skips the prompt.
+
+```bash
+# Pull the box workspace back to the host (gitignore-aware), with confirmation
+agentbox download
+
+# Preview the change list without writing anything
+agentbox download --dry-run
+
+# Target a specific box, skip the prompt
+agentbox download 2 -y
+```
+
+Gitignored env and config files are excluded by default. Use `--with-env` to also pull them, or the narrowing verbs `download env` and `download config` to scope to env files or `agentbox.yaml` only. See [CLI commands](/docs/cli) for all flags.
+
+```bash
+# Also bring down gitignored env/config files
+agentbox download --with-env
+```
+
+<Callout title="TIP">
+Run `agentbox download --dry-run` first to see exactly which files would change on the host before committing to the copy.
+</Callout>
+
+Cloud boxes (`--provider daytona`, `vercel`, `hetzner`) do a bulk tar pull of `/workspace` and do **not** support gitignore-aware change detection or `--dry-run`. On cloud, the git-aware sync-back path is in-box `git push`. See [Daytona](/docs/daytona), [Vercel](/docs/vercel), [Hetzner](/docs/hetzner).
+
+## Copy files
+
+`agentbox cp <src> [dst]` is a one-off file copy between host and box, modeled on `docker cp`. Direction is inferred from which argument carries the `box:` prefix (a `:` not preceded by `/`): `box:/path` as the source downloads, `box:/path` as the destination uploads.
+
+```bash
+# Download a single file into the current directory
+agentbox cp mybox:/workspace/.env
+
+# Download to an explicit host path
+agentbox cp mybox:/etc/foo ./foo
+
+# Upload a file into the box (host path required)
+agentbox cp ./local.txt mybox:/workspace/
+
+# Upload a directory (recursive)
+agentbox cp ./dir mybox:/workspace/
+```
+
+On download the host path is optional and defaults to the current directory; on upload it is required. Directories copy recursively and preserve mode; uploaded files are re-owned to `vscode` (uid 1000). The box auto-unpauses if needed.
+
+<Callout type="warn" title="HEADS UP">
+Exactly one side must carry the `name:` prefix. `agentbox cp ./a ./b` (neither side) or `agentbox cp box:/a box:/b` (both sides) is a usage error.
+</Callout>
+
+## Push & pull via the relay
+
+The box has no git credentials — no SSH keys, no tokens. Anything that hits a remote runs on the **host relay**, a small process on your machine that executes git with your real SSH agent and `~/.gitconfig`, then streams output back into the box.
+
+From the **host** you run `agentbox git <sub> <box>`. **Inside the box, plain `git` already does the right thing:** a small `git` shim on the box's `PATH` transparently routes the four network ops — `push`, `pull`, `fetch`, `clone` — through the relay (the explicit equivalent is `agentbox-ctl git <sub>`). Local ops — `commit`, `status`, `add`, `log`, `diff`, … — fall through to real `git` and run normally against the box's checkout. Since commits are already local, `push` is the op that truly needs the relay; `pull` is a relay fetch plus a local merge in `/workspace`.
+
+```bash
+# Push the box's branch to its remote
+agentbox git push 2
+
+# Fetch + merge inside the box's /workspace
+agentbox git pull 2
+
+# Switch the box onto main and pull latest (reuse the box for a new task)
+agentbox git pull 2 main
+```
+
+Passing a branch to `pull` checks it out, then pulls latest — the clean way to rebase a box onto a fresh base and [reuse it for a new task](/docs/background-and-parallel). For all flags and the local `checkout`/`status` ops, see [CLI commands](/docs/cli).
+
+For HTTPS remotes, run `gh auth login` and `gh auth setup-git` on the host once so plain `git push` uses gh's token via git's credential helpers — no relay change needed. See [teleport a project](/docs/teleport-a-project).
+
+<Callout type="warn" title="HEADS UP">
+Plain `git push` inside the box just works: a `git`/`gh` shim routes network ops through the host relay, which runs them with your credentials and asks you to approve writes. Keys and tokens never enter the box. (Use a bare `git push`, not `git push <remote> <branch>`.)
+</Callout>
+
+{/* DIAGRAM /diagrams/sync-and-git.png — nano-banana-pro, home-diagram style ref. Recipe + prompt in apps/web/images.md → Phase D. */}
+<Figure src="/diagrams/sync-and-git.png" caption="On a cloud box, the workspace is a git-bundle copy: git commit lands instantly in the box's own .git. Pushing to your remote runs through the host relay, with your approval." />
+
+## Pull requests
+
+The relay also proxies the host `gh` CLI: `agentbox git pr <op> <box>` from the host, or — inside the box — plain `gh pr <op>`, which the box's `gh` shim routes through the relay the same way (the explicit form is `agentbox-ctl git pr <op>`). `gh` runs in the host main repo and infers the repo from `git remote -v`. This needs `gh` installed and `gh auth login` on the host.
+
+`create` is the default op, so `agentbox git pr <box>` opens a PR for the box's branch. The full op set (`view`, `list`, `diff`, `merge`, `comment`, …) lives in [CLI commands](/docs/cli).
+
+```bash
+# Open a PR for the box's branch (--head defaults to the box branch)
+agentbox git pr create 2 --title "Add feature X" --body "..."
+
+# Inside the box
+agentbox-ctl git pr create --title "Add feature X"
+```
+
+## Git permissions
+
+Every relay write op — `git push`, `gh pr create`/`merge`/`comment`/…, and `pr checkout` — raises a host-side approval prompt and proceeds only on a `y`. Read-only ops (`status`, `pr view`/`list`/`diff`) run without prompting. This is the safe-by-default promise: the agent inside the box can *ask* to push, but a human at the host approves it, and the credentials never leave the host. See [core concepts](/docs/core-concepts) for the security model. Env knobs for unattended boxes (`AGENTBOX_GH_NO_SUB`, …) are documented in [CLI commands](/docs/cli) and [background & parallel](/docs/background-and-parallel).
+
+<Callout title="TIP">
+Running a remote-write command yourself from the host auto-approves via a one-time token — no second prompt. The prompt exists for when the **agent inside the box** initiates the action.
+</Callout>
+
+{/* SCREENSHOT /screenshots/push-approval.png — REPRO: attach `agentbox claude` on a git repo with a remote (e.g. ../agentbox-test-repo-gh), prompt the agent to push to a new branch and open a PR; the host relay surfaces a Y/N approval band in the attached session footer when the agent runs git push / gh pr create. Capture by --window-id while it blocks, crop the iTerm status bar. Full recipe in apps/web/images.md → Phase C. */}
+<Figure src="/screenshots/push-approval.png" caption="The agent requests a push or pull request from inside the box; you approve it on the host (here, a gh pr create gated by the relay)." />
+
+## Related
+
+- [Core concepts](/docs/core-concepts) — the worktree, shared `.git/`, and relay security model
+- [Checkpoints & pausing](/docs/checkpoints-and-pausing) — a checkpoint preserves the box's full state; `download` extracts files
+- [Background & parallel](/docs/background-and-parallel) — reusing a box via `git pull <branch>`; `AGENTBOX_GH_NO_SUB` for unattended boxes
+- [CLI reference](/docs/cli) — full flags for `download`, `cp`, `git`, and `relay`
+- [Configuration](/docs/configuration) — relay management and related config keys

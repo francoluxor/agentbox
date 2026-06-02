@@ -1,0 +1,282 @@
+---
+title: Configuration keys
+description: User config keys and how the layers resolve
+---
+
+AgentBox reads layered defaults at the start of every command. The same key shape lives in three files plus a runtime CLI-flag layer, so a preference can be a one-off flag, sticky for one project, or shared with your whole team.
+
+You rarely need to touch config — every key has a built-in default and most surfaces also expose a one-off CLI flag. Config is for making a preference stick.
+
+<Callout title="TIP">
+Don't memorize keys. `agentbox config list` prints every key with its current value and where it came from, and `agentbox config list --include-advanced` adds the advanced ones.
+</Callout>
+
+## Config layers
+
+AgentBox merges four layers on top of the built-in defaults. Highest layer that sets a key wins:
+
+```
+CLI flag > workspace defaults: > per-project > global > built-in default
+```
+
+| Layer | Where it lives | Scope |
+| --- | --- | --- |
+| CLI flag | the command you type | this invocation only, never persists |
+| workspace | the `defaults:` block in `agentbox.yaml` | committed, shared with the team |
+| per-project | `~/.agentbox/projects/<hash>/config.yaml` | per machine, per user, not committed |
+| global | `~/.agentbox/config.yaml` | every project on this machine |
+| built-in | `BUILT_IN_DEFAULTS` in the CLI | the fallback for any unset key |
+
+The per-project `<hash>` is the first 16 hex chars of the SHA-1 of the project's absolute path. The workspace layer is found by walking up from the current directory to the nearest `agentbox.yaml`.
+
+`config set`/`unset`/`edit` only write the `--global` or `--project` files (project is the default). The committed `defaults:` block is hand-edited — see [agentbox.yaml](/docs/agentbox-yaml) for its full schema. `engine.kind` is the one key applied at CLI startup; every other key flows through the per-command effective-config load.
+
+{/* DIAGRAM /diagrams/configuration.png — nano-banana-pro, home-diagram style ref. Recipe + prompt in apps/web/images.md → Phase D. */}
+<Figure src="/diagrams/configuration.png" caption="Config resolution order: the highest layer that sets a key wins; unset keys fall through to the built-in default." />
+
+## The config command
+
+Seven subcommands: `get`, `set`, `unset`, `list`, `path`, `edit`, `list-projects`. The default write scope is `--project`. Pass at most one scope flag.
+
+```bash
+# Read the effective value of a key (and where it came from)
+agentbox config get box.provider
+
+# Set a key (default scope is --project)
+agentbox config set box.withPlaywright true
+
+# Set a key globally for all projects
+agentbox config set box.provider hetzner --global
+
+# Remove a key from a scope (default --project)
+agentbox config unset box.image --project
+
+# List effective config; advanced keys hidden unless you ask
+agentbox config list
+agentbox config list --include-advanced
+
+# List one layer's raw values
+agentbox config list --scope global
+agentbox config list --scope workspace
+
+# Print or open a scope's file
+agentbox config path --workspace
+agentbox config edit --global
+
+# Show directories that have per-project config recorded
+agentbox config list-projects
+```
+
+`config get --all` shows every layer's value with its source — the fastest way to see why a key resolved the way it did:
+
+```console
+$ agentbox config get box.provider --all
+box.provider:
+  effective: hetzner   (global ~/.agentbox/config.yaml)
+  cli:       <unset>
+  workspace: <unset>
+  project:   <unset>   ~/.agentbox/projects/3f2a…/config.yaml
+  global:    hetzner   ~/.agentbox/config.yaml
+  default:   docker
+```
+
+`<unset>` is the literal token the CLI prints for an absent value. `get`, `set`, `list`, `path`, and `list-projects` all accept `--json`. `set` coerces the value to the key's declared type (bool/int/enum/string) and errors on an invalid enum or non-int. There is no `config set --workspace`; to change the committed `defaults:`, edit `agentbox.yaml` (or run `config edit --workspace`, which just opens that file).
+
+<Callout title="WHY">
+`agentbox config get <key>` validates the key — an unknown key errors. Use it to sanity-check spelling before `set`.
+</Callout>
+
+<Callout type="warn" title="HEADS UP">
+`box.snapshot` was renamed to `box.hostSnapshot`. The old name now errors with a migration hint — update any config or `agentbox.yaml` still using it. AgentBox is pre-1.0, so there are no compatibility aliases.
+</Callout>
+
+## box.* — the box keys
+
+The largest group. A pattern runs through it: a generic key plus per-provider overrides of the form `<key><Provider>` (e.g. `box.sizeHetzner`). The provider-specific form wins over the generic one for that provider. This applies to `box.size*`, `box.image*`, and `box.defaultCheckpoint*`.
+
+### Provider
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `box.provider` | enum `docker`/`daytona`/`hetzner`/`vercel` | `docker` | backend new boxes are created on |
+
+```bash
+agentbox config set box.provider hetzner --global
+```
+
+See [local Docker](/docs/local-docker), [Hetzner](/docs/hetzner), [Daytona](/docs/daytona), [Vercel](/docs/vercel), and [core concepts](/docs/core-concepts).
+
+### Resource limits (Docker)
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `box.memory` | int (MiB) | `0` (unlimited) | hard memory ceiling; use `--memory` on create for byte/k/m/g strings |
+| `box.cpus` | int | `0` (unlimited) | whole-core cap; use `--cpus` for fractional like `1.5` |
+| `box.pidsLimit` | int | `0` (unlimited) | max PID count |
+| `box.disk` | string (advanced) | empty | best-effort writable-layer size; no-op on overlay2 / macOS engines |
+
+### VM size (cloud)
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `box.size` | string | empty | generic cloud size; hetzner reads a server type (`cx33`), daytona reads `cpu-memory-disk` GB (`4-8-20`); docker and vercel ignore it |
+| `box.sizeDaytona` / `box.sizeHetzner` | string (advanced) | empty | per-provider override of `box.size` |
+| `box.sizeDocker` / `box.sizeVercel` | string (advanced) | empty | reserved — docker uses memory/cpus/disk; vercel uses `vercelVcpus` |
+
+### Box image
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `box.image` | string (advanced) | `agentbox/box:dev` | generic image ref; the default is a sentinel cloud backends read as "boot from the prepared base snapshot" |
+| `box.imageDocker` / `box.imageDaytona` / `box.imageHetzner` / `box.imageVercel` | string (advanced) | empty | per-provider override; the cloud ones are written by `agentbox prepare --provider <name>` |
+| `box.imageRegistry` | string (advanced, docker only) | `ghcr.io/madarco/agentbox/box` | registry to pull the prebuilt base from before building locally; empty = always build |
+
+<Callout type="warn" title="HEADS UP">
+Setting the generic `box.image` to a provider-native snapshot id breaks creates on other providers. Prefer the per-provider `box.image<Provider>` keys (which is what `prepare` writes). If a stale `box.image` blocks creates, clear it with `agentbox config unset box.image --project`.
+</Callout>
+
+### Default checkpoint per project
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `box.defaultCheckpoint` | string | empty | checkpoint new boxes start from when `--snapshot` isn't given; set via `agentbox checkpoint set-default` |
+| `box.defaultCheckpointDocker` / `…Daytona` / `…Hetzner` / `…Vercel` | string (advanced) | empty | per-provider overrides; set via `checkpoint set-default --provider <name>` |
+
+See [checkpoints and pausing](/docs/checkpoints-and-pausing).
+
+### Create-time toggles
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `box.hostSnapshot` | bool | prompt | use a frozen APFS clone of the host workspace as overlay lower (renamed from `box.snapshot`) |
+| `box.withEnv` | bool | `false` | copy host env/config files (`.env*`, `secrets.toml`, `agentbox.yaml`, …) into `/workspace`, bypassing gitignore |
+| `box.withPlaywright` | bool | `false` | install `@playwright/cli@latest` in the box at create |
+| `box.vnc` | bool | `true` | run the per-box Xvnc + noVNC stack |
+| `box.resyncOnStart` | bool | `true` | on starting a session, merge the host's current branch + overlay changes (box wins on conflict, warns the agent) |
+| `box.bundleDepth` | int | adaptive | cap git-bundle history shipped to cloud sandboxes; `0` = full history; ignored for docker |
+| `box.dockerCacheShared` | bool | `false` | share the in-box docker image cache across boxes; only one box can run at a time when set |
+
+See [teleport a project](/docs/teleport-a-project), [environment](/docs/environment), [browser and screen](/docs/browser-and-screen), [sync and git](/docs/sync-and-git), and [Docker in Docker](/docs/docker-in-docker).
+
+### Config-volume isolation
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `box.isolateClaudeConfig` / `box.isolateCodexConfig` / `box.isolateOpencodeConfig` | bool | `false` | give the box its own agent config volume instead of the shared one |
+
+### Vercel only
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `box.vercelVcpus` | int | `2` | vCPUs (RAM is coupled at 2048 MB/vCPU); only 1/2/4/8 are accepted |
+| `box.vercelTimeoutMs` | int | `2700000` (45 min) | max session length before auto-snapshot; persistent mode auto-resumes |
+| `box.vercelNetworkPolicy` | string | empty (`allow-all`) | egress lock: `allow-all`, `deny-all`, or a comma-separated domain allowlist (`github.com,*.npmjs.org`) |
+
+See [Vercel](/docs/vercel).
+
+## checkpoint.*
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `checkpoint.maxLayers` | int (advanced) | `3` | max stacked checkpoint layers before a new checkpoint is materialized flattened instead of layered |
+
+See [checkpoints and pausing](/docs/checkpoints-and-pausing).
+
+## Agent sessions — claude / codex / opencode
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `claude.sessionName` | string | `claude` | tmux session name for the claude agent |
+| `codex.sessionName` | string | `codex` | tmux session name for the codex agent |
+| `opencode.sessionName` | string | `opencode` | tmux session name for the opencode agent |
+| `claude.dangerouslySkipPermissions` | bool | `true` | launch claude with `--dangerously-skip-permissions` (auto-accept tool use) |
+| `codex.dangerouslySkipPermissions` | bool | `true` | launch codex with `--dangerously-bypass-approvals-and-sandbox` |
+
+<Callout title="WHY">
+The permission-skip defaults are on precisely because each box is a throwaway sandbox the agent can't escape — that's the whole point of AgentBox. Turn them off per-box with `--no-dangerously-skip-permissions` if you want approval prompts. See [core concepts](/docs/core-concepts) and [run an agent](/docs/run-an-agent).
+</Callout>
+
+## attach.openIn
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `attach.openIn` | enum `split`/`window`/`tab`/`same` | `split` | where `agentbox claude\|codex\|opencode` opens the attached session under tmux or iTerm2 |
+
+`split` uses a tmux split-window / iTerm2 vertical split; `window` and `tab` open a new tmux window or tab. Outside tmux/iTerm2 every value behaves like `same`. See [access your box](/docs/access-your-box).
+
+## code / shell
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `code.ide` | enum `vscode`/`cursor`/`auto` | `auto` | which IDE `agentbox code` launches; `auto` prefers `code`, falls back to `cursor` |
+| `code.wait` | bool | `true` | block on `agentbox-ctl wait-ready` before opening the IDE |
+| `code.timeoutMs` | int | `120000` | wait-ready timeout |
+| `code.autoTerminals` | bool | `true` | generate `/workspace/.vscode/tasks.json` so the IDE auto-opens log panels |
+| `shell.user` | string | `vscode` | default in-container user for `agentbox shell` |
+| `shell.login` | bool | `true` | pass `-l` to bash (load login profile) |
+| `shell.tmux` | bool | `true` | run inside a detachable tmux session (Ctrl+a d to detach) |
+
+See [access your box](/docs/access-your-box).
+
+## browser
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `browser.default` | enum `agent-browser`/`playwright`/`both` | `agent-browser` | default browser stack in the box; `playwright` or `both` implies `box.withPlaywright` |
+
+See [browser and screen](/docs/browser-and-screen).
+
+## queue & autopause
+
+`queue.*` schedules background `-i` jobs; `autopause.*` pauses idle boxes.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `queue.enabled` | bool | `true` | run `agentbox claude\|codex\|opencode -i <prompt>` jobs through the host-wide FIFO queue |
+| `queue.maxConcurrent` | int | `5` | max simultaneously-running boxes before `-i` jobs queue; override with `--max-running <n>` |
+| `queue.maxWorking` | int | `0` (off) | max agents actively working at once before `-i` jobs queue; override with `--max-working <n>` |
+| `queue.idleGraceSeconds` | int | `15` | debounce before an agent frees its working slot; only used when `maxWorking > 0` |
+| `autopause.enabled` | bool | `true` | let the relay periodically pause idle boxes when more than `maxRunningBoxes` run |
+| `autopause.maxRunningBoxes` | int | `5` | target ceiling of running boxes before idle ones get paused |
+| `autopause.idleMinutes` | int | `5` | minutes a box must be continuously idle before it's eligible for auto-pause |
+
+```bash
+agentbox config set queue.maxConcurrent 3 --global
+agentbox config set autopause.idleMinutes 10 --global
+```
+
+See [background and parallel](/docs/background-and-parallel) and [checkpoints and pausing](/docs/checkpoints-and-pausing).
+
+## cloud / engine / portless / relay / vnc / maintenance
+
+The remaining infrastructure knobs — mostly advanced.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `cloud.useCurrentBranch` | bool | `false` | on daytona/hetzner, start boxes on the host's current branch instead of forking `agentbox/<box-name>`; overridden by `--use-branch` / `--from-branch` |
+| `engine.kind` | enum `orbstack`/`docker-desktop`/`other`/`auto` | `auto` | override docker-engine auto-detection; the one key applied at CLI startup |
+| `portless.enabled` | bool | prompt | map each box web app to `https://<box-name>.localhost` via the Portless proxy (Docker Desktop only) |
+| `portless.stateDir` | string (advanced) | empty | host Portless state dir to share into boxes |
+| `relay.port` | int (advanced) | `8787` | host relay TCP port |
+| `vnc.containerPort` | int (advanced) | `6080` | container-side noVNC port |
+| `maintenance.pruneProjectConfigs` | bool | `true` | periodically delete `~/.agentbox/projects/<hash>/` dirs whose source folder is gone |
+| `maintenance.pruneProjectConfigsEvery` | int | `50` | run the orphan sweep every N successful `agentbox create` |
+
+See [web apps and tunnels](/docs/web-apps-and-tunnels), [local Docker](/docs/local-docker), [sync and git](/docs/sync-and-git), and [browser and screen](/docs/browser-and-screen).
+
+## Where the files live
+
+```console
+$ agentbox config path --global
+/Users/you/.agentbox/config.yaml
+$ agentbox config path --project
+/Users/you/.agentbox/projects/3f2a8c1d9e0b4a76/config.yaml
+$ agentbox config list-projects
+3f2a8c1d9e0b4a76  /Users/you/Projects/myapp
+```
+
+- Global: `~/.agentbox/config.yaml`
+- Per-project user: `~/.agentbox/projects/<sha1-16-of-abs-path>/config.yaml`
+- Workspace (committed): the `defaults:` block in `agentbox.yaml`
+
+For the `defaults:` block and the full `agentbox.yaml` schema, see [agentbox.yaml](/docs/agentbox-yaml); for secrets and env files, see [environment](/docs/environment). The served JSON schema lives at `/schema/user-config.schema.json`.
