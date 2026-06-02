@@ -11,6 +11,8 @@ Vercel's [`agent-browser`](https://github.com/vercel-labs/agent-browser) is bake
 
 The agent calls `agent-browser` directly from inside the box, and any GUI process renders to the box's VNC display — which is what you see through `agentbox screen` below.
 
+`agent-browser` is the default, but it isn't the only stack: the standalone **`playwright-cli`** is also available for agents that prefer driving Playwright directly. Add it with `--with-playwright` (or pin it via the `browser.default` config key) — see [Playwright](#playwright) below.
+
 ```console
 # inside the box (the agent runs these directly)
 $ agent-browser session list
