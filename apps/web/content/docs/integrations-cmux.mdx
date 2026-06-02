@@ -118,12 +118,6 @@ It upserts a single `agentbox` control and leaves any other dock controls (lazyg
 
 Other flags: `--height <points>` (panel height, default `320`), `--title <text>` (header, default `AgentBox`), and `--force` (reset an unparseable `dock.json`, backed up to `dock.json.bak`).
 
-<Callout title="The dock relaunches on project switch">
-  cmux re-runs a dock control whenever you switch projects (it re-resolves which dock config
-  applies), so the AgentBox panel briefly relaunches — that's cmux behavior, not something AgentBox
-  can turn off. The panel redraws in place so the relaunch and its periodic refresh don't flicker.
-</Callout>
-
 <Callout title="Enable the Dock first">
   cmux's Dock is a **beta feature, off by default**. After running `agentbox install cmux`, turn it
   on in **cmux Settings → Beta features → Dock**, then open the right sidebar and switch it to the
