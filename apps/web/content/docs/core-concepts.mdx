@@ -4,11 +4,12 @@ description: How AgentBox works. An isolated machine per agent run, parallel run
 ---
 
 When you launch an agent, AgentBox copies your project into an isolated Linux
-machine called a **box**. The agent runs as root inside the box, so it can
-install packages, run servers, run Docker, and commit. It has no access to your
-laptop's files, keys, or network. You can run several boxes at once, switch
-between them in under a second, and the agent can't push to a remote without
-your approval.
+machine called a **box**. The agent runs with passwordless `sudo` inside the
+box, so it can install packages, run servers, run Docker, and commit. It has no
+access to your laptop's files, keys, or network. You can run several boxes at
+once, switch between them in under a second, and every `git push` or pull
+request runs on your machine **only after you explicitly approve it** — the box
+never touches your remotes on its own.
 
 Six ideas cover how it works. Each section below explains one, with links to the
 details.
@@ -18,9 +19,9 @@ details.
 
 ## A full computer per agent — and it can't break your machine
 
-A box is a Linux machine, one per agent run. The agent runs as root with a full
-toolchain, so it can `apt install` packages, run a database, or run Docker inside
-the box. When you're done, run `destroy` and the box is gone. None of it touched
+A box is a Linux machine, one per agent run. The agent runs as a normal user
+with passwordless `sudo` and a full toolchain, so it can `apt install` packages,
+run a database, or run Docker inside the box. When you're done, run `destroy` and the box is gone. None of it touched
 your host.
 
 ```bash
@@ -136,9 +137,15 @@ every box. The agent asks the host to push, open a pull request, or open a URL,
 and the host runs it with your identity (SSH agent, `~/.gitconfig`, `gh` auth)
 and returns the output.
 
+Anything that writes to your remotes — a `git push` or a pull request the agent
+initiates — **pauses for your explicit approval on the host**. A prompt appears
+in your attached session; it defaults to *no*, so nothing reaches your remotes
+unless you say yes.
+
 ```console
 $ agentbox-ctl git push
-# the host relay runs `git push` as you; no credentials enter the box
+# pauses for your approval on the host, then runs `git push` as you;
+# no credentials ever enter the box
 ```
 
 <Callout title="WHY">
