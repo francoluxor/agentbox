@@ -376,6 +376,12 @@ python3 "$SK/take_screenshot.py" --mode temp --window-id "$WID"
 > `agentbox-ctl git push` (its `agentbox/pr` branch → auto-allowed, no prompt) —
 > so the **PR-create** is what actually surfaced the gate. That's on-message for
 > the Pull-requests figure, so we kept it.
+>
+> **Side effects are expected and fine:** approving (`y`) really pushes the
+> branch and opens the PR on `agentbox-test-repo` — that's a dedicated throwaway
+> test repo, so leaving the pushed `agentbox/pr` branch + the open PR behind is
+> harmless. Close/delete them later if you want, or answer `n` to deny and
+> capture the band without the side effects.
 
 ### Phase D — Diagrams (TODO — draw separately, not from the environment)
 
