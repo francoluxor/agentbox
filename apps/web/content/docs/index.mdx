@@ -90,6 +90,14 @@ with `Ctrl+b d`; the agent keeps working.
 On Cloud boxes, the workspace is synced with the box but the git credentials are kept
 on your computer, and each write operation needs to be authorized from the footer.
 
+To use a cloud provider, run `agentbox install` and select the desired provider, then
+prefix the command with the provider name — for example:
+
+```bash
+agentbox hetzner claude
+agentbox vercel codex
+```
+
 ### Watch it work
 
 Detach with `Ctrl+b` followed by `d` in rapid succession. Then you can reattach
