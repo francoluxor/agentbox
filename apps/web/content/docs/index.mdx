@@ -115,13 +115,14 @@ list.
 | `Ctrl+a t` | Open a fresh shell in the same box, in a new tab                       |
 | `Ctrl+a k` | Destroy the box (asks to confirm)                                     |
 
-| Command                    | What it does                                                            |
-| -------------------------- | ----------------------------------------------------------------------- |
-| `agentbox claude attach 1` | Reattach to the running Claude session on box 1 in the current project. |
-| `agentbox shell 1`         | Open an interactive bash shell inside the box.                          |
-| `agentbox url`             | Open the box's web app URL in your browser.                             |
-| `agentbox pause 1`         | Freeze the box to save resources — resumes sub-second.                  |
-| `agentbox destroy 1`       | Tear down the box and discard its upper volume.                         |
+| Command                            | What it does                                                            |
+| ---------------------------------- | ----------------------------------------------------------------------- |
+| `agentbox list`                    | List every box in the current project with its agent's live state.      |
+| `agentbox claude attach 1`         | Reattach to the running Claude session on box 1 in the current project. |
+| `agentbox shell 1`                 | Open an interactive bash shell inside the box.                          |
+| `agentbox url`                     | Open the box's web app URL in your browser.                             |
+| `agentbox pause 1`                 | Freeze the box to save resources — resumes sub-second.                  |
+| `agentbox destroy <N or box name>` | Tear down the box and discard its upper volume.                         |
 
 Want to run the same agent on a cloud provider instead? Prefix the command with the
 provider name — for example `agentbox hetzner claude`. See [Hetzner](/docs/hetzner)
