@@ -42,11 +42,13 @@ import {
   chownGitBindParents,
   collectRepoCarryOver,
   gitWorktreePathFor,
+  regenerateRestoredWorktrees,
   removeInBoxWorktree,
   resyncWorkspaceFromHost,
   seedWorkspace,
   seedWorkspaceFromDir,
   type RepoCarryOver,
+  type RestoreWorktreePlan,
 } from './in-box-git.js';
 import {
   CONTAINER_EXPORT_MERGED,
@@ -459,8 +461,38 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
   // resolve to a path that doesn't exist in the new container.
   const repoCarryOvers: RepoCarryOver[] = [];
   const gitWorktreeRecords: GitWorktreeRecord[] = [];
+  // Checkpoint restore: the manifest's worktree records carry the *source*
+  // box's branch + path. Reusing them verbatim is the shared-worktree bug —
+  // every box from one checkpoint would share a single branch + index, and the
+  // baked /workspace/.git gitfile dangles once the source box's host worktree
+  // metadata was pruned. So mint a FRESH per-box branch + unique worktree path
+  // here (host-side, before docker run, like the non-checkpoint path) and
+  // regenerate the in-box worktree over the baked content after run.
+  const restoreWorktreePlans: RestoreWorktreePlan[] = [];
   if (checkpointImage && restoredWorktrees && restoredWorktrees.length > 0) {
-    gitWorktreeRecords.push(...restoredWorktrees);
+    for (const w of restoredWorktrees) {
+      const branchBase =
+        w.kind === 'root'
+          ? `agentbox/${name}`
+          : `agentbox/${name}--${w.relPathFromWorkspace.replace(/[^A-Za-z0-9._-]+/g, '_')}`;
+      const freshBranch = await pickFreshBranch(w.hostMainRepo, branchBase);
+      const freshGitWorktreePath = gitWorktreePathFor(freshBranch);
+      restoreWorktreePlans.push({
+        hostMainRepo: w.hostMainRepo,
+        kind: w.kind,
+        bakedGitWorktreePath: w.gitWorktreePath,
+        freshBranch,
+        freshGitWorktreePath,
+      });
+      gitWorktreeRecords.push({
+        kind: w.kind,
+        hostMainRepo: w.hostMainRepo,
+        containerPath: w.containerPath,
+        gitWorktreePath: freshGitWorktreePath,
+        branch: freshBranch,
+        relPathFromWorkspace: w.relPathFromWorkspace,
+      });
+    }
   }
   if (!checkpointImage) {
     const repos = await detectGitRepos(workspace);
@@ -893,28 +925,36 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
       const source = snapshotDir ?? workspace;
       await seedWorkspaceFromDir({ container: containerName, hostSource: source, onLog: log });
     }
-  } else if (restoredWorktrees && restoredWorktrees.length > 0) {
-    // gitWorktreeRecords was populated above (pre-`docker run`) so the .git
-    // bind-mounts in extraVolumes are wired. The /workspace bind itself
-    // can't be set up until the container is running, so we apply it here.
+  } else if (restoreWorktreePlans.length > 0) {
+    // gitWorktreeRecords was populated above (pre-`docker run`) with FRESH
+    // per-box branches/paths, so the .git bind-mounts in extraVolumes are
+    // wired. The container is now running, so regenerate each baked worktree
+    // onto its fresh branch (rename + fresh metadata + reindex), then apply the
+    // /workspace bind mount(s) onto the fresh paths.
+    await regenerateRestoredWorktrees({
+      container: containerName,
+      plans: restoreWorktreePlans,
+      fromBranch: opts.fromBranch,
+      onLog: log,
+    });
     await bindWorktrees(
       containerName,
-      restoredWorktrees.map((w) => ({
+      gitWorktreeRecords.map((w) => ({
         kind: w.kind,
         containerPath: w.containerPath,
         gitWorktreePath: w.gitWorktreePath,
       })),
       log,
     );
-    log('re-bound /workspace from checkpoint image');
-    // The restored worktree is at the checkpoint's (stale) state. Merge the
-    // host's current branch in + overlay the host's uncommitted/untracked
-    // changes so the box matches a fresh create from current HEAD (box wins on
-    // conflict). Non-checkpoint creates already fork from HEAD + carry-over.
+    log('re-bound /workspace from checkpoint image (fresh per-box worktree)');
+    // Each fresh branch was forked from the host's base ref; resync merges the
+    // host's current branch in + overlays the host's uncommitted/untracked
+    // changes so the box matches a fresh create from HEAD (box wins on
+    // conflict). The baked working-tree deviations survive as uncommitted work.
     if (opts.resyncOnStart !== false) {
       const repos = await resyncWorkspaceFromHost({
         container: containerName,
-        worktrees: restoredWorktrees,
+        worktrees: gitWorktreeRecords,
         onLog: log,
       });
       resyncResult = {
