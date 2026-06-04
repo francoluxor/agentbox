@@ -4,6 +4,7 @@ export {
   allocateProjectIndex,
   autoPickProjectBox,
   findBox,
+  mutateState,
   readState,
   recordBox,
   removeBoxRecord,

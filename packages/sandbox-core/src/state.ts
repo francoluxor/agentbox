@@ -1,12 +1,83 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { BoxRecord, DockerBoxFields, FindBoxResult, StateFile } from '@agentbox/core';
 
 export const STATE_DIR = join(homedir(), '.agentbox');
 export const STATE_FILE = join(STATE_DIR, 'state.json');
 
 const EMPTY: StateFile = { version: 1, boxes: [] };
+
+// Cross-process lock tunables. The lock guards the read-modify-write of
+// `state.json` so concurrent `agentbox create`/`destroy` processes can't lose
+// each other's records or interleave a half-written file. Held only for the
+// duration of one read+write (sub-millisecond), so contention clears fast even
+// with a burst of parallel creates.
+const LOCK_STALE_MS = 15_000; // a lock older than this is presumed abandoned
+const LOCK_ACQUIRE_TIMEOUT_MS = 20_000;
+const LOCK_RETRY_MS = 25;
+
+/**
+ * Run `fn` while holding an exclusive cross-process lock on `${path}.lock`.
+ *
+ * Acquisition: create the lockfile with `wx` (O_EXCL) — atomic on local FSes.
+ * On contention, retry with a short backoff until {@link LOCK_ACQUIRE_TIMEOUT_MS};
+ * a lockfile older than {@link LOCK_STALE_MS} is treated as abandoned (crashed
+ * holder) and forcibly broken. If the lock still can't be taken before the
+ * timeout we proceed anyway — the write is atomic (temp+rename) so the worst
+ * case degrades to a possible lost update, never a corrupt file. The lock is
+ * always released in `finally`.
+ */
+async function withStateLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+  const lockPath = `${path}.lock`;
+  await mkdir(dirname(path), { recursive: true });
+  const deadline = Date.now() + LOCK_ACQUIRE_TIMEOUT_MS;
+  let held = false;
+  while (!held) {
+    try {
+      const fh = await open(lockPath, 'wx');
+      await fh.writeFile(`${String(process.pid)}\n`);
+      await fh.close();
+      held = true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      // Break a stale lock left by a crashed holder.
+      try {
+        const st = await stat(lockPath);
+        if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+          await rm(lockPath, { force: true });
+          continue;
+        }
+      } catch {
+        // lock vanished between open and stat — retry immediately
+        continue;
+      }
+      if (Date.now() >= deadline) break; // give up waiting; proceed best-effort
+      await delay(LOCK_RETRY_MS);
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    if (held) await rm(lockPath, { force: true }).catch(() => {});
+  }
+}
+
+/**
+ * Locked read-modify-write of the state file. `mutator` receives the current
+ * state and returns the next one; the read and the (atomic) write happen under
+ * the same lock so concurrent mutators serialize instead of clobbering.
+ */
+export async function mutateState(
+  mutator: (state: StateFile) => StateFile,
+  path: string = STATE_FILE,
+): Promise<void> {
+  await withStateLock(path, async () => {
+    const state = await readState(path);
+    await writeState(mutator(state), path);
+  });
+}
 
 export async function readState(path: string = STATE_FILE): Promise<StateFile> {
   try {
@@ -38,7 +109,13 @@ export async function readState(path: string = STATE_FILE): Promise<StateFile> {
 
 export async function writeState(state: StateFile, path: string = STATE_FILE): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(state, null, 2) + '\n', 'utf8');
+  // Atomic: write a sibling temp file then rename over the target. rename(2) is
+  // atomic on local filesystems, so a concurrent writer (or a reader) never
+  // observes a half-written / interleaved JSON file. The pid+time suffix keeps
+  // parallel writers from colliding on the temp path itself.
+  const tmp = `${path}.tmp.${String(process.pid)}.${String(Date.now())}`;
+  await writeFile(tmp, JSON.stringify(state, null, 2) + '\n', 'utf8');
+  await rename(tmp, path);
 }
 
 export async function recordBox(box: BoxRecord, path: string = STATE_FILE): Promise<void> {
@@ -50,12 +127,37 @@ export async function recordBox(box: BoxRecord, path: string = STATE_FILE): Prom
     (box.provider ?? 'docker') === 'docker' && !box.docker
       ? { ...box, docker: projectDockerFields(box) }
       : box;
-  const state = await readState(path);
-  const next: StateFile = {
-    version: 1,
-    boxes: [...state.boxes.filter((b) => b.id !== toWrite.id), toWrite],
-  };
-  await writeState(next, path);
+  await mutateState((state) => {
+    const others = state.boxes.filter((b) => b.id !== toWrite.id);
+    return {
+      version: 1,
+      boxes: [...others, dedupeProjectIndex(toWrite, others)],
+    };
+  }, path);
+}
+
+/**
+ * Ensure `box`'s `projectIndex` is unique within its project. Two concurrent
+ * creates each read `state` before either records, so both can call
+ * `allocateProjectIndex` and get the same number; here — under the state lock,
+ * with every already-recorded box visible — we detect a clash with a *different*
+ * box in the same project and bump to the next free index. The box dir segments
+ * are `<id>-<n>-<mnemonic>` (id-prefixed, so always unique on disk regardless of
+ * `n`); only the displayed / `agentbox <cmd> <n>`-resolvable index needs to be
+ * distinct, so correcting it at record time is sufficient.
+ */
+function dedupeProjectIndex(box: BoxRecord, others: BoxRecord[]): BoxRecord {
+  if (box.projectRoot === undefined || typeof box.projectIndex !== 'number') return box;
+  const taken = new Set<number>();
+  let max = 0;
+  for (const b of others) {
+    if (b.projectRoot !== box.projectRoot) continue;
+    if (typeof b.projectIndex !== 'number') continue;
+    taken.add(b.projectIndex);
+    if (b.projectIndex > max) max = b.projectIndex;
+  }
+  if (!taken.has(box.projectIndex)) return box;
+  return { ...box, projectIndex: max + 1 };
 }
 
 /**
@@ -92,15 +194,13 @@ function projectDockerFields(box: BoxRecord): DockerBoxFields {
 }
 
 export async function removeBoxRecord(id: string, path: string = STATE_FILE): Promise<boolean> {
-  const state = await readState(path);
-  const before = state.boxes.length;
-  const next: StateFile = {
-    version: 1,
-    boxes: state.boxes.filter((b) => b.id !== id),
-  };
-  if (next.boxes.length === before) return false;
-  await writeState(next, path);
-  return true;
+  let removed = false;
+  await mutateState((state) => {
+    const next = state.boxes.filter((b) => b.id !== id);
+    removed = next.length !== state.boxes.length;
+    return { version: 1, boxes: next };
+  }, path);
+  return removed;
 }
 
 /**

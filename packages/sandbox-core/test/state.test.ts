@@ -231,4 +231,86 @@ describe('state.ts', () => {
     const removedAgain = await removeBoxRecord('aaaaaaaa', file);
     expect(removedAgain).toBe(false);
   });
+
+  it('concurrent recordBox calls do not lose records or corrupt the file', async () => {
+    // Mirrors the failure mode of several parallel `agentbox create` processes
+    // writing state.json at once: the unlocked read-modify-write used to drop
+    // records (last writer wins) and could leave a half-overwritten file.
+    const boxes: BoxRecord[] = Array.from({ length: 25 }, (_, i) => ({
+      id: `box${String(i).padStart(4, '0')}`,
+      name: `n${String(i)}`,
+      container: `agentbox-n${String(i)}`,
+      image: 'agentbox/box:dev',
+      workspacePath: '/tmp/ws',
+      snapshotDir: null,
+      createdAt: '2026-05-12T12:00:00.000Z',
+    }));
+    await Promise.all(boxes.map((b) => recordBox(b, file)));
+
+    const reloaded = await readState(file);
+    expect(reloaded.boxes).toHaveLength(boxes.length);
+    expect(new Set(reloaded.boxes.map((b) => b.id)).size).toBe(boxes.length);
+  });
+
+  it('concurrent record + remove stays consistent (no lost survivors)', async () => {
+    const seed: BoxRecord[] = Array.from({ length: 10 }, (_, i) => ({
+      id: `seed${String(i)}`,
+      name: `s${String(i)}`,
+      container: `agentbox-s${String(i)}`,
+      image: 'agentbox/box:dev',
+      workspacePath: '/tmp/ws',
+      snapshotDir: null,
+      createdAt: '2026-05-12T12:00:00.000Z',
+    }));
+    for (const b of seed) await recordBox(b, file);
+
+    // Remove the even ids while concurrently adding new ones.
+    const removals = seed.filter((_, i) => i % 2 === 0).map((b) => removeBoxRecord(b.id, file));
+    const additions = Array.from({ length: 5 }, (_, i) =>
+      recordBox({ ...seed[0]!, id: `new${String(i)}`, name: `x${String(i)}` }, file),
+    );
+    await Promise.all([...removals, ...additions]);
+
+    const ids = new Set((await readState(file)).boxes.map((b) => b.id));
+    // All odd seeds survive, all 5 new ones present, no even seeds left.
+    for (const i of [1, 3, 5, 7, 9]) expect(ids.has(`seed${String(i)}`)).toBe(true);
+    for (const i of [0, 1, 2, 3, 4]) expect(ids.has(`new${String(i)}`)).toBe(true);
+    for (const i of [0, 2, 4, 6, 8]) expect(ids.has(`seed${String(i)}`)).toBe(false);
+  });
+
+  it('recordBox de-duplicates a clashing projectIndex within a project', async () => {
+    // Two concurrent creates can both allocate the same index (each read state
+    // before either recorded); the second write must be bumped to stay unique.
+    const a: BoxRecord = {
+      id: 'idx00001',
+      name: 'idx-a',
+      container: 'agentbox-idx-a',
+      image: 'agentbox/box:dev',
+      workspacePath: '/repo',
+      snapshotDir: null,
+      projectRoot: '/repo',
+      projectIndex: 1,
+      createdAt: '2026-05-12T12:00:00.000Z',
+    };
+    const b: BoxRecord = { ...a, id: 'idx00002', name: 'idx-b', container: 'agentbox-idx-b' };
+    await recordBox(a, file);
+    await recordBox(b, file); // same projectIndex 1 → must bump to 2
+
+    const reloaded = await readState(file);
+    const byId = Object.fromEntries(reloaded.boxes.map((x) => [x.id, x.projectIndex]));
+    expect(byId['idx00001']).toBe(1);
+    expect(byId['idx00002']).toBe(2);
+
+    // A different project keeps its own index space.
+    const other: BoxRecord = {
+      ...a,
+      id: 'idx00003',
+      name: 'other',
+      container: 'agentbox-other',
+      projectRoot: '/other',
+      projectIndex: 1,
+    };
+    await recordBox(other, file);
+    expect((await readState(file)).boxes.find((x) => x.id === 'idx00003')?.projectIndex).toBe(1);
+  });
 });
