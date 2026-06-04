@@ -2,7 +2,7 @@ import { confirm, isCancel, log } from '@clack/prompts';
 import { execa } from 'execa';
 import { findProjectRoot } from '@agentbox/config';
 import { readState, resolveBoxRef } from '@agentbox/sandbox-core';
-import { destroyBox } from '@agentbox/sandbox-docker';
+import { destroyBox, portlessUnalias } from '@agentbox/sandbox-docker';
 import { Command } from 'commander';
 import { resolveBoxOrExit } from '../box-ref.js';
 import { providerForBox } from '../provider/registry.js';
@@ -32,7 +32,15 @@ async function destroyOrphanContainer(ref: string): Promise<string | null> {
     );
     if (found.exitCode === 0 && found.stdout.trim() === name) {
       const rm = await execa('docker', ['rm', '-f', name], { reject: false });
-      if (rm.exitCode === 0) return name;
+      if (rm.exitCode === 0) {
+        // Best-effort: drop the portless aliases this box would have registered
+        // (`<name>` web + `vnc-<name>`). We have no state record to read them
+        // from, but they're derived from the box name, so unalias by convention.
+        const boxName = name.startsWith('agentbox-') ? name.slice('agentbox-'.length) : name;
+        await portlessUnalias(boxName).catch(() => {});
+        await portlessUnalias(`vnc-${boxName}`).catch(() => {});
+        return name;
+      }
     }
   }
   return null;

@@ -72,6 +72,7 @@ import {
   allocateProjectIndex,
   readState,
   recordBox,
+  removeBoxRecord,
   type BoxRecord,
   type GitWorktreeRecord,
 } from './state.js';
@@ -835,6 +836,44 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     }
   }
 
+  // Everything about the box that's known before `docker run`. Recorded
+  // provisionally right after the container starts (below) so a failure during
+  // the rest of finalization (seed, ctl/vnc/dockerd launch, port publish,
+  // portless) still leaves a state.json record — destroy/prune resolve the box
+  // by its real name from state.json instead of relying on the orphan-container
+  // fallback, and the late-known fields (ports, portless, carry) are merged in
+  // by the final `recordBox` on success.
+  const baseRecord: BoxRecord = {
+    id,
+    name,
+    container: containerName,
+    image: imageRef,
+    workspacePath: workspace,
+    snapshotDir,
+    socketPath,
+    claudeConfigVolume: claudeSpec.volume,
+    codexConfigVolume,
+    opencodeConfigVolume,
+    vscodeServerVolume: vscodeServerVolumeName(id),
+    cursorServerVolume: cursorServerVolumeName(id),
+    relayToken: relayUp ? relayToken : undefined,
+    gitWorktrees: gitWorktreeRecords.length > 0 ? gitWorktreeRecords : undefined,
+    withPlaywright: opts.withPlaywright ? true : undefined,
+    withEnv: opts.withEnv ? true : undefined,
+    vncEnabled: vncEnabled ? true : undefined,
+    vncContainerPort: vncEnabled ? VNC_CONTAINER_PORT : undefined,
+    vncPassword: vncPassword,
+    webContainerPort: WEB_CONTAINER_PORT,
+    dockerVolume,
+    dockerCacheShared: dockerCacheShared || undefined,
+    projectRoot: opts.projectRoot,
+    projectIndex,
+    checkpointImage,
+    checkpointSource,
+    resourceLimits: persistableLimits(effectiveLimits),
+    createdAt,
+  };
+
   await runBox({
     name: containerName,
     image: imageRef,
@@ -854,6 +893,11 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     },
   });
   log(`container ${containerName} started`);
+
+  // Provisional registration: the box now exists, so persist it before the
+  // remaining finalization steps. If create dies past this point, the record
+  // (with the real name) is already in state.json for destroy/prune to find.
+  await recordBox(baseRecord);
 
   // Flip the in-container parent dir of each bind-mounted `.git` to
   // vscode-owned. Docker auto-creates the intermediates (e.g. the project root
@@ -910,6 +954,9 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
         if (opts.useBranch !== undefined) {
           log(`seedWorkspace failed for --use-branch ${opts.useBranch}; cleaning up the box`);
           await execa('docker', ['rm', '-f', containerName], { reject: false });
+          // Drop the provisional record written after runBox so we don't leave
+          // a dangling state.json entry pointing at the now-removed container.
+          await removeBoxRecord(id);
           for (const w of gitWorktreeRecords) {
             await removeInBoxWorktree({
               hostMainRepo: w.hostMainRepo,
@@ -1126,42 +1173,17 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     }
   }
 
+  // Final record: the provisional base plus the fields only known after the
+  // container was up (published host ports, portless aliases, applied carry).
   const record: BoxRecord = {
-    id,
-    name,
-    container: containerName,
-    image: imageRef,
-    workspacePath: workspace,
-    snapshotDir,
-    socketPath,
-    claudeConfigVolume: claudeSpec.volume,
-    codexConfigVolume,
-    opencodeConfigVolume,
-    vscodeServerVolume: vscodeServerVolumeName(id),
-    cursorServerVolume: cursorServerVolumeName(id),
-    relayToken: relayUp ? relayToken : undefined,
-    gitWorktrees: gitWorktreeRecords.length > 0 ? gitWorktreeRecords : undefined,
-    withPlaywright: opts.withPlaywright ? true : undefined,
-    withEnv: opts.withEnv ? true : undefined,
+    ...baseRecord,
     carry: carrySummary,
-    vncEnabled: vncEnabled ? true : undefined,
-    vncContainerPort: vncEnabled ? VNC_CONTAINER_PORT : undefined,
     vncHostPort: vncHostPort ?? undefined,
-    vncPassword: vncPassword,
-    webContainerPort: WEB_CONTAINER_PORT,
     webHostPort: webHostPort ?? undefined,
     portlessAlias: portlessAliasName,
     portlessUrl,
     portlessVncAlias: portlessVncAliasName,
     portlessVncUrl,
-    dockerVolume,
-    dockerCacheShared: dockerCacheShared || undefined,
-    projectRoot: opts.projectRoot,
-    projectIndex,
-    checkpointImage,
-    checkpointSource,
-    resourceLimits: persistableLimits(effectiveLimits),
-    createdAt,
   };
   await recordBox(record);
 
