@@ -9,6 +9,71 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [0.14.0] - 2026-06-04
+
+### Added
+
+- E2B as a fifth provider (`--provider e2b`): a Firecracker microVM per box with
+  public HTTPS preview URLs and free pause/resume. Unlike the other clouds, E2B
+  builds its base image directly from a Dockerfile — `agentbox prepare --provider
+  e2b` drives the build. Full lifecycle is supported: `agentbox e2b login`,
+  create, attach (`shell` / `claude` / `codex` / `opencode`), checkpoints, VNC,
+  and `agentbox prune --provider e2b`.
+- `agentbox agent wait-for input-needed` — a single state that fires whenever the
+  agent needs you: the turn finished and the prompt is ready, or it's blocked on a
+  question, plan approval, permission prompt, or error. Replaces racing separate
+  `wait-for` calls that each hang to timeout, and prints the concrete state it
+  matched so callers can branch on why it woke.
+- Cloud `<provider> login` now nudges you to run `agentbox prepare` when no base
+  has been baked, and `create` detects a stale cloud base (by content checksum)
+  and folds a rebuild prompt into the existing recreate wizard. Non-interactive
+  runs (`-y` / no TTY) warn and boot on the existing base rather than auto-baking.
+
+### Changed
+
+- Cloud provider docs lead with how to use each provider, and the recommended
+  setup is the one-flow `agentbox install` wizard (login + base bake in one step).
+- `create` / `claude` / `codex` / `opencode` no longer print the `log: <path>`
+  startup line; logs are still written and `~/.agentbox/logs/latest.log` still
+  tracks the latest run.
+- Cloud attach shows a "starting <agent>" banner so a freshly attached cold cloud
+  box is never blank during cold-start, and credential seeding no longer corrupts
+  the create spinner.
+
+### Fixed
+
+- Parallel boxes are now reliable: `~/.agentbox/state.json` is written atomically
+  under a cross-process lock, so concurrent `create` / `destroy` (the `-i` use
+  case) no longer lose records, wedge the queue counter, or leave boxes missing
+  from `agentbox list`. Concurrent creates get distinct project indices, and a
+  box is recorded as soon as its container starts so a mid-create failure is still
+  resolvable by `destroy` / `prune`.
+- A box created from a checkpoint now gets a fresh per-box git branch and worktree
+  — previously all boxes from one checkpoint shared a branch and their `.git`
+  broke once the source box was destroyed (no diff, commit, or `/review`).
+- `agentbox shell <box> -- <argv>` passes the post-`--` arguments verbatim instead
+  of re-parsing them through `bash -c`, fixing corrupted redirects and quoting
+  (e.g. `curl -w '%{http_code}'`). One-shot `shell -- cmd` against a cloud box no
+  longer hangs.
+- Docker-based services in `agentbox.yaml` no longer race a not-yet-ready docker
+  socket: dockerd is launched and awaited before the in-box supervisor on every
+  create/restart across all DinD providers.
+- Cloud boxes are seeded with working agent credentials and onboarding state, so a
+  fresh box lands at a ready prompt instead of a 401, a bypass-permissions accept
+  screen, or the first-run theme picker. Credential seeding is best-effort and
+  refreshes from the host before each create.
+- A working box is no longer auto-paused (autopause now considers codex/opencode,
+  not just claude), and `agentbox drive` auto-unpauses a paused box before
+  attaching.
+- Chromium is resolved lazily and shared with the project's own Playwright build,
+  fixing browser launches that hung waiting on a stale baked-in binary; the base
+  image is also smaller.
+- Resync only flags an untracked-file conflict when the box and host content
+  actually differ, so byte-identical files no longer needlessly skip
+  `agentbox.yaml` services.
+- A missing cloud base (skipped `agentbox prepare`) now reports a one-line
+  actionable error instead of a full stack trace.
+
 ## [0.13.0] - 2026-06-02
 
 ### Added
