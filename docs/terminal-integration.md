@@ -71,16 +71,22 @@ Flow:
 Per-host targeting differs from the foreground path because the worker is
 detached (no "current" pane):
 
-| mode     | tmux                          | cmux            | iTerm2            |
-| -------- | ----------------------------- | --------------- | ----------------- |
-| `split`  | `split-window -h -t <pane>`   | `new-workspace` | `split vertically` |
-| `tab`    | `new-window -t <pane>`        | `new-workspace` | `create tab`       |
-| `window` | `new-window -t <pane>`        | `new-workspace` | `create window`    |
+| mode     | tmux                          | cmux                                    | iTerm2            |
+| -------- | ----------------------------- | --------------------------------------- | ----------------- |
+| `split`  | `split-window -h -t <pane>`   | `new-split --surface`→`--workspace`→`new-workspace` | `split vertically` |
+| `tab`    | `new-window -t <pane>`        | `new-surface --workspace`→`new-workspace` | `create tab`       |
+| `window` | `new-window -t <pane>`        | `new-workspace`                         | `create window`    |
 
 - tmux targets the captured `$TMUX_PANE` so the split/window lands in the
   submitting pane's session and shows up live in the attached client.
-- cmux always opens a **new workspace** (every mode) — a detached worker has no
-  reliable focused surface to split/tab into. **Caveat:** cmux's default
+- cmux targets the captured `$CMUX_SURFACE_ID` / `$CMUX_WORKSPACE_ID` instead of
+  the focused surface (a detached worker has none): `split` tries
+  `new-split right --surface <id>` (the original pane), then
+  `new-split right --workspace <id>` (the parent workspace); `tab` targets
+  `new-surface --workspace <id>` (cmux's `new-surface` has no `--surface` flag).
+  When every targeted attempt fails or no id was captured, it degrades to
+  `new-workspace`. The created surface ref is then driven via `cmux send` exactly
+  as before. **Caveat:** cmux's default
   `socketControlMode: cmuxOnly` only trusts cmux-initiated processes, so it
   rejects the worker's socket connection (the failure surfaces as a broken-pipe
   in the queue log). cmux opens require `socketControlMode: automation` (or
@@ -98,6 +104,20 @@ detached (no "current" pane):
 `set-titles off`). `pushTerminalTitle`/`popTerminalTitle` use XTPUSHTITLE /
 XTPOPTITLE (`CSI 22;2 t` / `CSI 23;2 t`) to save/restore the user's title across
 the attach.
+
+## Wrapper footer status slot
+
+The attach footer renders ` agentbox ▸ <box> (<state>) — <title>   <hints>`
+(`apps/cli/src/wrapped-pty/footer.ts` → dashboard `statusLine`). The `(<state>)`
+slot shows the box's **aggregate `agentbox.yaml` service status** when the box
+declares services — `starting N/M…` while they boot, `service error` if one
+crashed / went unhealthy / a setup task failed, `ready` once all are up. When
+attached you can already see the agent; what you can't see is whether the
+background services have come up, so service status wins the slot. It's derived
+by `serviceStatusLabel` (`apps/cli/src/wrapped-pty/service-status.ts`) from the
+same `status.json` the footer polls every 3s. Boxes with **no** services fall
+back to the agent activity (`idle`/`working`/…) for claude, or the
+`(shell)`/`(codex)`/`(opencode)` mode label otherwise.
 
 ## cmux sidebar: box agent status (`attach.cmuxStatus`)
 
