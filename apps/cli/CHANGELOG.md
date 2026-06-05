@@ -9,6 +9,66 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [0.15.0] - 2026-06-05
+
+### Breaking
+
+- Carry and `cp` now share a single size cap. The `AGENTBOX_CARRY_MAX_BYTES`
+  env var is removed; both the `carry:` step and `agentbox cp` are governed by
+  the `box.cpMaxBytes` config key (default 100 MiB, up from carry's old 50 MiB).
+  Scripts that set `AGENTBOX_CARRY_MAX_BYTES` no longer have any effect — set
+  `box.cpMaxBytes` instead.
+
+### Added
+
+- `queue.openIn` config key: when a background `-i` job's box becomes ready,
+  optionally open an attached terminal onto it — `split`, `window`, or `tab`
+  (default `none`, the previous behavior). Fires only when you submit from
+  inside tmux, cmux, or iTerm2.
+- `agentbox cp` (and the `carry:` copy step) now stream the tar instead of
+  buffering it, so copies are no longer capped by Node's buffer limit (large
+  folders that silently failed with "tar: Write error" now work). Added a
+  repeatable `--exclude=<glob|name>` and `--no-default-excludes`; heavy
+  regenerable dirs (`.git`, `node_modules`, `dist`, `.next`, `target`, …) are
+  excluded by default. Copies larger than `box.cpMaxBytes` are blocked with a
+  du-style tree of the biggest folders and a suggested strategy unless `--yes`.
+- `agentbox agent approvals` / `agentbox agent approve`: inspect and answer
+  relay host-action confirmations (git push, `cp`, `gh` PR writes, checkpoint)
+  from a host orchestrator, instead of hand-curling the loopback endpoint.
+  Prompt ids are content-derived, so a prompt that changed since you listed it
+  is refused rather than mis-answered. Adds an opt-in per-box
+  `box.autoApproveHostActions` (default off, audited) for unattended runs.
+- The attach footer's `(...)` slot now shows aggregate box service status —
+  `starting N/M…` while services boot, `service error` on a crash/failed task,
+  `ready` once all are up (probe-aware: a `ready_when` service counts as up only
+  once its probe passes, so the footer no longer flashes `ready` early). Boxes
+  with no services fall back to the agent activity label.
+
+### Changed
+
+- `queue.openIn` under cmux: `split` and `tab` queued jobs now open in the
+  workspace you submitted from (split targets the original pane, falling back to
+  the parent workspace) instead of always spawning a new top-level workspace.
+  `window` still opens a separate workspace.
+- `agentbox config set queue.openIn` now warns that the feature only fires
+  inside tmux/cmux/iTerm2, and that cmux additionally needs `socketControlMode`
+  set to `automation`/`password` plus `cmux reload-config`.
+
+### Fixed
+
+- The `carry:` block is now documented in the published `agentbox.yaml` JSON
+  schema, so editors and in-box agents that fetch the schema no longer see it as
+  invalid or undiscoverable.
+- The stale default-checkpoint recreate prompt now fires for already-configured
+  projects too (it was skipped for them, silently booting old base layers), and
+  on recreate it reuses the existing `agentbox.yaml` instead of telling the agent
+  to regenerate a config that already exists.
+- `agentbox cp` now enforces `box.cpMaxBytes` on single-file uploads, not just
+  directories.
+- A supervisor screen-scrape safety net flips a stuck Claude `working` state to
+  `waiting` when its hooks miss a prompt (MCP dialogs, dropped notifications), so
+  `agent wait-for input-needed` reliably wakes.
+
 ## [0.14.0] - 2026-06-04
 
 ### Added
