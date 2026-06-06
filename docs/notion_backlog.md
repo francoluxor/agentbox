@@ -232,3 +232,16 @@ Make a box agent able to type `notion …` or `ntn …`.
   in-box agent's write still terminates at the host relay (not this
   box's daemon), so it wouldn't exercise the spawn-side fix from a
   nested box anyway; the carry block is verified present.
+- 2026-06-06: Live-write loop closed (orchestrator, post-#76-merge). The host
+  relay was rebuilt + restarted with the `pages` argv fix, then a real write
+  was issued from inside a box: `notion pages create --parent page:<id>
+  --content '# agentbox write-verify <ts>'` → host approval gate fired →
+  approved → a real child page was created in "Marco D'alia's Space"
+  (ground-truth confirmed via `ntn api v1/pages/<new-id>` → `object: page`,
+  created by the integration bot), then archived (`in_trash:true`) to clean
+  up. Notes for users: the real `ntn pages create` flags are `--parent
+  page:<id>` + `--content <markdown>` (no `--title`), and the shim already
+  injects the `--` arg separator so callers must NOT add their own (a doubled
+  `--` makes `ntn` reject the flags). **Notion path verified DONE end-to-end:
+  reads pass through, writes are gated + create real pages on approval, the
+  box holds no token.**
