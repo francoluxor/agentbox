@@ -1,10 +1,14 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Supervisor } from '../src/supervisor.js';
 import type { CtlConfig, TaskSpec } from '../src/config.js';
+
+// Each test runs two full supervisor init/launch/stop cycles (spawning bash);
+// give CI runners headroom over vitest's 5s default.
+vi.setConfig({ testTimeout: 20000 });
 
 function taskCfg(task: TaskSpec): CtlConfig {
   return { services: [], tasks: [task], replacements: {} };
@@ -106,16 +110,21 @@ describe('idempotent tasks', () => {
 
   it('falls back to a writable dir under logDir when stateDir is not creatable', async () => {
     const ran = join(dir, 'ran');
+    // A regular file used as a parent dir → mkdir fails fast with ENOTDIR
+    // (deterministic + cross-platform; /proc behaves differently per-OS).
+    const blocker = join(dir, 'blocker');
+    await writeFile(blocker, '');
+    const badStateDir = join(blocker, 'agentbox');
     const task = { name: 't', command: `: > '${ran}'`, needs: [], idempotent: { kind: 'marker' } as const };
-    // /proc/... is not creatable — the supervisor must fall back to <logDir>/state.
-    const sup1 = new Supervisor({ workspace: dir, logDir: dir, stateDir: '/proc/nope/agentbox' });
+
+    const sup1 = new Supervisor({ workspace: dir, logDir: dir, stateDir: badStateDir });
     await sup1.init(taskCfg(task));
     await waitForTaskDone(sup1, 't');
     expect(existsSync(join(dir, 'state', 'tasks', 't'))).toBe(true); // marker in fallback
     await sup1.stopAll();
 
     await rm(ran);
-    const sup2 = new Supervisor({ workspace: dir, logDir: dir, stateDir: '/proc/nope/agentbox' });
+    const sup2 = new Supervisor({ workspace: dir, logDir: dir, stateDir: badStateDir });
     await sup2.init(taskCfg(task));
     await waitForTaskDone(sup2, 't');
     expect(existsSync(ran)).toBe(false); // skipped via the fallback marker
