@@ -3,7 +3,7 @@ title: Linear
 description: Let your box read and write Linear issues through the host's authenticated linear CLI — your API token never enters the box
 ---
 
-AgentBox can proxy Linear calls from inside a box to the host's authenticated `linear` CLI (`@schpet/linear-cli`). The box agent can list and view issues, run filtered queries, and (with your approval for each write) create or update issues and post comments — without your Linear API token ever entering the box. Same model as `agentbox-ctl git push`, `agentbox-ctl git pr create`, and the [Notion integration](/docs/integrations-notion).
+Give your box agent Linear access without putting your API token in the box. It can list, view, and filter issues on its own — then create issues, update them, or post comments once you approve each write. Every call is proxied through the host's authenticated `linear` CLI (`@schpet/linear-cli`), the same model as `agentbox-ctl git push` and the [Notion integration](/docs/integrations-notion).
 
 <Callout title="HOW IT WORKS">
 The box runs a tiny `linear` shim. Calls go through `agentbox-ctl integration linear <op>` to the **host relay**, which runs the host's real `linear` and ships the result back. Reads pass straight through. Writes raise a one-line confirm in your terminal first.

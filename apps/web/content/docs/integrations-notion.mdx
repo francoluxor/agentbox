@@ -3,7 +3,7 @@ title: Notion
 description: Let your box read and write Notion pages through the host's authenticated ntn CLI — your token never enters the box
 ---
 
-AgentBox can proxy Notion calls from inside a box to the host's authenticated `ntn` CLI. The box agent can search workspaces, read pages, and (with your approval for each write) create or update pages — without your Notion token ever entering the box. The same model as `agentbox-ctl git push` and `agentbox-ctl git pr create`.
+Give your box agent Notion access without putting your Notion token in the box. It can search your workspace, read pages, and query databases and data sources on its own — then create or update pages once you approve each write. Every call is proxied through the host's authenticated `ntn` CLI, the same model as `agentbox-ctl git push`.
 
 <Callout title="HOW IT WORKS">
 The box runs a tiny `ntn` / `notion` shim. Calls go through `agentbox-ctl integration notion <op>` to the **host relay**, which runs the host's real `ntn` and ships the result back. Reads pass straight through. Writes raise a one-line confirm in your terminal first.
@@ -61,13 +61,13 @@ The in-box shim exposes a strict allowlist. Anything outside the list is rejecte
 ntn whoami
 ntn api v1/pages/abc123                             # GET passthrough
 ntn api v1/databases/def456                         # GET passthrough
-# Note: search is POST /v1/search (needs -f / a body), which the GET-only
-# `api` op refuses — find pages by id, or search host-side.
+ntn api v1/search -d '{"query":"roadmap"}'          # read-only POST
+ntn api v1/data_sources/<id>/query -d '{}'          # read-only POST
 ntn pages create -p <db-id> -t "Draft from the box" # prompts on the host
 ```
 
-<Callout type="warn" title="comment creation is deferred">
-Notion's `ntn` exposes no top-level `comment` subcommand, and posting via `ntn api v1/comments -X POST -f …` needs a structured JSON body that the GET-only `api` op refuses. Comment writing will land as a dedicated op with a payload translator — see [integrations follow-ups](https://github.com/madarco/agentbox/blob/main/docs/integrations.md#open-follow-ups).
+<Callout type="warn" title="comment creation isn't supported yet">
+`ntn` has no top-level `comment` subcommand, and posting to `v1/comments` is a write — refused by the read-only `api` gate. There's no approved write op for comments yet, so the box can't create them.
 </Callout>
 
 ## Security model
@@ -75,8 +75,8 @@ Notion's `ntn` exposes no top-level `comment` subcommand, and posting via `ntn a
 | Concern | What AgentBox does |
 | --- | --- |
 | Where the Notion token lives | **Host only** — in the macOS keychain (or `ntn`'s configured file-auth on Linux). The box has no access to either. |
-| What the box can do unprompted | **Reads only** (`whoami`, `ntn api` GETs). |
-| What needs your approval | **Every write** (`page.create`, `page.update`), and **any non-GET `api` call** is refused outright with exit 65. |
+| What the box can do unprompted | **Reads only** (`whoami`, `ntn api` GETs, and the read-only query/search POSTs). |
+| What needs your approval | **Every write** (`page.create`, `page.update`). Any `api` call that isn't a read — a write method, or a POST to a non-read endpoint — is refused outright with exit 65. |
 | Where the approval lives | The host relay raises a confirm prompt; you answer in the attached terminal (`y` / `n`) or via `agentbox agent approve <id>` from an orchestrator. |
 | Inside the box, does the agent ever see the token? | **No.** `printenv \| grep -i notion` inside a box returns nothing — only `AGENTBOX_RELAY_TOKEN`, which only authenticates to the box-local relay endpoint. |
 | Auditability | Every approved write is logged as a relay event (visible via `/admin/events`, `agentbox agent`, the dashboard). |
@@ -89,9 +89,9 @@ The box is the untrusted side. Tokens in the box would survive `agentbox downloa
 
 ## Limitations and roadmap
 
-- **Notion only for now.** Linear, Trello, and ClickUp are on the integrations roadmap; their connectors will appear in `agentbox doctor` the same way once they ship.
-- **GET-only `api` passthrough.** Non-GET HTTP methods (`POST`, `PATCH`, `DELETE`) on `ntn api` are refused; use the dedicated write ops instead. This guards against an agent slipping a write past the read classification.
-- **Comment creation deferred.** Tracked as a follow-up.
+- **Read-only `api` passthrough.** `ntn api` allows GET to any endpoint and POST only to the read endpoints (`v1/search`, `v1/databases/<id>/query`, `v1/data_sources/<id>/query`). Every other method/endpoint — writes, `PATCH`/`DELETE`, host-file `--file`/`--input` bodies — is refused; use `pages create`/`pages update` for writes.
+- **Comment creation isn't supported yet.** No approved write op maps to `v1/comments` (see the callout above).
 - **Allowlist starts conservative.** As real agent flows surface needs, the op set will widen — file an issue with the failing call if something's missing.
+- **Trello / ClickUp** are still on the integrations roadmap; their connectors will appear in `agentbox doctor` the same way once they ship.
 
 See also [CLI commands](/docs/cli) for `agentbox doctor`, [Configuration](/docs/configuration) for the `integrations.notion.enabled` flag, and [Background & parallel](/docs/background-and-parallel) for the host-action approval surface.
