@@ -9,6 +9,54 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [0.16.0] - 2026-06-07
+
+### Added
+
+- **Notion integration.** A box can now call Notion through the host's
+  authenticated `ntn` CLI without the Notion token ever entering the box. The
+  in-box `ntn`/`notion` shim proxies to the host relay: reads pass straight
+  through, writes (`pages create`/`pages update`) prompt for host approval.
+  `ntn api` is read-only — GET to any endpoint plus the read-only POSTs
+  `v1/search`, `v1/databases/<id>/query`, and `v1/data_sources/<id>/query`
+  (full JSON bodies via `-d '<json>'`); every other method/endpoint is refused.
+  Off by default; enable per project with
+  `agentbox config set --project integrations.notion.enabled true`. Shows up in
+  `agentbox doctor`.
+- **Linear integration.** Same model for `@schpet/linear-cli`: read issues,
+  teams, and filtered queries plus a GraphQL **query** passthrough
+  (`linear api`); `mutation`/`subscription` are refused. `issue create`/
+  `update`/`comment add` prompt for host approval; `auth token` is hard-rejected
+  so the key stays on the host. Enable with `integrations.linear.enabled`.
+- **`run_once:` tasks** in `agentbox.yaml` (renamed from `idempotent:`): a task
+  that runs only on a cold box and is skipped on warm boots, tracked by a
+  durable marker.
+- **`agentbox.yaml` replacement engine** with an `{{AGENTBOX_AUTO_SECRET}}`
+  generator (stable per-project secret) and a new `agentbox render` command to
+  preview the resolved file. Replacements also apply to `carry:` targets.
+- **Docker `image:` services.** Sidecar containers declared under `image:` now
+  take their `ports`/`env` nested under `image:` as well, keeping all
+  image-level config in one place.
+- **Codex plugin marketplace.** AgentBox installs as a Codex plugin straight
+  from the repo (`codex plugin marketplace add madarco/agentbox`).
+
+### Fixed
+
+- `carry:` and `agentbox cp` copy files via `docker exec tar` instead of
+  `docker cp`, fixing "read/write on closed pipe" failures into the
+  bind-mounted workspace and relative-path targets (e.g. `./backups/...`).
+- `agentbox doctor` integration probes are time-bounded and stdin-isolated, so
+  doctor no longer hangs when a connector's auth check blocks; a timed-out
+  probe now reports a timeout rather than "not logged in".
+
+### Security
+
+- The Notion `ntn api` gate is fail-closed: it refuses any unrecognized flag
+  rather than ignoring it, closing a bypass where ntn's value-consuming global
+  flags (`--workers-config-file`, `--env`) could shift the real request
+  endpoint past the read classification. Host-file (`--file`/`--input`) bodies
+  and `.`/`..` path segments are refused.
+
 ## [0.15.0] - 2026-06-05
 
 ### Breaking
