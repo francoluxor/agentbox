@@ -322,8 +322,8 @@ Mark credential entries `optional: true` so a box still comes up when a given fi
 replacements:
   box-host:
     # Repoint a hard-coded hostname at this box's published URL.
-    - from: '\.optima\.localhost'
-      to: '.{{AGENTBOX_BOX_NAME}}.localhost'
+    - from: 'optima\.localhost'
+      to: '{{AGENTBOX_BOX_HOST}}'   # = <box-name>.localhost
       regex: true
 ```
 

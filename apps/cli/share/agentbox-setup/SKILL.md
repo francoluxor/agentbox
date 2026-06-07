@@ -265,7 +265,7 @@ Many apps hard-code a hostname (e.g. `optima.localhost`) or read a gitignored `.
   ```yaml
   replacements:
     box-host:
-      - { from: '\.optima\.localhost', to: '.{{AGENTBOX_BOX_NAME}}.localhost', regex: true }
+      - { from: 'optima\.localhost', to: '{{AGENTBOX_BOX_HOST}}', regex: true }  # {{AGENTBOX_BOX_HOST}} = <box>.localhost
 
   tasks:
     env:
