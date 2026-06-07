@@ -600,9 +600,13 @@ export class TaskRunner extends EventEmitter<TaskRunnerEvents> implements Unit {
       this.child = null;
       this.appendEvent('stderr', `[ctl] exited code=${String(code)} signal=${signal ?? 'none'}`);
       if (code === 0 && spec.runOnce?.kind === 'marker') {
-        void this.writeMarker(cwd);
+        // Persist the marker BEFORE transitioning to done, so the marker is
+        // durable once the task is observably complete (a crash in between would
+        // otherwise lose it and re-run next boot).
+        void this.writeMarker(cwd).finally(() => this.setState('done'));
+      } else {
+        this.setState(code === 0 ? 'done' : 'failed');
       }
-      this.setState(code === 0 ? 'done' : 'failed');
     });
     child.on('error', (err) => {
       this.appendEvent('stderr', `[ctl] child error: ${err.message}`);
