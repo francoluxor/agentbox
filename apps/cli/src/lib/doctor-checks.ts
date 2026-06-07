@@ -516,6 +516,15 @@ async function checkOneIntegration(
   }
 
   const auth = await probeIntegrationBin(connector.hostBin, connector.detect.authArgs);
+  // A timed-out probe (124) means the CLI is installed but its auth check
+  // stalled — report that, don't claim the user is logged out.
+  if (auth.exitCode === 124) {
+    return {
+      label: svc,
+      status: 'warn',
+      detail: `auth check timed out after ${String(INTEGRATION_PROBE_TIMEOUT_MS / 1000)}s`,
+    };
+  }
   if (auth.exitCode !== 0) {
     return {
       label: svc,
