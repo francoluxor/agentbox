@@ -108,10 +108,10 @@ chmod 0440 /etc/sudoers.d/90-agentbox-vscode
 done_ "vscode user (UID 1000) + sudoers"
 
 step "agentbox base dirs + /workspace ownership"
-mkdir -p /workspace /run/agentbox /var/log/agentbox /etc/agentbox /etc/claude-code \
+mkdir -p /workspace /run/agentbox /var/log/agentbox /var/lib/agentbox /etc/agentbox /etc/claude-code \
          /usr/local/share/agentbox
 chmod 755 /workspace
-chown vscode:vscode /workspace /run/agentbox /var/log/agentbox
+chown vscode:vscode /workspace /run/agentbox /var/log/agentbox /var/lib/agentbox
 done_ "agentbox base dirs + /workspace ownership"
 
 step "node setcap (port <1024 bind without root)"

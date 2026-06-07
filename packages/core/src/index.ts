@@ -43,6 +43,7 @@ export {
   applyReplacements,
   substitutePlaceholders,
   placeholderContextFromEnv,
+  deriveBoxHost,
   parseReplaceRule,
   parseReplaceRules,
   parseReplacements,

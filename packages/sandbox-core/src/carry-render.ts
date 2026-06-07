@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { applyReplacements, type ResolvedCarryEntry } from '@agentbox/core';
+import { applyReplacements, deriveBoxHost, type ResolvedCarryEntry } from '@agentbox/core';
 
 /**
  * Box facts used to fill `{{AGENTBOX_*}}` placeholders in carried files. The
@@ -25,8 +25,12 @@ export function carryPlaceholderContext(ctx: CarryBoxContext): Record<string, st
   if (ctx.kind) out.AGENTBOX_BOX_KIND = ctx.kind;
   if (ctx.hostWorkspace) out.AGENTBOX_HOST_WORKSPACE = ctx.hostWorkspace;
   if (ctx.projectRoot) out.AGENTBOX_PROJECT_ROOT = ctx.projectRoot;
-  if (ctx.name) out.AGENTBOX_BOX_HOST = `${ctx.name}.localhost`;
-  return out;
+  return deriveBoxHost(out);
+}
+
+/** Whether an entry opts into host-side rendering (file entries only). */
+function wantsRender(e: ResolvedCarryEntry): boolean {
+  return e.kind === 'file' && (!!e.replaceEnvs || (e.replace?.length ?? 0) > 0);
 }
 
 /**
@@ -41,17 +45,13 @@ export async function renderCarryEntries(
   ctx: CarryBoxContext,
   onLog?: (line: string) => void,
 ): Promise<ResolvedCarryEntry[]> {
-  const needsRender = entries.some(
-    (e) => e.kind === 'file' && (e.replaceEnvs || (e.replace && e.replace.length > 0)),
-  );
-  if (!needsRender) return entries;
+  if (!entries.some(wantsRender)) return entries;
 
   const context = carryPlaceholderContext(ctx);
   const stage = await mkdtemp(join(tmpdir(), 'agentbox-carry-render-'));
   const out: ResolvedCarryEntry[] = [];
   for (const [i, entry] of entries.entries()) {
-    const wants = entry.kind === 'file' && (entry.replaceEnvs || (entry.replace?.length ?? 0) > 0);
-    if (!wants) {
+    if (!wantsRender(entry)) {
       out.push(entry);
       continue;
     }
@@ -65,9 +65,11 @@ export async function renderCarryEntries(
     const tmp = join(stage, `${String(i)}-${basename(entry.absSrc)}`);
     await writeFile(tmp, rendered, 'utf8');
     out.push({ ...entry, absSrc: tmp, bytes: Buffer.byteLength(rendered) });
-    onLog?.(`carry: rendered ${entry.rawSrc} (${entry.replaceEnvs ? 'env' : ''}${
-      entry.replace?.length ? `${entry.replaceEnvs ? '+' : ''}${String(entry.replace.length)} rule(s)` : ''
-    })`);
+    const what = [
+      ...(entry.replaceEnvs ? ['env'] : []),
+      ...(entry.replace?.length ? [`${String(entry.replace.length)} rule(s)`] : []),
+    ].join('+');
+    onLog?.(`carry: rendered ${entry.rawSrc} (${what})`);
   }
   return out;
 }

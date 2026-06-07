@@ -88,10 +88,10 @@ visudo -cf /etc/sudoers >/dev/null
 done_ "vscode user + sudoers"
 
 step "agentbox base dirs + /workspace ownership"
-mkdir -p /workspace /run/agentbox /var/log/agentbox /etc/agentbox /etc/claude-code \
+mkdir -p /workspace /run/agentbox /var/log/agentbox /var/lib/agentbox /etc/agentbox /etc/claude-code \
          /usr/local/share/agentbox
 chmod 755 /workspace
-chown vscode:vscode /workspace /run/agentbox /var/log/agentbox
+chown vscode:vscode /workspace /run/agentbox /var/log/agentbox /var/lib/agentbox
 done_ "agentbox base dirs + /workspace ownership"
 
 step "node setcap (bind <1024 without root)"

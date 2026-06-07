@@ -108,6 +108,19 @@ export function applyReplacements(content: string, opts: ApplyReplacementsOption
   return out;
 }
 
+/**
+ * Fill in `AGENTBOX_BOX_HOST` (the published portless host, `<box-name>.localhost`)
+ * from `AGENTBOX_BOX_NAME` when it isn't already set. Single source of truth for
+ * the host-derivation rule, shared by every placeholder-context builder. Mutates
+ * and returns `ctx`.
+ */
+export function deriveBoxHost(ctx: Record<string, string>): Record<string, string> {
+  if (ctx.AGENTBOX_BOX_HOST === undefined && ctx.AGENTBOX_BOX_NAME !== undefined) {
+    ctx.AGENTBOX_BOX_HOST = `${ctx.AGENTBOX_BOX_NAME}.localhost`;
+  }
+  return ctx;
+}
+
 /** Build the whitelist placeholder context from a process environment. */
 export function placeholderContextFromEnv(
   env: NodeJS.ProcessEnv = process.env,
@@ -117,10 +130,7 @@ export function placeholderContextFromEnv(
     const v = env[key];
     if (typeof v === 'string' && v.length > 0) ctx[key] = v;
   }
-  if (ctx.AGENTBOX_BOX_HOST === undefined && ctx.AGENTBOX_BOX_NAME !== undefined) {
-    ctx.AGENTBOX_BOX_HOST = `${ctx.AGENTBOX_BOX_NAME}.localhost`;
-  }
-  return ctx;
+  return deriveBoxHost(ctx);
 }
 
 // --- rule parsing (shared by config top-level `replacements:` and the CLI) ---

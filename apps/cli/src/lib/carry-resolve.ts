@@ -112,13 +112,10 @@ async function resolveOne(item: CarryItem, ctx: OneCtx): Promise<ResolvedCarryEn
     ...resolveRuleRefs(item.rules ?? [], ctx.replacements, `${ctx.where}.rules`),
     ...(item.replace ?? []),
   ];
-  const replaceFields =
-    hasReplaceOpts && (item.replaceEnvs || replaceRules.length > 0)
-      ? {
-          ...(item.replaceEnvs ? { replaceEnvs: true } : {}),
-          ...(replaceRules.length > 0 ? { replace: replaceRules } : {}),
-        }
-      : {};
+  const replaceFields = {
+    ...(item.replaceEnvs ? { replaceEnvs: true } : {}),
+    ...(replaceRules.length > 0 ? { replace: replaceRules } : {}),
+  };
 
   let st: Awaited<ReturnType<typeof stat>>;
   try {

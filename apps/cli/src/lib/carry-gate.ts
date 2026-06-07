@@ -1,7 +1,8 @@
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { log } from '@clack/prompts';
 import { loadEffectiveConfig } from '@agentbox/config';
-import { loadCarrySection, loadReplacementsSection } from '@agentbox/ctl';
+import { parseCarrySection, parseReplacementsSection } from '@agentbox/ctl';
 import type { ResolvedCarryEntry } from '@agentbox/core';
 import { promptForCarry } from '../carry-prompt.js';
 import { resolveCarry } from './carry-resolve.js';
@@ -37,11 +38,19 @@ export async function runCarryGate(args: CarryGateArgs): Promise<CarryGateResult
   const emit = args.onLog ?? (() => {});
   const yamlPath = join(args.projectRoot, 'agentbox.yaml');
 
-  const items = await loadCarrySection(yamlPath);
+  // Read agentbox.yaml once; parse both the carry and replacements sections
+  // from the same text (a single readFile + parse).
+  let yamlText = '';
+  try {
+    yamlText = await readFile(yamlPath, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  const items = parseCarrySection(yamlText);
   if (items.length === 0) return { decision: 'approve', entries: [] };
 
   const cfg = await loadEffectiveConfig(args.projectRoot);
-  const replacements = await loadReplacementsSection(yamlPath);
+  const replacements = parseReplacementsSection(yamlText);
   const resolved = await resolveCarry(items, {
     projectRoot: args.projectRoot,
     maxBytes: cfg.effective.box.cpMaxBytes,

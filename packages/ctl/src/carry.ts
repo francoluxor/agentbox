@@ -57,30 +57,18 @@ const ITEM_KEYS = new Set([
   'rules',
 ]);
 
-function parseRulesRefs(raw: unknown, where: string): string[] | undefined {
+// Parse a YAML field into a list of trimmed non-empty strings (undefined when
+// empty/absent). Shared by `exclude` and `rules`; `desc` names the element kind
+// in the error message.
+function parseStringList(raw: unknown, where: string, desc: string): string[] | undefined {
   if (raw === undefined || raw === null) return undefined;
   if (!Array.isArray(raw)) {
-    throw new CarryConfigError(`${where}.rules must be a list of replacements rule-set names`);
+    throw new CarryConfigError(`${where} must be a list of ${desc}`);
   }
   const out: string[] = [];
   for (const [i, v] of raw.entries()) {
     if (typeof v !== 'string' || v.trim().length === 0) {
-      throw new CarryConfigError(`${where}.rules[${String(i)}] must be a non-empty string`);
-    }
-    out.push(v.trim());
-  }
-  return out.length > 0 ? out : undefined;
-}
-
-function parseExclude(raw: unknown, where: string): string[] | undefined {
-  if (raw === undefined || raw === null) return undefined;
-  if (!Array.isArray(raw)) {
-    throw new CarryConfigError(`${where}.exclude must be a list of glob/name strings`);
-  }
-  const out: string[] = [];
-  for (const [i, v] of raw.entries()) {
-    if (typeof v !== 'string' || v.trim().length === 0) {
-      throw new CarryConfigError(`${where}.exclude[${String(i)}] must be a non-empty string`);
+      throw new CarryConfigError(`${where}[${String(i)}] must be a non-empty string`);
     }
     out.push(v.trim());
   }
@@ -227,7 +215,7 @@ function parseMapping(raw: Record<string, unknown>, where: string): CarryItem {
 
   const mode = parseMode(raw.mode, where);
   const user = parseUser(raw.user, where);
-  const exclude = parseExclude(raw.exclude, where);
+  const exclude = parseStringList(raw.exclude, `${where}.exclude`, 'glob/name strings');
 
   let optional = false;
   if (raw.optional !== undefined && raw.optional !== null) {
@@ -253,7 +241,7 @@ function parseMapping(raw: Record<string, unknown>, where: string): CarryItem {
       throw new CarryConfigError(err instanceof Error ? err.message : String(err));
     }
   }
-  const rules = parseRulesRefs(raw.rules, where);
+  const rules = parseStringList(raw.rules, `${where}.rules`, 'replacements rule-set names');
 
   const out: CarryItem = { src, dest, optional };
   if (mode !== undefined) out.mode = mode;
