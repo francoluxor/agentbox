@@ -77,11 +77,11 @@ For `integration.<service>.<op>`:
 | Op            | Class | Host argv                | Notes                                                                                  |
 | ------------- | ----- | ------------------------ | -------------------------------------------------------------------------------------- |
 | `whoami`      | read  | `ntn whoami`             | dedicated op so the agent doesn't need to widen the `api` allowlist.                   |
-| `api`         | read  | `ntn api <args>`         | `GET`-only; `refuseApiNonGet` rejects `-X`/`--method`/`-f`/`-F` (Go pflag-style).      |
+| `api`         | read  | `ntn api <args>`         | `refuseUnsafeApiCall`: GET to any endpoint; POST only to `v1/search`, `v1/databases/{id}/query`, `v1/data_sources/{id}/query` (body via `-d <JSON>` / inline `path:=json`). Method inferred from `-d`/inline body, `-X`/`--method` overrides; other methods/POSTs + `--input`/`--file` refused. |
 | `page.create` | write | `ntn pages create <args>` | gated by `askPrompt`. (User-facing shim form: `ntn pages create …`.)                   |
 | `page.update` | write | `ntn pages update <args>` | gated; covers archive + props. (User-facing shim form: `ntn pages update …`.)         |
 
-`comment.add` is intentionally absent — `ntn` exposes no top-level `comment` subcommand. The only path is `ntn api v1/comments -X POST -f …`, which the `api` op refuses (GET-only). Comment creation needs a Notion-API-aware payload assembler that maps CLI flags to the structured `POST /v1/comments` body; tracked as a follow-up in [`notion_backlog.md`](./notion_backlog.md). The in-box shim rejects `notion comment add …` with a clear "deferred" message.
+`comment.add` is intentionally absent — `ntn` exposes no top-level `comment` subcommand. The only path is `ntn api v1/comments -X POST -d …`, which the `api` op refuses (POST is allowed only for the read endpoints — search + database/data-source query — not `v1/comments`). Comment creation needs a Notion-API-aware payload assembler that maps CLI flags to the structured `POST /v1/comments` body; tracked as a follow-up in [`notion_backlog.md`](./notion_backlog.md). The in-box shim rejects `notion comment add …` with a clear "deferred" message.
 
 ## The enable flag
 

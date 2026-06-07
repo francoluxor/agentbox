@@ -607,33 +607,33 @@ describe('ntn-shim subcommand allowlist', () => {
     }
   });
 
-  it('api forwards write-shaped argv intact (relay enforces GET-only)', () => {
-    // The shim does NOT replicate refuseApiNonGet — that's the relay's job.
-    // It must hand through -X POST / -f field=value so the relay sees the
-    // real argv and can refuse, instead of the agent thinking the call
-    // succeeded silently.
+  it('api forwards argv verbatim, incl. options before the path (relay gates it)', () => {
+    // The shim mirrors real `ntn api` and does NOT replicate the gate — it
+    // hands argv through (options may precede the path; -d carries the body)
+    // so the relay's refuseUnsafeApiCall sees the real call and can refuse,
+    // instead of the agent thinking the call succeeded silently.
     const env = makeStubShell();
     try {
       const out = runShim(
         NTN_SHIM,
-        ['api', 'v1/pages', '-X', 'POST', '-f', 'title=hi'],
+        ['api', '-X', 'POST', 'v1/search', '-d', '{"query":"x"}'],
         env,
       );
       expect(out.code).toBe(0);
       expect(out.stdout).toContain(
-        'STUB: integration notion api -- v1/pages -X POST -f title=hi',
+        'STUB: integration notion api -- -X POST v1/search -d {"query":"x"}',
       );
     } finally {
       env.cleanup();
     }
   });
 
-  it('api with no endpoint is rejected', () => {
+  it('api with no args forwards to the relay (host ntn shows its own usage)', () => {
     const env = makeStubShell();
     try {
       const out = runShim(NTN_SHIM, ['api'], env);
-      expect(out.code).toBe(2);
-      expect(out.stderr).toMatch(/'api' requires a positional <endpoint>/);
+      expect(out.code).toBe(0);
+      expect(out.stdout).toContain('STUB: integration notion api --');
     } finally {
       env.cleanup();
     }

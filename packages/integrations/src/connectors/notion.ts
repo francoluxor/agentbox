@@ -5,11 +5,11 @@ import type { IntegrationConnector, IntegrationOpRefusal } from '../types.js';
  *
  * The op allowlist is intentionally minimal (start conservative, widen as
  * real agent flows surface needs). Two read passthroughs (`ntn whoami` and
- * `ntn api …` for GETs against the v1 REST surface) plus two gated writes.
- * The `api` passthrough is GET-only — `refuseApiNonGet` parses
- * `-X`/`--method`/`-f`/`-F` (and their glued forms) the same way
- * `refuseGhApiCall` does, so an agent can't slip a POST/PATCH/DELETE past
- * the "read" classification.
+ * `ntn api …` against the v1 REST surface) plus two gated writes. The `api`
+ * passthrough is read-only — `refuseUnsafeApiCall` allows GET to any endpoint
+ * and POST only to Notion's read-by-POST endpoints (`v1/search`, database /
+ * data-source `/query`), and refuses everything else, so an agent can't slip a
+ * write past the "read" classification.
  *
  * Comment creation is intentionally absent: `ntn` exposes no top-level
  * `comment` subcommand (the official surface is `api datasources files
@@ -41,7 +41,7 @@ export const notionConnector: IntegrationConnector = {
     api: {
       write: false,
       buildArgv: (args) => ['api', ...args],
-      refuseCall: refuseApiNonGet,
+      refuseCall: refuseUnsafeApiCall,
     },
     'page.create': {
       write: true,
@@ -55,27 +55,48 @@ export const notionConnector: IntegrationConnector = {
 };
 
 /**
- * Reject any `ntn api` call whose argv would issue a non-GET HTTP method.
- *
- * `ntn api`'s flag surface mirrors `gh api`'s (Go pflag-style): an
- * explicit method via `-X`/`--method` (with separate, glued, or `=`-joined
- * values), or any field flag (`-f`/`-F`/`--field`/`--raw-field`) which
- * implicitly switches the request to POST. We refuse all of those.
- * `--input` (stdin/file body) can't traverse the relay anyway.
- *
- * Kept here (next to the op declaration) — not exported — because the
- * test surface is "does notion.api refuse a DELETE", not the parser
- * shape. If a second connector needs the same check, lift it.
+ * Notion's read-by-POST endpoints — the only POSTs `ntn api` may proxy.
+ * Anchored, leading-slash-tolerant, and `[^/?]+` for the id segment so a
+ * query string or extra path component can't smuggle a different endpoint.
  */
-function refuseApiNonGet(args: readonly string[]): IntegrationOpRefusal | null {
+const READ_POST_ENDPOINTS: readonly RegExp[] = [
+  /^\/?v1\/search$/,
+  /^\/?v1\/databases\/[^/?]+\/query$/,
+  /^\/?v1\/data_sources\/[^/?]+\/query$/,
+];
+
+/**
+ * Reject any `ntn api` call that isn't a read. A read is: GET to any endpoint,
+ * or POST to one of {@link READ_POST_ENDPOINTS} (search + database/data-source
+ * `/query` — POST in the Notion API but semantically reads). Everything else —
+ * writes (`v1/pages`, `v1/comments`, …), PATCH/PUT/DELETE, POST to a
+ * non-read endpoint — is refused; writes go through `page.create`/`page.update`.
+ *
+ * `ntn api`'s real surface (verified via `ntn api --help`): method is inferred
+ * from endpoint + body; `-X`/`--method` overrides; body sources are `-d`/`--data
+ * <JSON>` and inline assignments (`path=value`, `path:=json`) — NOT `gh`-style
+ * `-f`/`-F` (which `ntn` doesn't have). We classify any body source as non-GET
+ * so a write can't slip through as a body-less "GET". `--input` (stdin/file
+ * body) and `--file` (host-file upload) read host state and can't traverse the
+ * relay, so both are refused outright.
+ *
+ * Kept here (next to the op declaration) — not exported — because the test
+ * surface is "does notion.api refuse this call", not the parser shape.
+ */
+function refuseUnsafeApiCall(args: readonly string[]): IntegrationOpRefusal | null {
   const refuse = (reason: string): IntegrationOpRefusal => ({
     exitCode: 65,
     stderr: `notion api: ${reason}\n`,
   });
+
   let explicitMethod: string | null = null;
-  let hasFieldFlag = false;
+  let hasBody = false;
+  let endpoint: string | null = null;
+
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] ?? '';
+
+    // Explicit method (split, glued, or `=`-joined).
     if (arg === '-X' || arg === '--method') {
       explicitMethod = args[i + 1] ?? '';
       i++;
@@ -89,29 +110,72 @@ function refuseApiNonGet(args: readonly string[]): IntegrationOpRefusal | null {
       explicitMethod = arg.slice(2).replace(/^=/, '');
       continue;
     }
-    if (arg === '--input' || arg.startsWith('--input=')) {
-      return refuse("'--input' (stdin/file body) isn't supported through the relay");
-    }
-    // Field flags auto-POST in gh; ntn follows the same convention. Consume
-    // the spaced value so a method-looking token bound to the field (e.g.
-    // `-f -X=GET`) can't downgrade the detected method on the next loop.
-    if (arg === '-f' || arg === '-F' || arg === '--field' || arg === '--raw-field') {
-      hasFieldFlag = true;
+
+    // Raw JSON body — implies a write-class request unless the endpoint is read.
+    if (arg === '-d' || arg === '--data') {
+      hasBody = true;
       i++;
       continue;
     }
-    if (
-      arg.startsWith('-f') ||
-      arg.startsWith('-F') ||
-      arg.startsWith('--field=') ||
-      arg.startsWith('--raw-field=')
-    ) {
-      hasFieldFlag = true;
+    if (arg.startsWith('--data=') || (arg.startsWith('-d') && arg.length > 2)) {
+      hasBody = true;
+      continue;
     }
+
+    // Host-file / stdin bodies: can't traverse the relay, and `--file` reads an
+    // arbitrary host file. Refuse both regardless of endpoint.
+    if (arg === '--file' || arg.startsWith('--file=')) {
+      return refuse("'--file' (host-file upload) isn't supported through the relay");
+    }
+    if (arg === '--input' || arg.startsWith('--input=')) {
+      return refuse("'--input' (stdin/file body) isn't supported through the relay; use -d <JSON>");
+    }
+
+    // Value-consuming option we forward unchanged.
+    if (arg === '--notion-version') {
+      i++;
+      continue;
+    }
+
+    // Any other flag (boolean: --spec/--docs/-h/-v, or unknown): ignore.
+    if (arg.startsWith('-')) continue;
+
+    // First bare positional is the API path; the rest are inline inputs.
+    if (endpoint === null) {
+      endpoint = arg;
+      continue;
+    }
+    if (isBodyAssignment(arg)) hasBody = true;
   }
-  const method = (explicitMethod ?? (hasFieldFlag ? 'POST' : 'GET')).toUpperCase();
+
+  const method = (
+    explicitMethod && explicitMethod.length > 0 ? explicitMethod : hasBody ? 'POST' : 'GET'
+  ).toUpperCase();
+
   if (method === 'GET') return null;
+  if (method !== 'POST') {
+    return refuse(
+      `only GET and read-only POST are proxied (use page.create / page.update for writes); detected method '${method}'`,
+    );
+  }
+  if (endpoint === null) {
+    return refuse('could not determine the API endpoint for a non-GET call');
+  }
+  if (READ_POST_ENDPOINTS.some((re) => re.test(endpoint!))) return null;
   return refuse(
-    `only GET is proxied (use page.create / page.update for writes); detected method '${method}'`,
+    `POST is only proxied for read endpoints (v1/search, v1/databases/{id}/query, ` +
+      `v1/data_sources/{id}/query); '${endpoint}' is not one (use page.create / page.update for writes)`,
   );
+}
+
+/**
+ * Whether an inline-input token is a request-BODY assignment (so it implies a
+ * write-class request). `ntn` inline syntax: `path:=json` (typed body) and
+ * `path=value` (string body) are bodies; `name==value` (query param) and
+ * `Header:Value` (header) are not.
+ */
+function isBodyAssignment(token: string): boolean {
+  if (token.includes(':=')) return true;
+  if (token.includes('==')) return false;
+  return token.includes('=');
 }

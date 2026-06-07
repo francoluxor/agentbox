@@ -59,7 +59,9 @@ case "$1" in
     ;;
   --help|-h)
     printf 'agentbox notion shim — strict subset.\n' >&2
-    printf 'Supported: whoami, api <endpoint>, pages {create, update}, --version\n' >&2
+    printf 'Supported: whoami, api <path> [inputs] [-d JSON], pages {create, update}, --version\n' >&2
+    printf 'api is read-only: GET to any endpoint; POST only to v1/search and\n' >&2
+    printf 'v1/{databases,data_sources}/{id}/query. Writes go through `pages`.\n' >&2
     printf 'Anything else is rejected. Run host `ntn --help` for full upstream docs.\n' >&2
     ;;
   whoami)
@@ -68,12 +70,12 @@ case "$1" in
     ;;
   api)
     shift
-    if [ $# -eq 0 ] || [ "${1:0:1}" = "-" ]; then
-      die "'api' requires a positional <endpoint> (e.g. v1/users/me)"
-    fi
-    # The relay's refuseApiNonGet enforces GET-only by parsing
-    # -X/--method/-f/-F, so we don't duplicate that check here. Writes go
-    # through the dedicated page.* ops.
+    # Forward verbatim to mirror real `ntn api` (options may precede the path;
+    # `ls`/`help`/`--spec`/`--docs` and `-d <JSON>` bodies are all valid). The
+    # relay's refuseUnsafeApiCall is the security boundary: GET to any endpoint,
+    # POST only to read endpoints (v1/search, v1/databases/{id}/query,
+    # v1/data_sources/{id}/query); every other method/endpoint is refused.
+    # Writes go through the dedicated `pages create/update` ops.
     exec "$CTL" integration notion api -- "$@"
     ;;
   pages)

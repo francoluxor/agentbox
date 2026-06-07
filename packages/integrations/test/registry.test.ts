@@ -96,25 +96,32 @@ describe('notion api refuseCall — keeps write:false honest', () => {
     }
   });
 
-  it('refuses implicit POST via field flags (gh-pflag style)', () => {
-    // -f / -F / --field / --raw-field auto-switch to POST per gh's convention.
-    expect(refuse(['v1/pages', '-f', 'title=hi'])?.exitCode).toBe(65);
-    expect(refuse(['v1/pages', '-fbody=hi'])?.exitCode).toBe(65);
-    expect(refuse(['v1/pages', '--field=body=hi'])?.exitCode).toBe(65);
-    expect(refuse(['v1/pages', '-F', 'count=5'])?.exitCode).toBe(65);
+  it('refuses an implicit write (body via -d or inline) to a non-read endpoint', () => {
+    // ntn infers POST from a body source: -d <JSON> or inline `path=value` /
+    // `path:=json`. A body to a write endpoint must be refused (not slip
+    // through as a body-less "GET").
+    expect(refuse(['v1/pages', '-d', '{"x":1}'])?.exitCode).toBe(65);
+    expect(refuse(['v1/pages', 'title=hi'])?.exitCode).toBe(65); // inline string body
+    expect(refuse(['v1/pages', 'archived:=true'])?.exitCode).toBe(65); // typed JSON body
+    expect(refuse(['v1/comments', '-d', '{}'])?.exitCode).toBe(65);
   });
 
-  it('refuses --input (stdin/file body cannot cross the relay)', () => {
+  it('allows read-only POST (search + database/data-source query)', () => {
+    expect(refuse(['v1/search', '-d', '{"query":"x"}'])).toBeNull();
+    expect(refuse(['v1/databases/abc/query', '-d', '{"page_size":100}'])).toBeNull();
+    expect(refuse(['v1/data_sources/abc/query', 'filter:={}'])).toBeNull();
+  });
+
+  it('refuses --input / --file (stdin/host-file body cannot cross the relay)', () => {
     expect(refuse(['--input', '-', 'v1/pages'])?.exitCode).toBe(65);
     expect(refuse(['--input=/tmp/x', 'v1/pages'])?.exitCode).toBe(65);
     expect(refuse(['--input=/tmp/x'])?.stderr).toMatch(/--input/);
+    expect(refuse(['v1/databases/abc/query', '--file', '/etc/passwd'])?.stderr).toMatch(/--file/);
   });
 
-  it("doesn't downgrade a POST when a field's value looks like -X=GET", () => {
-    // pflag binds `-X=GET` as `-f`'s value (so the request still POSTs);
-    // refuse must consume the field value and not re-read the next token
-    // as an explicit method.
-    expect(refuse(['v1/pages', '-f', '-X=GET'])?.exitCode).toBe(65);
+  it('consumes the -d body value so it cannot be reparsed as a method', () => {
+    // The JSON after -d must not be re-read as -X/--method on the next loop.
+    expect(refuse(['v1/pages', '-d', '-X=GET'])?.exitCode).toBe(65);
   });
 });
 

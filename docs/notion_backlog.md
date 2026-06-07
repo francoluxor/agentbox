@@ -41,10 +41,11 @@ The working vertical slice: `agentbox-ctl integration notion <op>` round-trips
 through the relay to host `ntn`, with read/write classification + write gating.
 - `packages/integrations/` package: `types.ts` (IntegrationOp, IntegrationConnector),
   `registry.ts` (getConnector, ALL_CONNECTORS), `connectors/notion.ts`.
-  - Notion ops (start minimal, allowlist-only): **read** `api` (GET passthrough,
-    e.g. `ntn api v1/users/me`, `ntn api v1/pages/<id>` — POST endpoints like
-    `v1/search` are refused by the GET-only gate); **write** `page.create`,
-    `page.update` (archive/props), `comment.add` — all gated.
+  - Notion ops (start minimal, allowlist-only): **read** `api` (`refuseUnsafeApiCall`:
+    GET to any endpoint, e.g. `ntn api v1/users/me`; plus read-by-POST `v1/search`,
+    `v1/databases/{id}/query`, `v1/data_sources/{id}/query` with a `-d <JSON>` body —
+    see the 2026-06-08 entry); **write** `page.create`, `page.update` (archive/props),
+    `comment.add` — all gated.
 - `packages/relay/src/integrations.ts`: `runHostIntegration`,
   `assertIntegrationReady`, generic `integration.<svc>.<op>` dispatch (reuse
   `askPrompt` + `HostInitiatedTokens`). Connector forces `NOTION_KEYRING=0` env.
@@ -260,3 +261,15 @@ Make a box agent able to type `notion …` or `ntn …`.
   them now). The nested-dev `NOTION_KEYRING=0 ntn login` requirement moved to
   [`docs/development.md`](./development.md). Earlier status-log/task lines that
   say "the connector forces `NOTION_KEYRING=0`" are superseded by this entry.
+- 2026-06-08: `ntn api` is no longer GET-only — `refuseApiNonGet` became
+  `refuseUnsafeApiCall`, which allows GET to any endpoint **plus** the read-by-POST
+  endpoints `v1/search`, `v1/databases/{id}/query`, `v1/data_sources/{id}/query`
+  (anchored regex; JSON body inline via `-d <JSON>`). Querying a database/data
+  source and searching now work from a box. Two things drove the rewrite: (1) the
+  old gate was written for `gh`-style `-f`/`-F` field flags that **`ntn` doesn't
+  have** — `ntn` infers POST from `-d`/inline `path=value`/`path:=json` bodies, so
+  the old gate silently classified `ntn api v1/pages -d '{…}'` (a write) as "GET"
+  and let it through — a write-bypass hole the new gate closes; (2) `--input`/`--file`
+  (stdin / host-file body) stay refused. The `ntn-shim` `api` handler now forwards
+  argv verbatim (mirrors real `ntn`: options may precede the path). Gate table in
+  `packages/integrations/test/notion.test.ts`.
