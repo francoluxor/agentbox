@@ -116,7 +116,7 @@ tasks:
 | Form | Behavior |
 | --- | --- |
 | `idempotent: true` | The supervisor stores a marker keyed by a **hash of the resolved command**. A warm boot skips while the hash matches; editing the command invalidates it and re-runs. The marker lives at `/var/lib/agentbox/tasks/<name>` (box rootfs — captured by checkpoints, never under `/workspace`). |
-| `idempotent: { check: <cmd> }` | Run the probe before launching; **exit 0 means already satisfied** (skip). No marker is written — the probe is the source of truth. Use this when the thing you'd guard on lives **outside** the checkpointed filesystem (e.g. a containerized database, whose data is in the in-box docker volume, not the checkpoint). |
+| `idempotent: { check: <cmd> }` | Run the probe before launching; **exit 0 means already satisfied** (skip). No marker is written — the probe is the source of truth. Use this when the thing you'd guard on lives **outside** the checkpointed filesystem (e.g. a containerized database, whose data is in the in-box docker volume, not the checkpoint). The probe runs verbatim via `bash -c` with the box env, so use shell vars like `$AGENTBOX_BOX_NAME`; it does **not** expand `{{…}}` placeholders (those are render-only). |
 
 ```yaml
 tasks:
@@ -339,14 +339,12 @@ carry:
     rules: [box-host]
 ```
 
-**2. In-box (files already in the workspace).** `agentbox-ctl render` is a declarative `sed` replacement — handy for rendering a gitignored `.env` from a committed `env.example` on every boot:
+**2. In-box (files already in the workspace).** `agentbox-ctl render` is a declarative `sed` replacement — handy for rendering a gitignored `.env` from a committed `env.example` on every boot. The render is itself idempotent (the regex rules re-pin the same lines on every boot), so this task needs no `idempotent:` guard:
 
 ```yaml
 tasks:
   env:
     command: agentbox-ctl render apps/saas/env.example --out apps/saas/.env --env --rules box-host
-    idempotent:
-      check: "grep -q '{{AGENTBOX_BOX_HOST}}' apps/saas/.env"
 ```
 
 ### Placeholders

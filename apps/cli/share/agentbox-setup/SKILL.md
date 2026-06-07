@@ -269,11 +269,13 @@ Many apps hard-code a hostname (e.g. `optima.localhost`) or read a gitignored `.
 
   tasks:
     env:
+      # The render is idempotent (the rules re-pin the same lines every boot), so
+      # no `idempotent:` guard is needed — it self-corrects on a checkpoint-started
+      # box that carries a different box's host in .env.
       command: agentbox-ctl render apps/saas/env.example --out apps/saas/.env --env --rules box-host
-      # Re-run when the rendered .env doesn't yet point at this box.
-      idempotent:
-        check: "grep -q '{{AGENTBOX_BOX_HOST}}' apps/saas/.env"
   ```
+
+  Note: an `idempotent: { check: <cmd> }` probe runs verbatim via `bash -c` with the box env — use shell vars like `$AGENTBOX_BOX_NAME`, NOT `{{…}}` placeholders (those are only expanded by `render`/carry, never by the supervisor).
 
 - **`carry:` + `replaceEnvs`/`replace`/`rules`** — for a host-only file (e.g. a real `.env` with secrets that never lives in the repo), carry it in and render it host-side in one step (file entries only):
 
