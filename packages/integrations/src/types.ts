@@ -64,10 +64,11 @@ export interface IntegrationConnector {
     loginHint?: string;
   };
   /**
-   * Extra env vars the relay forces when spawning the host CLI. For Notion
-   * this is `NOTION_KEYRING=0` so `ntn` reads file-based auth on Linux
-   * boxes; on the macOS host that env var is harmless (keychain mode is
-   * the default and the var only suppresses an alternative path).
+   * Extra env vars the relay forces when spawning the host CLI, restricted to
+   * the connector's own `<SERVICE>_*` namespace by `mergeConnectorEnv` (so a
+   * descriptor can't rewrite `PATH` or disable the prompt gate). No connector
+   * currently sets this — it's an opt-in escape hatch for a CLI that needs a
+   * specific env to resolve its auth.
    */
   env?: Readonly<Record<string, string>>;
   /** Allowlist of proxied ops; anything not listed is denied at the relay. */

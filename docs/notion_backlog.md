@@ -11,10 +11,12 @@ HEAD *after* the previous task merges (PRs stack cleanly, no conflicts).
 Mirror the `gh` relay model exactly: in-box `notion` shim → `agentbox-ctl
 integration notion <op>` → host relay → host's authenticated `ntn` CLI. Writes
 gated by `askPrompt`; reads pass through; **the box never holds a Notion token**.
-The host relay runs the host's `ntn` (keychain auth on macOS). For nested-box
-e2e, `ntn` creds are carried into the box as **file-based auth**
-(`NOTION_KEYRING=0` → `~/.config/notion/auth.json`); the connector forces
-`NOTION_KEYRING=0` when shelling out so it works on Linux boxes.
+The host relay runs the host's `ntn` (keychain auth on macOS — plain `ntn login`).
+For the internal-dev nested-box path, `ntn` creds are carried into the box as
+**file-based auth** (`NOTION_KEYRING=0 ntn login` → `~/.config/notion/auth.json`).
+The connector does **not** force `NOTION_KEYRING=0` (removed — see the
+2026-06-07 status-log entry); the in-box nested path sets it manually. See
+[`docs/development.md`](./development.md).
 
 Reference implementations to copy: `packages/relay/src/gh.ts`,
 `packages/ctl/src/commands/gh.ts`, `packages/sandbox-docker/scripts/gh-shim`,
@@ -245,3 +247,15 @@ Make a box agent able to type `notion …` or `ntn …`.
   `--` makes `ntn` reject the flags). **Notion path verified DONE end-to-end:
   reads pass through, writes are gated + create real pages on approval, the
   box holds no token.**
+- 2026-06-07: Removed the forced `env: { NOTION_KEYRING: '0' }` from the Notion
+  connector. It was only ever needed for the internal-dev nested-box path, but
+  `mergeConnectorEnv` applies a connector's `env` on the **host** relay spawn
+  too — which forced the host `ntn` into file-auth mode and disagreed with both
+  the docs (`ntn login` → keychain) and `agentbox doctor` (probes keychain).
+  Result: a keychain-authed user got a green doctor but a relay that couldn't
+  find the token. With the env gone the relay uses `ntn`'s default (keychain on
+  macOS) — relay, doctor, and docs now agree. The generic `env` field +
+  `mergeConnectorEnv` `<SERVICE>_*` namespace guard stay (no connector uses
+  them now). The nested-dev `NOTION_KEYRING=0 ntn login` requirement moved to
+  [`docs/development.md`](./development.md). Earlier status-log/task lines that
+  say "the connector forces `NOTION_KEYRING=0`" are superseded by this entry.

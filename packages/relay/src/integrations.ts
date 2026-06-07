@@ -144,10 +144,10 @@ async function probeIntegration(
  * Spawn the connector's host binary with the given op + user args inside
  * `cwd`. Returns the standard `{ exitCode, stdout, stderr }` envelope.
  * `op.buildArgv` (when supplied) shapes the host CLI's subcommand path;
- * absent, the user args are forwarded verbatim. Connector env vars
- * (e.g. `NOTION_KEYRING=0`) are merged onto `process.env` via
- * `mergeConnectorEnv` — a descriptor that tries to set an env var
- * outside its `<SERVICE>_*` namespace yields a typed exit-78 envelope
+ * absent, the user args are forwarded verbatim. A connector-declared
+ * `<SERVICE>_*` env override (when present — none set today) is merged onto
+ * `process.env` via `mergeConnectorEnv`; a descriptor that tries to set an
+ * env var outside its `<SERVICE>_*` namespace yields a typed exit-78 envelope
  * (sysexits EX_CONFIG) rather than throwing, so the docker /rpc and
  * cloud paths both surface the misconfiguration as a normal envelope.
  *

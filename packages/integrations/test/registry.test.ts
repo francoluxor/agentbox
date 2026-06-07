@@ -29,11 +29,12 @@ describe('integration registry', () => {
 });
 
 describe('notion connector', () => {
-  it('targets the official ntn binary with file-auth env', () => {
+  it('targets the official ntn binary with no forced env', () => {
     expect(notionConnector.hostBin).toBe('ntn');
-    // The macOS host's keychain mode is the default; this var only matters
-    // for Linux boxes where the carried auth.json is the credential.
-    expect(notionConnector.env).toMatchObject({ NOTION_KEYRING: '0' });
+    // No env override: the relay runs the host `ntn` with its own default
+    // auth (macOS keychain), matching `agentbox doctor` and the public docs.
+    // The carry-based nested-box dev path is documented in development.md.
+    expect(notionConnector.env).toBeUndefined();
   });
 
   it('classifies whoami/api as read and the page ops as write', () => {
@@ -123,11 +124,9 @@ describe('linear connector', () => {
   });
 
   it("declares no env override (linear uses plaintext credentials.toml)", () => {
-    // Unlike `ntn` (which needs NOTION_KEYRING=0 to read file-based auth on
-    // Linux boxes), `linear` already reads ~/.config/linear/credentials.toml
-    // by default. Setting an env var would require an entry in the
-    // <SERVICE>_* namespace guard in mergeConnectorEnv; leaving it unset is
-    // the safer call.
+    // `linear` reads ~/.config/linear/credentials.toml by default — no env
+    // shaping needed. (Neither connector forces an env; the `env` field stays
+    // an opt-in escape hatch guarded by mergeConnectorEnv's <SERVICE>_* check.)
     expect(linearConnector.env).toBeUndefined();
   });
 

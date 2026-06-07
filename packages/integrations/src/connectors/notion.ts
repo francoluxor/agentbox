@@ -17,11 +17,12 @@ import type { IntegrationConnector, IntegrationOpRefusal } from '../types.js';
  * takes a structured JSON body that doesn't trivially map from CLI flags.
  * Adding it is tracked as a focused follow-up — see `docs/notion_backlog.md`.
  *
- * `NOTION_KEYRING=0` is forced in the env so `ntn` reads file-based auth
- * (`~/.config/notion/auth.json`). On the macOS host this var is harmless
- * — keychain mode is unaffected by the value, only its presence. On
- * Linux (in-box) the carried auth file IS the credential, and the var
- * is required for `ntn` to find it. See `agentbox.yaml` carry block.
+ * No `env` override: the relay runs the host's `ntn` with its own default
+ * auth (the macOS keychain after `ntn login`), matching what `agentbox
+ * doctor` probes and what the public docs tell users to do. The carry-based
+ * nested-box dev path (a Linux box hosting a relay) needs file-based auth
+ * instead; that's an internal-dev concern documented in
+ * `docs/development.md`, not something the connector forces on every host.
  */
 export const notionConnector: IntegrationConnector = {
   service: 'notion',
@@ -32,7 +33,6 @@ export const notionConnector: IntegrationConnector = {
     installHint: 'install ntn: https://developers.notion.com/reference/notion-cli',
     loginHint: 'ntn login',
   },
-  env: { NOTION_KEYRING: '0' },
   ops: {
     whoami: {
       write: false,

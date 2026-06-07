@@ -25,12 +25,11 @@ import type { IntegrationConnector, IntegrationOpRefusal } from '../types.js';
  *     unnecessary for the documented agent flows. Add deliberately, as
  *     gated writes, only when a real flow needs them.
  *
- * No `env` override is needed. Linear stores plaintext credentials at
- * `~/.config/linear/credentials.toml` and keychain mode is opt-in, not
- * the default — so unlike `ntn` (which forces `NOTION_KEYRING=0`),
- * `linear` already reads file-based auth on every host without any
- * env shaping. The carry block in `agentbox.yaml` ships that file
- * into nested boxes that run their own relay.
+ * No `env` override is needed (neither connector sets one). Linear stores
+ * plaintext credentials at `~/.config/linear/credentials.toml` and keychain
+ * mode is opt-in, not the default, so `linear` reads file-based auth on every
+ * host without any env shaping. The carry block in `agentbox.yaml` ships that
+ * file into nested boxes that run their own relay.
  */
 export const linearConnector: IntegrationConnector = {
   service: 'linear',

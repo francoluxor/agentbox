@@ -49,11 +49,7 @@ A `registry.ts` exports `getConnector(service)` and `ALL_CONNECTORS`. Adding a s
 
 ### env-var namespace guard
 
-`packages/relay/src/integrations.ts:mergeConnectorEnv` enforces that a descriptor can only set env vars in its own `<SERVICE>_*` namespace (e.g. Notion's connector can set `NOTION_KEYRING` but never `PATH` or `AGENTBOX_PROMPT`). A misconfigured descriptor returns a typed exit-78 envelope rather than silently disabling the relay's gate or rewriting `PATH`.
-
-### env: `NOTION_KEYRING=0`
-
-The Notion connector forces `NOTION_KEYRING=0` on the host spawn so `ntn` reads file-based auth (`~/.config/notion/auth.json`) instead of the macOS keychain. This is required when the integration is exercised **inside a box** (the box has no keychain — see "Carry-based file-auth" below). On the macOS host itself, setting it is harmless: the keychain path is only suppressed when the file-auth path is present, which it isn't on a fresh host. `agentbox doctor` deliberately does NOT set this env var (see "Doctor" below).
+`packages/relay/src/integrations.ts:mergeConnectorEnv` enforces that a descriptor can only set env vars in its own `<SERVICE>_*` namespace (so a careless descriptor can never set `PATH` or `AGENTBOX_PROMPT`). A misconfigured descriptor returns a typed exit-78 envelope rather than silently disabling the relay's gate or rewriting `PATH`. **No connector currently declares an `env` override** — the relay runs each host CLI with its own default auth. (`ntn` reads the macOS keychain after `ntn login`; `linear` reads `~/.config/linear/credentials.toml`.) The field stays as an opt-in escape hatch for a future CLI that needs specific env to resolve its auth.
 
 ## The relay dispatch flow
 
@@ -118,13 +114,13 @@ Staging follows the canonical pattern (see the `feedback-canonical-dockerfile-bo
 - **Enabled + binary present + unauthed** → `[warn] notion  not logged in  (ntn login)`. Hint from `connector.detect.loginHint`.
 - **Enabled + binary present + authed** → `[ ok ] notion  ntn version X.Y.Z · authed`.
 
-**The doctor host probe does NOT set `NOTION_KEYRING=0`.** On the host the user's authed state is exactly their keychain entry; forcing the file-auth path would make `ntn api v1/users/me` look for a non-existent `~/.config/notion/auth.json` and a keychain-authed user would falsely show as "not logged in". The connector's env override applies in-box (where the carried file IS the credential), and the doctor's host probe deliberately skips it. See the comment in `apps/cli/src/lib/doctor-checks.ts:integrationsChecks`.
+The doctor auth probe runs each connector's CLI with **no forced env**, exactly as the relay does. So a host's real authed state — the macOS keychain after `ntn login` — is what's reported, and doctor can't show "authed" for an auth path the relay wouldn't actually use. See the comment in `apps/cli/src/lib/doctor-checks.ts:integrationsChecks`.
 
 The live `ntn` host probe is the orchestrator's post-merge check — it can't be verified inside an AgentBox box because the real `ntn` isn't installed there. The unit test (`apps/cli/test/doctor-integrations.test.ts`) stubs a fake `ntn` on PATH so the four status transitions are exercised in CI.
 
 ## Carry-based file-auth for nested boxes
 
-For T4 nested-box e2e (box → box, exercise the integration from inside a box), the host's `ntn` auth is carried into the box as a **file**. `agentbox.yaml`'s `carry:` block ships `~/.config/notion/auth.json` (or the equivalent path) into the box, and `NOTION_KEYRING=0` is forced by the connector when the relay shells out, so `ntn` reads the carried file directly. The token still lives only at the leaf hop (the innermost agent's relay invokes the innermost host's `ntn`, which has the file). There is no token in the agent's process env (`printenv | grep -i notion` shows nothing).
+For the nested-box dev path (box → box, exercise the integration from inside a box), the host's `ntn` auth is carried into the box as a **file**. `agentbox.yaml`'s `carry:` block ships `~/.config/notion/auth.json` into the box; the host must have been logged in file-mode (`NOTION_KEYRING=0 ntn login`) for that file to exist, and the in-box `ntn` may need `NOTION_KEYRING=0` exported to read it (the connector no longer forces the env — see [`docs/development.md`](./development.md)). This is **internal-dev only**; normal boxes carry no Notion credential and reach `ntn` purely through the host relay. Even on the nested path the token lives only at the leaf hop, never in the agent's process env (`printenv | grep -i notion` shows nothing).
 
 Carry is host→box and one-prompt-approved (see [`features.md`](./features.md) → `carry:`). T4 wires the actual e2e verification.
 
@@ -235,7 +231,7 @@ agentbox config set --project integrations.linear.enabled true
 
 ### env / credentials
 
-Linear stores plaintext credentials at `~/.config/linear/credentials.toml` (keyring is opt-in, not used). Unlike `ntn` (which needs `NOTION_KEYRING=0` to read file-based auth on Linux boxes), `linear` already reads the toml on every host by default — so the connector declares **no** `env` block. `mergeConnectorEnv` would only allow `LINEAR_*` keys anyway. The `agentbox.yaml` `carry:` block ships the file into nested boxes that run their own relay.
+Linear stores plaintext credentials at `~/.config/linear/credentials.toml` (keyring is opt-in, not used), and `linear` reads that file on every host by default — so the connector declares **no** `env` block (neither connector does; `mergeConnectorEnv` would only allow `LINEAR_*` keys anyway). The `agentbox.yaml` `carry:` block ships the file into nested boxes that run their own relay.
 
 ### Verification / live e2e results
 

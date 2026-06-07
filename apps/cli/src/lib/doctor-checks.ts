@@ -434,11 +434,10 @@ export type IntegrationsConfigLoader = (cwd: string) => Promise<IntegrationsConf
  * flag via `agentbox config set` takes effect on the next doctor run with
  * no caching.
  *
- * Auth env handling: we deliberately do NOT force `NOTION_KEYRING=0` on the
- * host probe. The Notion connector forces it inside the box because the box
- * has no keychain; on the host the user's authed state IS the keychain
- * entry, and forcing the file-auth path would make a keychain-authed user
- * read as "not logged in" against a non-existent `~/.config/notion/auth.json`.
+ * The auth probe runs each connector's CLI with no forced env, exactly as the
+ * relay does — so a host's real authed state (e.g. the macOS keychain after
+ * `ntn login`) is what's reported, and doctor can't show "authed" for a path
+ * the relay wouldn't actually use.
  */
 export async function integrationsChecks(
   loader: IntegrationsConfigLoader = loadEffectiveConfig,

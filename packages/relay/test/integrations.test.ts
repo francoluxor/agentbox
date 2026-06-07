@@ -83,9 +83,13 @@ describe('connector.env namespace guard', () => {
   });
 
   it('accepts an env key in the SERVICE_ namespace', async () => {
+    // Synthetic stub — the real notionConnector declares no env. This only
+    // exercises the generic mergeConnectorEnv guard with a sample NOTION_* key.
     const ok: IntegrationConnector = {
       service: 'notion',
-      hostBin: '/bin/true',
+      // `/usr/bin/true` exists on both macOS and Linux; `/bin/true` is
+      // Linux-only (macOS has no /bin/true), which ENOENT'd to exit 127 here.
+      hostBin: '/usr/bin/true',
       detect: { versionArgs: ['--version'] },
       env: { NOTION_KEYRING: '0' },
       ops: { ping: { write: false, buildArgv: () => [] } },
@@ -124,28 +128,24 @@ describe('parseIntegrationMethod', () => {
  * End-to-end relay /rpc dispatch through `handleIntegrationRpc`. We stub
  * `ntn` via a tempdir on PATH (same pattern as `relay /rpc gh.pr.* flow`
  * in server.test.ts) so the tests are deterministic on machines without
- * the real CLI. The stub records its argv + the value of NOTION_KEYRING
- * into side files so we can assert what was invoked.
+ * the real CLI. The stub records its argv into a side file so we can assert
+ * what was invoked.
  */
 describe('relay /rpc integration.* flow', () => {
   let handle: RelayServerHandle;
   let stubDir: string;
   let stubLog: string;
-  let stubEnvLog: string;
   let prevPath: string | undefined;
   let prevPrompt: string | undefined;
 
   beforeEach(async () => {
     stubDir = await mkdtemp(join(tmpdir(), 'ntn-stub-'));
     stubLog = join(stubDir, 'invocations.log');
-    stubEnvLog = join(stubDir, 'env.log');
-    // The stub records argv + the NOTION_KEYRING env value. `--version`
-    // satisfies the readiness probe; `api …` and `pages create …` etc.
-    // echo their argv and exit 0 so the relay's runHostIntegration
-    // produces a stable, asserted stdout.
+    // The stub records argv. `--version` satisfies the readiness probe;
+    // `api …` and `pages create …` etc. echo their argv and exit 0 so the
+    // relay's runHostIntegration produces a stable, asserted stdout.
     const script = `#!/usr/bin/env bash
 echo "$@" >> ${JSON.stringify(stubLog)}
-echo "NOTION_KEYRING=\${NOTION_KEYRING-unset}" >> ${JSON.stringify(stubEnvLog)}
 case "$1" in
   --version) echo "ntn stub 0.0.0"; exit 0 ;;
   *) echo "stub: ntn $*"; exit 0 ;;
@@ -215,11 +215,6 @@ esac
     expect(body.exitCode).toBe(0);
     expect(body.stdout).toContain('stub: ntn api v1/users/me');
     expect(handle.prompts.size()).toBe(0);
-    // NOTION_KEYRING=0 forced into the spawned env, so `ntn` reads
-    // file-based auth on Linux boxes. Lines: --version probe + the call.
-    const envSeen = await readFile(stubEnvLog, 'utf8');
-    expect(envSeen).toMatch(/NOTION_KEYRING=0/);
-    expect(envSeen).not.toMatch(/NOTION_KEYRING=unset/);
   });
 
   it('write op enqueues an askPrompt; denial returns exit 10', async () => {

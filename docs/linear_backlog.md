@@ -27,8 +27,8 @@ e2e. v2.0.0 surface (richer than the plan assumed):
   operation (the GraphQL analogue of Notion's `refuseApiNonGet`), so the "read"
   classification isn't a hole. Writes must go through the dedicated gated ops.
 - Credentials live plaintext at `~/.config/linear/credentials.toml` (keyring is
-  opt-in, not used) → carries cleanly into a box; **no `LINEAR_*` keyring env
-  toggle needed** (unlike `ntn`'s `NOTION_KEYRING=0`). Carry entries added to
+  opt-in, not used) → carries cleanly into a box; **no keyring env toggle
+  needed**, and the connector declares no `env`. Carry entries added to
   `agentbox.yaml`.
 
 ## Proposed connector surface (the implementing box refines this)
