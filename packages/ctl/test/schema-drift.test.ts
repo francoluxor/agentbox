@@ -238,29 +238,35 @@ tasks:
 `,
   },
   {
-    name: 'docker image service (ports/env/args/container_name)',
+    name: 'docker image service (nested ports/env/args/container_name)',
     yaml: `
 services:
   postgres:
-    image: postgres:17-alpine
-    ports: ["5437:5432"]
-    env:
-      POSTGRES_USER: optima
-      POSTGRES_PASSWORD: changeme
-    args: "-c max_connections=200"
-    container_name: optima_db
+    image:
+      name: postgres:17-alpine
+      ports: ["5437:5432"]
+      env:
+        POSTGRES_USER: optima
+        POSTGRES_PASSWORD: changeme
+      args: "-c max_connections=200"
+      container_name: optima_db
     ready_when:
       port: 5437
     restart: always
 `,
   },
   {
-    name: 'docker image service minimal + args list',
+    name: 'docker image service string shorthand',
+    yaml: `services:\n  cache:\n    image: redis:7\n`,
+  },
+  {
+    name: 'docker image service nested + args list',
     yaml: `
 services:
   cache:
-    image: redis:7
-    args: ["--save", "60 1"]
+    image:
+      name: redis:7
+      args: ["--save", "60 1"]
 `,
   },
   {
@@ -617,20 +623,29 @@ services:
     yaml: `services:\n  db:\n    ready_when:\n      port: 5432\n`,
   },
   {
-    name: 'ports without image',
+    name: 'top-level ports is an unknown key (now nested under image)',
     yaml: `services:\n  web:\n    command: pnpm dev\n    ports: ["3000:3000"]\n`,
   },
   {
-    name: 'container_name without image',
-    yaml: `services:\n  web:\n    command: pnpm dev\n    container_name: web1\n`,
+    name: 'image as a mapping without name',
+    yaml: `services:\n  db:\n    image:\n      ports: ["5432:5432"]\n`,
+  },
+  {
+    name: 'image mapping with unknown key',
+    yaml: `services:\n  db:\n    image:\n      name: postgres\n      bogus: 1\n`,
   },
   {
     name: 'image service with non-numeric port',
-    yaml: `services:\n  db:\n    image: postgres:17-alpine\n    ports: ["abc"]\n`,
+    yaml: `services:\n  db:\n    image:\n      name: postgres:17-alpine\n      ports: ["abc"]\n`,
   },
   {
     name: 'image service with invalid container_name',
-    yaml: `services:\n  db:\n    image: postgres:17-alpine\n    container_name: "bad name"\n`,
+    yaml: `services:\n  db:\n    image:\n      name: postgres:17-alpine\n      container_name: "bad name"\n`,
+  },
+  {
+    name: 'top-level env on an image service (validator-only)',
+    yaml: `services:\n  db:\n    image: postgres:17-alpine\n    env:\n      FOO: bar\n`,
+    runtimeOnly: true,
   },
   {
     name: 'run_once as a string',

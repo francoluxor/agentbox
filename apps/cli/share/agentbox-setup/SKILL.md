@@ -59,13 +59,14 @@ from other in-box services at `127.0.0.1:<host port>`:
 ```yaml
 services:
   postgres:
-    image: postgres:17-alpine
-    ports: ["5432:5432"]
-    env:
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: app
-    args: "-c max_connections=200"   # string or ["-c","max_connections=200"]
-    container_name: app_db            # optional; default = service name
+    image:                            # bare string (image: postgres:17-alpine) or a mapping:
+      name: postgres:17-alpine
+      ports: ["5432:5432"]
+      env:
+        POSTGRES_PASSWORD: postgres
+        POSTGRES_DB: app
+      args: "-c max_connections=200"  # string or ["-c","max_connections=200"]
+      container_name: app_db          # optional; default = service name
     ready_when: { port: 5432 }
     restart: always
 ```

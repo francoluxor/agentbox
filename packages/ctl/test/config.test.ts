@@ -82,17 +82,18 @@ describe('image services', () => {
     return parseConfig(yaml).services[0]!;
   }
 
-  it('synthesizes a start-or-run command with ports/env/args', () => {
+  it('synthesizes a start-or-run command from a nested image (ports/env/args)', () => {
     const s = svc(`
 services:
   postgres:
-    image: postgres:17-alpine
-    ports: ["5437:5432"]
-    env:
-      POSTGRES_USER: optima
-      POSTGRES_PASSWORD: "with space"
-    args: "-c max_connections=200"
-    container_name: optima_db
+    image:
+      name: postgres:17-alpine
+      ports: ["5437:5432"]
+      env:
+        POSTGRES_USER: optima
+        POSTGRES_PASSWORD: "with space"
+      args: "-c max_connections=200"
+      container_name: optima_db
 `);
     expect(s.image).toBe('postgres:17-alpine');
     expect(s.containerName).toBe('optima_db');
@@ -104,12 +105,18 @@ services:
     expect(cmd).toContain('-e POSTGRES_USER=optima');
     expect(cmd).toContain("-e POSTGRES_PASSWORD='with space'"); // shell-quoted value
     expect(cmd).toContain('postgres:17-alpine -c max_connections=200');
-    expect(s.env).toBeUndefined(); // baked into -e, not the process env
+    expect(s.env).toBeUndefined(); // container env is baked into -e, not the process env
   });
 
-  it('defaults container name to the service name and joins args lists', () => {
-    const s = svc(`services:\n  cache:\n    image: redis:7\n    args: ["--save", "60 1"]\n`);
+  it('accepts the image string shorthand, defaulting container name to the service name', () => {
+    const s = svc(`services:\n  cache:\n    image: redis:7\n`);
+    expect(s.image).toBe('redis:7');
     expect(s.containerName).toBe('cache');
+    expect(s.command as string).toContain('docker run --name cache');
+  });
+
+  it('joins args lists', () => {
+    const s = svc(`services:\n  cache:\n    image:\n      name: redis:7\n      args: ["--save", "60 1"]\n`);
     expect(s.command as string).toContain('redis:7 --save 60 1');
   });
 
@@ -123,15 +130,21 @@ services:
     expect(() => svc(`services:\n  db:\n    restart: always\n`)).toThrow(/command or image/);
   });
 
-  it('rejects ports without image', () => {
-    expect(() => svc(`services:\n  web:\n    command: x\n    ports: ["3000:3000"]\n`)).toThrow(
-      /only valid alongside image/,
+  it('rejects top-level env on an image service', () => {
+    expect(() => svc(`services:\n  db:\n    image: postgres\n    env:\n      X: y\n`)).toThrow(
+      /use image\.env/,
+    );
+  });
+
+  it('rejects an image mapping without name', () => {
+    expect(() => svc(`services:\n  db:\n    image:\n      ports: ["5432:5432"]\n`)).toThrow(
+      ConfigError,
     );
   });
 
   it('rejects a bad container_name', () => {
     expect(() =>
-      svc(`services:\n  db:\n    image: postgres\n    container_name: "bad name"\n`),
+      svc(`services:\n  db:\n    image:\n      name: postgres\n      container_name: "bad name"\n`),
     ).toThrow(/not a valid docker container name/);
   });
 });

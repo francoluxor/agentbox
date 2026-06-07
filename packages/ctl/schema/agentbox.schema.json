@@ -166,34 +166,36 @@
       "type": "object",
       "additionalProperties": false,
       "oneOf": [{ "required": ["command"] }, { "required": ["image"] }],
-      "dependentRequired": {
-        "ports": ["image"],
-        "args": ["image"],
-        "container_name": ["image"]
-      },
       "properties": {
         "command": { "$ref": "#/$defs/command" },
         "image": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Run a docker container instead of a command. AgentBox synthesizes a start-or-run shell (the in-box container is reused by name across restarts). Mutually exclusive with command. Pair with ports/env/args/container_name."
-        },
-        "ports": {
-          "type": "array",
-          "description": "Container port publishes for an image service: \"<host>:<container>\" or \"<port>\". Reachable from other in-box services at 127.0.0.1:<host>.",
-          "items": { "type": "string", "pattern": "^[0-9]+(:[0-9]+)?$" }
-        },
-        "args": {
-          "description": "Extra args appended after the image (image services only). A string or a list of strings; shell word-split.",
+          "description": "Run a docker container instead of a command. AgentBox synthesizes a start-or-run shell (the in-box container is reused by name across restarts). Mutually exclusive with command. Either a bare image ref string, or a mapping with ports/env/args/container_name.",
           "oneOf": [
-            { "type": "string" },
-            { "type": "array", "items": { "type": "string" } }
+            { "type": "string", "minLength": 1 },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name"],
+              "properties": {
+                "name": { "type": "string", "minLength": 1, "description": "Image ref, e.g. postgres:17-alpine." },
+                "ports": {
+                  "type": "array",
+                  "description": "Port publishes: \"<host>:<container>\" or \"<port>\". Reachable from other in-box services at 127.0.0.1:<host>.",
+                  "items": { "type": "string", "pattern": "^[0-9]+(:[0-9]+)?$" }
+                },
+                "env": { "$ref": "#/$defs/env" },
+                "args": {
+                  "description": "Extra args appended after the image. A string or a list of strings; shell word-split.",
+                  "oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }]
+                },
+                "container_name": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+                  "description": "Container name (default: the service name)."
+                }
+              }
+            }
           ]
-        },
-        "container_name": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$",
-          "description": "Container name for an image service (default: the service name)."
         },
         "cwd": {
           "type": "string",
