@@ -104,6 +104,24 @@ describe('idempotent tasks', () => {
     await sup2.stopAll();
   });
 
+  it('falls back to a writable dir under logDir when stateDir is not creatable', async () => {
+    const ran = join(dir, 'ran');
+    const task = { name: 't', command: `: > '${ran}'`, needs: [], idempotent: { kind: 'marker' } as const };
+    // /proc/... is not creatable — the supervisor must fall back to <logDir>/state.
+    const sup1 = new Supervisor({ workspace: dir, logDir: dir, stateDir: '/proc/nope/agentbox' });
+    await sup1.init(taskCfg(task));
+    await waitForTaskDone(sup1, 't');
+    expect(existsSync(join(dir, 'state', 'tasks', 't'))).toBe(true); // marker in fallback
+    await sup1.stopAll();
+
+    await rm(ran);
+    const sup2 = new Supervisor({ workspace: dir, logDir: dir, stateDir: '/proc/nope/agentbox' });
+    await sup2.init(taskCfg(task));
+    await waitForTaskDone(sup2, 't');
+    expect(existsSync(ran)).toBe(false); // skipped via the fallback marker
+    await sup2.stopAll();
+  });
+
   it('run-task --force bypasses the marker and re-runs', async () => {
     const runs = join(dir, 'runs');
     const task = {

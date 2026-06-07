@@ -72,9 +72,9 @@ RUN apt-get update \
         vim \
         libcap2-bin \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /workspace /run/agentbox /var/log/agentbox \
+    && mkdir -p /workspace /run/agentbox /var/log/agentbox /var/lib/agentbox \
     && chmod 755 /workspace \
-    && chown vscode:vscode /workspace /run/agentbox /var/log/agentbox
+    && chown vscode:vscode /workspace /run/agentbox /var/log/agentbox /var/lib/agentbox
 
 # The in-box supervisor (runs as non-root `vscode`) owns a TCP forwarder that
 # binds container :80 -> the `expose:`-flagged service (see WebProxy /

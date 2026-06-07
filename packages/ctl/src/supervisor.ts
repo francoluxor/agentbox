@@ -668,6 +668,10 @@ export class Supervisor extends EventEmitter<SupervisorEvents> {
   private rescheduleDirty = false;
   private readonly relay: RelayClient;
   private readonly webProxy: WebProxy;
+  // Resolved at init: the configured stateDir, or a writable fallback under
+  // logDir when it isn't creatable (the daemon runs as a non-root user and the
+  // default /var/lib/agentbox is root-owned on stock images).
+  private resolvedStateDir: string = DEFAULT_STATE_DIR;
 
   constructor(private readonly opts: SupervisorOptions) {
     super();
@@ -734,10 +738,37 @@ export class Supervisor extends EventEmitter<SupervisorEvents> {
 
   async init(cfg: CtlConfig): Promise<void> {
     await mkdir(this.opts.logDir, { recursive: true });
+    this.resolvedStateDir = await this.ensureStateDir();
     for (const t of cfg.tasks) this.addTaskUnit(t);
     for (const s of cfg.services) this.addServiceUnit(s);
     this.applyWebProxy();
     this.schedule();
+  }
+
+  /**
+   * Pick a writable directory for idempotent-task markers. Prefer the configured
+   * stateDir (default /var/lib/agentbox), but the daemon runs as a non-root user
+   * and that path is root-owned on stock images, so fall back to a dir under
+   * logDir — always daemon-writable, on the box rootfs (captured by checkpoints),
+   * and off /workspace (no git noise).
+   */
+  private async ensureStateDir(): Promise<string> {
+    const want = this.opts.stateDir ?? DEFAULT_STATE_DIR;
+    try {
+      await mkdir(join(want, 'tasks'), { recursive: true });
+      return want;
+    } catch {
+      const fallback = join(this.opts.logDir, 'state');
+      try {
+        await mkdir(join(fallback, 'tasks'), { recursive: true });
+        process.stderr.write(
+          `[ctl] idempotent markers: ${want} not writable, using ${fallback}\n`,
+        );
+        return fallback;
+      } catch {
+        return want; // give up; per-task marker writes will warn
+      }
+    }
   }
 
   private emitChange(): void {
@@ -748,7 +779,7 @@ export class Supervisor extends EventEmitter<SupervisorEvents> {
     const runner = new ServiceRunner(spec, {
       logDir: this.opts.logDir,
       cwd: this.opts.workspace,
-      stateDir: this.opts.stateDir ?? DEFAULT_STATE_DIR,
+      stateDir: this.resolvedStateDir,
       spawn: this.opts.spawn,
     });
     runner.on('log', (ev) => this.emit('log', ev));
@@ -762,7 +793,7 @@ export class Supervisor extends EventEmitter<SupervisorEvents> {
     const runner = new TaskRunner(spec, {
       logDir: this.opts.logDir,
       cwd: this.opts.workspace,
-      stateDir: this.opts.stateDir ?? DEFAULT_STATE_DIR,
+      stateDir: this.resolvedStateDir,
       spawn: this.opts.spawn,
     });
     runner.on('log', (ev) => this.emit('log', ev));
