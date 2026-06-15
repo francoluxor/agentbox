@@ -77,19 +77,35 @@ laptop CLI --(register-box, admin bearer)--> same relay
   `seedCloudWorkspace` origin-clone mode (clone via PAT, strip after); bearer-
   gated `POST /remote/queue/enqueue` reusing `startQueueLoop` + `runCloudJob`.
 
-## Phase 0 PoC checklist (gates W4/W5 — run before building provisioning on top)
+## Phase 0 PoC results
 
-1. **Wake-on-inbound (make-or-break).** Provision a persistent Vercel (and/or
-   E2B) box, run `agentbox-relay serve --port 8787 --control-box` with
-   `AGENTBOX_RELAY_ADMIN_TOKEN` + `GH_TOKEN` set, expose 8787 publicly, let it
-   auto-sleep (~45–60 min), then `curl https://<public-url>/healthz` and confirm
-   it resumes + answers. Measure cold-resume latency. If it does NOT wake →
-   fall back to an always-on VPS (Hetzner) with public ingress.
-2. **PAT push from a no-checkout host** — already validated in unit form
-   (`pushBundleToRemote` + `toAuthedHttpsUrl` against a local bare repo). Confirm
-   live against a real PAT-scoped GitHub repo (`../agentbox-test-repo-gh`).
-3. **Box reaches the public relay over the forwarder** — a second box forwards
-   `/rpc git.push` to the control-box URL and the push lands on GitHub.
+1. **Wake-on-inbound (make-or-break) — ❌ FALSE for Vercel (verified 2026-06-16).**
+   Created a persistent Vercel box, `agentbox stop` it (→ state `paused`), then
+   `curl` its public `*.vercel.run` URL 3×: every request returned **HTTP 502 in
+   ~0.1s** and the box **stayed paused**. An inbound HTTPS request does NOT
+   resume a stopped/paused Vercel box — only an SDK `Sandbox.get({resume:true})`
+   /`backend.start` does. (Matches the documented persistent model.) E2B is
+   expected to behave the same (SDK-only resume).
+
+   **Implication:** a Vercel/E2B box can't be an always-on control box reached by
+   inbound traffic on its own — it dies at the session cap (~45 min Hobby / 5 h
+   Pro) and nothing wakes it from a box's outbound `/rpc`. It would need an
+   **external always-on driver** (e.g. a scheduled GitHub Action / cron service)
+   to periodically SDK-resume it. That's extra moving parts and still depends on
+   something always-on.
+
+   **Decision needed (was Vercel):** either (A) put the control box on **Hetzner**
+   — a real VPS that never sleeps + public IP, no waker needed (only adds a TLS
+   terminator, e.g. Caddy); or (B) keep Vercel/E2B and add the external keep-alive
+   driver. Leaning **(A) Hetzner** now that the wake assumption is disproven.
+2. **PAT push from a no-checkout host — ✅ validated (unit).**
+   `pushBundleToRemote` + `toAuthedHttpsUrl` push a real bundle to a local bare
+   repo in `git-pat.test.ts`. Live GitHub round-trip still TODO once a control box
+   exists.
+3. **Control-box relay over public HTTPS — ✅ partially validated.** The built
+   relay bin runs in `--control-box` mode and enforces admin-bearer auth over a
+   live listener (healthz 200, admin 401/401/200, `/remote` gated). Full
+   box→control-box→GitHub round trip needs W2 wiring + a real control box.
 
 ## Security notes
 
