@@ -257,10 +257,12 @@ function writeManaged(record: Record<string, string>): void {
 async function ensureSbxInstalled(): Promise<{ bin: string } | null> {
   let det = await detectSbx();
   if (!det.installed) {
-    const doInstall = await confirm({
-      message: `The Vercel sandbox CLI (needed for interactive attach) isn't installed. Install it now? (${installSbxHint()})`,
-      initialValue: true,
-    });
+    const doInstall = exitOnCancel(
+      await confirm({
+        message: `The Vercel sandbox CLI (needed for interactive attach) isn't installed. Install it now? (${installSbxHint()})`,
+        initialValue: true,
+      }),
+    );
     if (!doInstall) {
       log.warn(
         `Install it with \`${installSbxHint()}\` to use \`agentbox shell|claude|codex|opencode\` on Vercel boxes.`,
