@@ -9,6 +9,26 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [0.17.0] - 2026-06-15
+
+### Added
+
+- **`agentbox attach [box]`** — one agent-agnostic command to reattach to a
+  box's running agent, regardless of whether it's Claude Code, Codex, or
+  OpenCode. It probes the box for the live agent session and reattaches; with
+  more than one session it prompts you to pick (or, when non-interactive, takes
+  the most recently started). Unlike the per-agent `claude/codex/opencode
+  attach`, it **never auto-starts** an agent — if nothing is running it prints
+  `no agent session running in <name>` and exits non-zero. Works across docker
+  and all cloud providers.
+
+### Fixed
+
+- **Ctrl+C at an interactive prompt now quits instead of silently answering
+  "No".** Previously, pressing Ctrl+C at a confirm/select prompt (e.g. `agentbox
+  claude`'s "Sign in with your Claude subscription?") was treated the same as a
+  negative answer and the command proceeded. Cancelling now exits cleanly.
+
 ## [0.16.0] - 2026-06-07
 
 ### Added
