@@ -55,15 +55,7 @@ laptop CLI --(register-box, admin bearer)--> same relay
   fail-closed); `agentbox-relay serve --control-box` reads
   `AGENTBOX_RELAY_ADMIN_TOKEN`. Laptop relay unchanged (loopback-only, `/remote`
   hidden). Unit tests: `packages/relay/test/control-box-admin.test.ts`.
-- [~] **W2 — boxes/laptop reach the remote relay.**
-  - [x] `box-relay-forwarder` picks `https.request` for an HTTPS upstream.
-  - [x] `relay.controlBoxUrl` config key (all layers + registry).
-  - [ ] `ENDPOINT` in `sandbox-docker/src/relay.ts` resolvable from
-    `relay.controlBoxUrl`; `ensureRelay` bypasses the local spawn when set.
-  - [ ] `registerBoxWithRelay`/`adminPost` parameterized base URL + admin bearer.
-  - [ ] Thread the box origin URL into `BoxRegistration` (for `gh --repo`).
-  - [ ] `daemon.ts` selects the forwarder (not in-box `mode:'box'`) when a
-    control-box URL is present.
+  (W2 box-wiring details moved below, after the pull decision.)
 - [x] **W3 — PAT git push/PR.** `git-pat.ts` (`toAuthedHttpsUrl`,
   `repoSlugFromRemote`, `pushBundleToRemote`); `runGitRpc`/`runGhPrRpc`
   control-box variants; `assertGhReady` honors `GH_TOKEN`; server `/rpc` routes
@@ -79,19 +71,37 @@ laptop CLI --(register-box, admin bearer)--> same relay
   `relay.controlBoxUrl` persisted to global config; admin token in
   `~/.agentbox/control-box.json` (0600).
 
-  **Open decision (blocks W2 box-wiring): pull vs push-up.** The control box has no
-  provider tokens / per-box SSH keys, so it can't `backend.exec`/`downloadFile`
-  into boxes (the current `runGitRpc` pull model). Two options:
-  - **push-up (preferred):** the in-box `git push` bundles locally and uploads the
-    bundle in the `/rpc` body; the control box materializes a repo + pushes with the
-    PAT. Provider-agnostic, minimal blast radius. Needs a bundle-carrying `/rpc`
-    path + larger body cap.
-  - **pull:** ship every provider SDK + tokens (+ per-box SSH keys for hetzner) to
-    the control box and keep the current `runGitRpc`. Heavier, bigger secret surface
-    on a public VPS.
-- [ ] **W5 — create boxes from the control box.** Provider tokens on the box;
+  **DECIDED 2026-06-16 — pull, and the control box is a full agentbox node.**
+  Rationale: W5 (create boxes from the control box) needs provider API tokens + the
+  backend SDKs on the box *anyway*, so "keep the VPS minimal" doesn't apply — the
+  control box holds provider tokens regardless. Therefore git push reuses the
+  existing pull-based `runGitRpc` (control box `backend.exec`/`downloadFile`s the
+  box's bundle), no protocol change. Consequence: the minimal relay-bin-only VPS
+  from W4 must become a **full agentbox install** (relay bin + `@agentbox/sandbox-*`
+  resolvable + provider tokens + its own `~/.agentbox/state.json`). Hetzner per-box
+  SSH keys: boxes *created by* the control box mint their keys on the box (fine);
+  laptop-created Hetzner boxes pushing via the control box is a follow-up.
+
+- [ ] **W4b — upgrade the control box to a full install.** Replace the
+  scp-relay-bin step with installing the agentbox CLI (backends bundled) so the
+  relay resolves `@agentbox/sandbox-*` and `agentbox create` works on the box. Ship
+  provider tokens into `/etc/agentbox/relay.env` + `~/.agentbox/secrets.env` on the
+  box. Approach TBD: `npm pack` the dev build + install the tarball (dev) →
+  `npm i -g @madarco/agentbox` (once published). Verify the relay's `resolveCloudBackend`
+  works on the box.
+- [ ] **W2 — boxes/laptop reach the remote relay (pull wiring).**
+  - [x] `box-relay-forwarder` https + `relay.controlBoxUrl` config key.
+  - [ ] `ENDPOINT`/`ensureRelay` resolvable from `relay.controlBoxUrl`;
+    `registerBoxWithRelay`/`adminPost` parameterized base URL + admin bearer;
+    thread box origin URL into `BoxRegistration`; `daemon.ts` selects the forwarder.
+  - [ ] Sync the box's `BoxRecord` to the control box's `state.json` so
+    `lookupCloudBox` resolves the sandboxId there.
+- [ ] **W5 — create boxes from the control box.** Provider tokens on the box (W4b);
   `seedCloudWorkspace` origin-clone mode (clone via PAT, strip after); bearer-
   gated `POST /remote/queue/enqueue` reusing `startQueueLoop` + `runCloudJob`.
+
+> Validation gap: any live git-push test needs a GitHub fine-grained PAT (scoped to
+> the test repo) set via `agentbox control-box set-token`. Not yet provided.
 
 ## Phase 0 PoC results
 
