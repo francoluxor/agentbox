@@ -34,9 +34,15 @@ Both deploy targets build the plane **from GitHub** (`--repo`, default `madarco/
 
 ### Vercel
 
-`--deploy vercel` creates a **Git-connected** Vercel project (repo `--repo`, Root Directory `apps/control-plane`, framework Next.js), **auto-provisions Neon Postgres**, sets the App env, and triggers a production build of `--ref` from GitHub — no local upload. Log in first with `vercel login` (or `agentbox vercel login`).
+`--deploy vercel` builds the plane **from GitHub** via the Vercel API — no local checkout. It works in tiers so you don't have to think about ownership:
 
-<Callout type="warn" title="Repo ownership">Vercel only connects a GitHub repo whose **owner** has the Vercel GitHub App installed; it won't clone an arbitrary public repo. So deploy `madarco/agentbox` if you own/maintain it — otherwise **fork** it and pass `--repo <yourfork>/agentbox`.</Callout>
+1. If you don't own `--repo`, AgentBox **forks it to your account with `gh`** and deploys the fork.
+2. It creates a Git-connected project (Root Directory `apps/control-plane`, Next.js), **auto-provisions Neon Postgres**, sets the App env, and builds `--ref` from GitHub.
+3. If Vercel can't connect the repo via the API (its GitHub App isn't on your account yet), it falls back to the **Vercel Deploy Button** — your browser opens to clone the repo + install the App + provision Postgres, then AgentBox sets the secrets and redeploys.
+
+Requires `agentbox vercel login` (and `gh auth login` for the auto-fork — without `gh`, the Deploy Button does the fork in-browser).
+
+<Callout type="info" title="Boots before it's wired">The control plane is built to **boot even with no secrets set** — a fresh deploy answers `/healthz` (reporting what's configured) and never 500s; admin/leasing endpoints return a clean 503 until the env is set + redeployed. So the button flow (deploy bare → AgentBox sets secrets → redeploy) is never a broken state. Deploying the published repo means you deploy a fork; re-sync it (`gh repo sync`) or re-run with `--ref` for updates.</Callout>
 
 ### Hetzner
 

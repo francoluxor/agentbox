@@ -50,14 +50,15 @@ curl localhost:8787/healthz
 
 ### Vercel
 
-`agentbox control-plane setup --deploy vercel` is the supported path: it creates a
-**Git-connected** project (repo `--repo`, default `madarco/agentbox`; Root Directory
-`apps/control-plane`), auto-provisions Neon, sets the App env, and builds `--ref` (default
-`main`) **from GitHub** — no local upload, so it works from a global npm install. Vercel
-only connects a repo whose owner has the Vercel GitHub App, so deploy a repo you own or a
-fork (`--repo <you>/agentbox`). Manual equivalent (dashboard or CLI): create the project
-with Root Directory `apps/control-plane`, attach Neon, set `GITHUB_APP_ID` /
-`GITHUB_APP_PRIVATE_KEY` / `AGENTBOX_RELAY_ADMIN_TOKEN`, then deploy.
+`agentbox control-plane setup --deploy vercel` builds the plane **from GitHub** via the
+Vercel API — no local upload, so it works from a global npm install. If you don't own
+`--repo` (default `madarco/agentbox`) it **auto-forks via `gh`** and deploys the fork;
+auto-provisions Neon; sets the App env; builds `--ref` (default `main`). If Vercel's GitHub
+App isn't on your account it falls back to the **Deploy Button** (clone + App install +
+Postgres in-browser), then sets the secrets + redeploys. The app **boots even with no
+secrets** (`/healthz` always 200; admin/leasing 503 until wired), so the bare→wire→redeploy
+sequence is never broken. Manual equivalent: create the project with Root Directory
+`apps/control-plane`, attach Neon, set the three env vars, deploy.
 
 Then point boxes/CLI at it: `agentbox control-plane set-url https://<deployment>`.
 

@@ -60,6 +60,14 @@ describe('hosted control-plane handler', () => {
     expect(r.body).toMatchObject({ ok: true, controlPlane: true });
   });
 
+  it('with no admin token, fails closed gracefully (503, not 500)', async () => {
+    const store = new MemoryStore();
+    const noAdmin: ControlPlaneDeps = { store, leaser: null, adminToken: '' };
+    const r = await handleRelayRequest(req('GET', '/admin/registry', { bearer: 'anything' }), noAdmin);
+    expect(r.status).toBe(503);
+    expect((r.body as { error: string }).error).toMatch(/not configured/i);
+  });
+
   it('gates /admin on the admin bearer', async () => {
     const store = new MemoryStore();
     expect((await handleRelayRequest(req('GET', '/admin/registry'), deps(store))).status).toBe(401);

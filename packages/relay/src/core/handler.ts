@@ -101,8 +101,10 @@ export async function handleRelayRequest(
   const log = deps.log ?? (() => {});
 
   if (deps.adminToken.length === 0) {
-    // Fail closed — a hosted plane with no admin token would expose /admin/*.
-    return err(500, 'control plane misconfigured: no admin token');
+    // Fail closed — a hosted plane with no admin token must never serve /admin/*.
+    // 503 (not 500): a deploy that hasn't had its secrets set yet is "not ready",
+    // not crashed. healthz is handled before this in the Web adapter (lib/plane.ts).
+    return err(503, 'control plane not configured: admin token unset');
   }
 
   if (req.method === 'GET' && req.path === '/healthz') {

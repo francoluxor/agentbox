@@ -200,6 +200,17 @@ The plane is deployed and validated on real infrastructure:
   (Hetzner needs no ownership — it clones the public repo on the VPS). Replaced the old
   local-folder `vercel deploy` (monorepo-only, hit the Root-Directory bug).
 
+- **Vercel deploy made ownership-free + boot-safe (2026-06-16):** `--deploy vercel` is now
+  tiered — if the deployer doesn't own `--repo` it **auto-forks via `gh`** and deploys the fork
+  (`github-fork.ts`); if Vercel still can't connect (its GitHub App not installed on the account),
+  it falls back to the **Deploy Button** (`vercel.com/new/clone` — clone + App install + Postgres
+  in-browser) and then finishes via the API (upsert secrets + redeploy), so there's no manual
+  paste. The control plane also **boots with no secrets**: `lib/plane.ts` answers `/healthz` before
+  building deps (reporting `configured:{db,app,admin}`) and `buildDeps` no longer throws on a
+  missing admin token; the handler returns a graceful **503 (not 500)** for an unset admin token.
+  Net: a bare deploy is reachable + never 500s, and the bare→set-secrets→redeploy sequence is
+  always valid. (Hetzner stays ownership-free — it clones the public repo on the VPS.)
+
 ## Security notes
 
 - **Token blast radius:** leased tokens are per-repo, minimal perms

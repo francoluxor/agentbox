@@ -14,17 +14,17 @@ import {
   upsertProjectEnv,
   type VercelProjectFull,
 } from '@agentbox/sandbox-vercel';
+import { ensureFork, ghAvailable, ghLogin, ownerOf } from './github-fork.js';
+import { openInBrowser } from './ensure-repo-installed.js';
 
 /**
- * Deploy the control plane to Vercel **from GitHub** (no local upload): connect
- * a Git-backed Vercel project to `<repo>` with Root Directory `apps/control-plane`,
- * provision Neon, set the App env, and trigger a production build of `<ref>`.
- * Works without a monorepo checkout (so a globally-installed CLI can deploy),
- * mirroring how the Hetzner path clones the repo on the VPS.
- *
- * Vercel only connects a repo whose OWNER has the Vercel GitHub App installed —
- * it does not clone arbitrary public repos. So the deployer must own `<repo>`
- * (or fork it and pass `--repo <fork>`); we surface that clearly on failure.
+ * Deploy the control plane to Vercel **from GitHub**, in tiers so it works for
+ * everyone without a local checkout:
+ *   1. If the deployer doesn't own `repo`, `gh`-fork it to their account.
+ *   2. API deploy the owned/forked repo (headless; needs the Vercel GitHub App).
+ *   3. Fallback: open the Vercel Deploy Button (clones the repo into the user's
+ *      account + installs the App + provisions Postgres in-browser), then finish
+ *      via the API (set the secrets + redeploy) — no manual paste.
  */
 export interface VercelDeployOptions {
   /** App env baked into the build: GITHUB_APP_ID / _PRIVATE_KEY / ADMIN_TOKEN. */
@@ -33,13 +33,15 @@ export interface VercelDeployOptions {
   repo: string;
   /** Branch / tag / sha to build. */
   ref: string;
-  /** Vercel project name (default agentbox-control-plane). */
   project?: string;
   log: (line: string) => void;
 }
 
 const PROJECT_DEFAULT = 'agentbox-control-plane';
 const ROOT_DIRECTORY = 'apps/control-plane';
+
+/** Raised when Vercel can't connect the repo (GitHub App not installed on the owner). */
+class GitConnectError extends Error {}
 
 function connectedTo(p: VercelProjectFull | null, repo: string): boolean {
   return (
@@ -49,12 +51,11 @@ function connectedTo(p: VercelProjectFull | null, repo: string): boolean {
   );
 }
 
-/**
- * Best-effort Neon provisioning via the logged-in `vercel` CLI. Targets the
- * project headlessly via `VERCEL_PROJECT_ID`/`VERCEL_ORG_ID`; runs in a throwaway
- * temp dir because `vercel integration add` drops a `.env.local` in the cwd
- * (which we don't want littering the user's project).
- */
+function isConnectError(msg: string): boolean {
+  return /install the GitHub integration|integration first|github integration/i.test(msg);
+}
+
+/** Best-effort Neon provisioning via the logged-in `vercel` CLI, in a temp cwd. */
 function provisionNeon(teamId: string | undefined, projectId: string, log: (l: string) => void): Promise<void> {
   return new Promise((resolve) => {
     const work = mkdtempSync(join(tmpdir(), 'agentbox-neon-'));
@@ -113,6 +114,122 @@ async function pollDeployment(
   throw new Error('timed out waiting for the Vercel build to finish');
 }
 
+function envVars(env: Record<string, string>): Array<{ key: string; value: string }> {
+  return Object.entries(env).map(([key, value]) => ({ key, value }));
+}
+
+interface DeployArgs {
+  token: string;
+  teamId: string | undefined;
+  repo: string;
+  ref: string;
+  env: Record<string, string>;
+  projectName: string;
+  log: (line: string) => void;
+}
+
+/** Headless API deploy of a repo Vercel can connect (owned/forked). */
+async function apiDeploy(a: DeployArgs): Promise<{ url: string }> {
+  const [owner, repoName] = a.repo.split('/');
+  a.log(`ensuring Vercel project "${a.projectName}" is connected to ${a.repo}…`);
+  let project = await getProject(a.token, a.teamId, a.projectName);
+  if (project && !connectedTo(project, a.repo)) {
+    a.log(`project exists but is not connected to ${a.repo}; recreating…`);
+    await deleteProject(a.token, a.teamId, project.id);
+    project = null;
+  }
+  if (!project) {
+    try {
+      project = await createGitProject(a.token, a.teamId, {
+        name: a.projectName,
+        repo: a.repo,
+        rootDirectory: ROOT_DIRECTORY,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (isConnectError(msg)) throw new GitConnectError(msg);
+      throw e;
+    }
+  } else {
+    await patchProjectSettings(a.token, a.teamId, project.id, {
+      framework: 'nextjs',
+      rootDirectory: ROOT_DIRECTORY,
+    });
+  }
+
+  a.log('provisioning Neon Postgres…');
+  await provisionNeon(a.teamId, project.id, a.log);
+  a.log('setting environment variables…');
+  await upsertProjectEnv(a.token, a.teamId, project.id, envVars(a.env));
+
+  a.log(`triggering a production build of ${a.repo}@${a.ref}…`);
+  const dep = await createGitDeployment(a.token, a.teamId, {
+    name: a.projectName,
+    projectId: project.id,
+    owner: owner!,
+    repo: repoName!,
+    ref: a.ref,
+  });
+  await pollDeployment(a.token, a.teamId, dep.id, a.log);
+  const alias = (await getProductionAlias(a.token, a.teamId, project.id)) ?? dep.url ?? null;
+  if (!alias) throw new Error('build is ready but no production URL was found');
+  return { url: alias.startsWith('http') ? alias : `https://${alias}` };
+}
+
+function deployButtonUrl(repo: string, projectName: string): string {
+  const p = new URLSearchParams({
+    'repository-url': `https://github.com/${repo}`,
+    'root-directory': ROOT_DIRECTORY,
+    stores: '[{"type":"postgres"}]',
+    'project-name': projectName,
+    'repository-name': projectName,
+  });
+  return `https://vercel.com/new/clone?${p.toString()}`;
+}
+
+/**
+ * Fallback when Vercel can't connect the repo via the API (App not installed):
+ * the Deploy Button does the clone + App install + Postgres in-browser; we then
+ * set the secrets + redeploy via the API (the control plane boots gracefully
+ * unconfigured in the meantime).
+ */
+async function buttonDeploy(a: DeployArgs): Promise<{ url: string }> {
+  const url = deployButtonUrl(a.repo, a.projectName);
+  a.log(`opening the Vercel Deploy Button — complete the clone + Postgres setup in your browser:`);
+  a.log(url);
+  openInBrowser(url);
+
+  a.log('waiting for the Vercel project to appear (finish the deploy in the browser)…');
+  const stop = Date.now() + 10 * 60_000;
+  let project: VercelProjectFull | null = null;
+  while (Date.now() < stop) {
+    project = await getProject(a.token, a.teamId, a.projectName);
+    if (project?.link?.type === 'github' && project.link.repo) break;
+    project = null;
+    await new Promise((r) => setTimeout(r, 5_000));
+  }
+  if (!project?.link?.repo) {
+    throw new Error(
+      `timed out waiting for the Vercel project "${a.projectName}". Finish the browser deploy, then re-run, ` +
+        `or set the env vars + redeploy in the Vercel dashboard.`,
+    );
+  }
+
+  a.log('setting environment variables + redeploying…');
+  await upsertProjectEnv(a.token, a.teamId, project.id, envVars(a.env));
+  const dep = await createGitDeployment(a.token, a.teamId, {
+    name: a.projectName,
+    projectId: project.id,
+    owner: project.link.org ?? ownerOf(a.repo),
+    repo: project.link.repo,
+    ref: a.ref,
+  });
+  await pollDeployment(a.token, a.teamId, dep.id, a.log);
+  const alias = (await getProductionAlias(a.token, a.teamId, project.id)) ?? dep.url ?? null;
+  if (!alias) throw new Error('redeploy is ready but no production URL was found');
+  return { url: alias.startsWith('http') ? alias : `https://${alias}` };
+}
+
 export async function deployControlPlaneToVercel(opts: VercelDeployOptions): Promise<{ url: string }> {
   const auth = await resolveVercelApiAuth();
   if (!auth) {
@@ -123,65 +240,26 @@ export async function deployControlPlaneToVercel(opts: VercelDeployOptions): Pro
   const [owner, repoName] = opts.repo.split('/');
   if (!owner || !repoName) throw new Error(`--repo must be "owner/name" (got "${opts.repo}")`);
 
-  // 1. Find-or-create a project connected to <repo> (gitRepository isn't
-  //    PATCH-able, so a mis-linked existing project is recreated).
-  opts.log(`ensuring Vercel project "${projectName}" is connected to ${opts.repo}…`);
-  let project = await getProject(token, teamId, projectName);
-  if (project && !connectedTo(project, opts.repo)) {
-    opts.log(`project exists but is not connected to ${opts.repo}; recreating…`);
-    await deleteProject(token, teamId, project.id);
-    project = null;
-  }
-  if (!project) {
-    try {
-      project = await createGitProject(token, teamId, {
-        name: projectName,
-        repo: opts.repo,
-        rootDirectory: ROOT_DIRECTORY,
-      });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (/install the GitHub integration|integration first|github integration/i.test(msg)) {
-        throw new Error(
-          `Vercel can't connect ${opts.repo}: the Vercel GitHub App must be installed on "${owner}" with access to the repo ` +
-            `(https://vercel.com/account/installations), or fork the repo and pass --repo <yourfork>/${repoName}. [${msg}]`,
-        );
-      }
-      throw e;
+  // Resolve the deploy target: if `gh` is available and the deployer doesn't own
+  // the repo, fork it to their account (Vercel can only connect a repo whose
+  // owner has the Vercel GitHub App). Without `gh`, deploy the repo as-is — the
+  // API connect will fail for a non-owned repo and we fall through to the button.
+  let target = opts.repo;
+  if (await ghAvailable()) {
+    const login = await ghLogin();
+    if (login && login.toLowerCase() !== owner.toLowerCase()) {
+      target = await ensureFork(opts.repo, login, opts.log);
     }
-  } else {
-    await patchProjectSettings(token, teamId, project.id, {
-      framework: 'nextjs',
-      rootDirectory: ROOT_DIRECTORY,
-    });
   }
 
-  // 2. Postgres (Neon injects POSTGRES_URL itself — set it before the build).
-  opts.log('provisioning Neon Postgres…');
-  await provisionNeon(teamId, project.id, opts.log);
-
-  // 3. App env (build-time).
-  opts.log('setting environment variables…');
-  await upsertProjectEnv(
-    token,
-    teamId,
-    project.id,
-    Object.entries(opts.env).map(([key, value]) => ({ key, value })),
-  );
-
-  // 4. Build from GitHub.
-  opts.log(`triggering a production build of ${opts.repo}@${opts.ref}…`);
-  const dep = await createGitDeployment(token, teamId, {
-    name: projectName,
-    projectId: project.id,
-    owner,
-    repo: repoName,
-    ref: opts.ref,
-  });
-  await pollDeployment(token, teamId, dep.id, opts.log);
-
-  // 5. Stable production URL.
-  const alias = (await getProductionAlias(token, teamId, project.id)) ?? dep.url ?? null;
-  if (!alias) throw new Error('build is ready but no production URL was found');
-  return { url: alias.startsWith('http') ? alias : `https://${alias}` };
+  const args: DeployArgs = { token, teamId, repo: target, ref: opts.ref, env: opts.env, projectName, log: opts.log };
+  try {
+    return await apiDeploy(args);
+  } catch (e) {
+    if (e instanceof GitConnectError) {
+      opts.log(`Vercel can't connect ${target} via the API (GitHub App not installed); using the Deploy Button…`);
+      return buttonDeploy(args);
+    }
+    throw e;
+  }
 }
