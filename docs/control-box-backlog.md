@@ -64,8 +64,11 @@ box --(push directly with leased token)--> GitHub
   `promptMode`; `202 {promptId}` + `GET /rpc/status/:id`; ctl polls transparently.
 - [x] **Phase 3 — GitHub-App leasing + remove dedicated control-box.**
   `github-app.ts`, `git.lease-token`, in-box lease/push; deleted the
-  `agentbox control-box` command + `sandbox-hetzner/control-box.ts`. The relay's
-  `--control-box` admin-bearer mode + `relay.controlBoxUrl` key stay.
+  `agentbox control-box` command + `sandbox-hetzner/control-box.ts`. The
+  `relay.controlBoxUrl` key stays (now points at the hosted plane). The relay's
+  legacy `--control-box` admin-bearer mode + its stored-PAT bundle-push
+  (`pushBundleWithPat`/`pushBundleToRemote`) were later removed once the hosted
+  plane + App leasing fully superseded them (see Cleanup below).
 - [x] **Phase 4 — Control-plane Next.js app (`apps/control-plane`).**
   `handleRelayRequest` core + lean `@agentbox/relay/control-plane` entry;
   catch-all route handler; PostgresStore + App leaser from env; docker-compose +
@@ -109,6 +112,20 @@ box --(push directly with leased token)--> GitHub
   hosted-control-plane section in `docs/host-relay.md`, and the stale
   `agentbox control-box` command references removed from `config/types.ts` +
   `host-actions.ts`. (`cloud-providers.md` already had no control-box refs.)
+- [x] **Cleanup — remove the legacy `--control-box` relay mode.** The dedicated
+  control-box (a VPS running the relay binary with a stored PAT) was the v1
+  approach; the hosted plane + App leasing replace it. Removed cleanly (AgentBox
+  is unreleased): the `agentbox-relay serve --control-box` flag + boot mode
+  (`bin.ts`); the `controlBox`/`adminToken`/`promptMode='poll'` branches in
+  `server.ts` (the laptop relay is loopback-gated, `/remote/*` 404s here — box
+  creation is the Next.js plane's surface); the `controlBox`/`githubToken` deps +
+  the `pushBundleWithPat` PAT bundle-push and the gh `--repo`/cwd + git.fetch
+  control-box branches in `host-actions.ts`; the now-dead `pushBundleToRemote` in
+  `git-pat.ts` (its URL helpers `toAuthedHttpsUrl`/`parseGitRemote`/
+  `repoSlugFromRemote` stay — leasing reuses them); and `control-box-admin.test.ts`.
+  Kept: `relay.controlBoxUrl` (points at the hosted plane) and the plane's own
+  always-on admin-bearer gating in `core/handler.ts`. Relay suite green
+  (224 tests), CLI typechecks.
 
 ## Live validation (2026-06-16)
 

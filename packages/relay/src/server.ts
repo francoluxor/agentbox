@@ -1,5 +1,4 @@
 import { spawn } from 'node:child_process';
-import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { executeCloudAction, refreshCloudPreviewUrl } from './host-actions.js';
 import { HostActionQueue } from './host-action-queue.js';
@@ -91,20 +90,6 @@ export interface RelayServerOptions {
    */
   bridgeToken?: string;
   /**
-   * Control-box mode: this `host`-mode relay runs on an always-on cloud box
-   * exposed publicly (behind the provider's HTTPS proxy) rather than on a
-   * laptop's loopback. When set, `/admin/*` (and `/remote/*`) are gated by a
-   * bearer match against `adminToken` instead of the source-IP loopback check
-   * — the provider proxy can present requests as loopback, so loopback is NOT
-   * trusted here. Requires a non-empty `adminToken` (enforced at startup).
-   */
-  controlBox?: boolean;
-  /**
-   * Bearer required on `/admin/*` and `/remote/*` when `controlBox` is set.
-   * Ignored otherwise (the laptop relay stays loopback-gated).
-   */
-  adminToken?: string;
-  /**
    * Persisted-state backend. Defaults to an in-memory store wrapping the
    * relay's historical in-memory structures (the laptop relay + tests). A
    * hosted control plane injects a Postgres-backed store; a federated laptop
@@ -112,9 +97,9 @@ export interface RelayServerOptions {
    */
   store?: Store;
   /**
-   * How host-action approvals are obtained. Defaults to 'poll' when
-   * `controlBox` is set (the stateless hosted plane), else 'block' (the
-   * long-lived laptop relay, today's behavior). See `./permission.ts`.
+   * How host-action approvals are obtained. Defaults to 'block' (the
+   * long-lived laptop relay blocks on a human). The stateless hosted plane
+   * uses 'poll' via its own handler, not this server. See `./permission.ts`.
    */
   promptMode?: PromptMode;
   /**
@@ -224,14 +209,6 @@ function isLoopbackAddress(addr: string | undefined): boolean {
   );
 }
 
-/** Constant-time string compare; false on length mismatch (never throws). */
-function timingSafeEqualStr(a: string, b: string): boolean {
-  const ab = Buffer.from(a, 'utf8');
-  const bb = Buffer.from(b, 'utf8');
-  if (ab.length !== bb.length) return false;
-  return timingSafeEqual(ab, bb);
-}
-
 /**
  * Build the relay HTTP server. Routes:
  *   POST /events                — bearer auth (box token), appends to ring buffer.
@@ -296,19 +273,9 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
     throw new Error("relay mode='box' requires a non-empty bridgeToken");
   }
   const bridgeToken = opts.bridgeToken ?? '';
-  // Control-box mode gates /admin/* (and /remote/*) on a bearer instead of
-  // source-IP loopback, because the relay is reachable from the internet via
-  // the provider's HTTPS proxy. Fail closed: refuse to boot in control-box
-  // mode without a token rather than silently leaving admin loopback-open.
-  const controlBox = opts.controlBox ?? false;
-  const adminToken = opts.adminToken ?? '';
-  if (controlBox && adminToken.length === 0) {
-    throw new Error('relay controlBox mode requires a non-empty adminToken');
-  }
-  // The hosted plane is stateless per request, so it can't block on a human —
-  // it parks approvals in the store and the box polls. The laptop relay is a
-  // long-lived process and keeps blocking (today's behavior).
-  const promptMode: PromptMode = opts.promptMode ?? (controlBox ? 'poll' : 'block');
+  // The laptop relay blocks on a human for approvals (today's behavior). The
+  // stateless hosted plane uses 'poll' via its own handler, not this server.
+  const promptMode: PromptMode = opts.promptMode ?? 'block';
   const gateDeps: GateDeps = { mode: promptMode, store, prompts, subscribers };
   // GitHub App leaser for `git.lease-token` (hosted plane). Off when no App is
   // configured — the laptop relay never needs it (it pushes host-side / cloud
@@ -428,23 +395,15 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
     // Admin endpoints are reachable from loopback only. The relay binds to
     // 0.0.0.0 so containers can reach /events and /rpc via host.docker.internal,
     // but admin operations (register-box, forget-box, list events, etc.) are
-    // for the host CLI and must not be exposed to boxes.
-    //
-    // In control-box mode the relay is exposed publicly behind the provider's
-    // HTTPS proxy, which can present requests as loopback — so loopback is NOT
-    // trusted. Admin (and /remote/*) require a valid admin bearer instead.
+    // for the host CLI and must not be exposed to boxes. `/remote/*` is a
+    // hosted-control-plane surface (box creation) served by the Next.js app's
+    // handler, not the laptop relay — so it does not exist here.
     if (url.pathname.startsWith('/admin/') || url.pathname.startsWith('/remote/')) {
-      if (controlBox) {
-        if (!timingSafeEqualStr(bearerToken(req), adminToken)) {
-          send(res, 401, { error: 'invalid admin token' });
-          return;
-        }
-      } else if (url.pathname.startsWith('/remote/')) {
-        // /remote/* is a control-box-only surface; off the control box it does
-        // not exist (avoid advertising a half-wired endpoint on laptop relays).
+      if (url.pathname.startsWith('/remote/')) {
         send(res, 404, { error: 'not found', route });
         return;
-      } else if (!isLoopbackAddress(req.socket.remoteAddress)) {
+      }
+      if (!isLoopbackAddress(req.socket.remoteAddress)) {
         send(res, 403, { error: 'admin endpoints are loopback-only' });
         return;
       }
@@ -504,12 +463,9 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
         return;
       }
       if (body.method === 'git.push' || body.method === 'git.fetch') {
-        // Cloud box reaching a host-mode relay directly over the forwarder
-        // (the control-box model): there is no host worktree to push from, so
-        // run the cloud bundle pull-back executor. It does its own gating and,
-        // in control-box mode, pushes to origin with the PAT. (On a laptop
-        // relay this would still work via the host workspace, but cloud boxes
-        // normally reach the laptop via the poller, not this path.)
+        // Cloud box reaching this host-mode relay directly over the forwarder
+        // (rather than via the poller): run the cloud bundle pull-back executor,
+        // which does its own gating and pushes via the host workspace.
         if (reg.kind === 'cloud') {
           const action: HostAction = {
             id: '',
@@ -525,8 +481,6 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
             prompts,
             subscribers,
             hostInitiatedTokens,
-            controlBox,
-            githubToken: process.env.GH_TOKEN,
             log,
           });
           send(res, result.exitCode === 0 ? 200 : 500, result);

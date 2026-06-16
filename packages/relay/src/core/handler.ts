@@ -89,7 +89,7 @@ const HOST_LOCAL_METHODS = new Set([
 ]);
 
 /**
- * Dispatch one control-plane request. `controlBox` semantics are implicit here:
+ * Dispatch one control-plane request. The hosted plane's gating is fixed:
  * `/admin/*` and `/remote/*` always require the admin bearer (never loopback),
  * and approvals are always poll-mode.
  */

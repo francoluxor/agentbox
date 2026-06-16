@@ -39,9 +39,9 @@ export function startBoxRelayForwarder(
   const isTls = upstream.protocol === 'https:';
   const upstreamPort =
     upstream.port.length > 0 ? Number.parseInt(upstream.port, 10) : isTls ? 443 : 80;
-  // The control-box relay is reached over public HTTPS (behind the provider's
-  // proxy); the laptop relay over plain HTTP at host.docker.internal. Pick the
-  // matching client so TLS termination works for the cloud control box.
+  // The hosted control plane is reached over public HTTPS (behind the
+  // provider's proxy); the laptop relay over plain HTTP at host.docker.internal.
+  // Pick the matching client so TLS termination works for the cloud path.
   const requestFn = isTls ? httpsRequest : httpRequest;
 
   const server: Server = createServer((req, res) => {
