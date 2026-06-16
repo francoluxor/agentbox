@@ -116,5 +116,50 @@ export function runStoreConformance(name: string, setup: () => Promise<Store>): 
         expect(await store.getStatus('b1')).toBeUndefined();
       });
     });
+
+    describe('prompt mailbox', () => {
+      const baseRow = (id: string) => ({
+        id,
+        boxId: 'b1',
+        ev: { id, kind: 'confirm' as const, message: 'go?', context: { command: 'git push' } },
+        method: 'git.lease-token',
+        params: { path: '/workspace' },
+        status: 'pending' as const,
+        createdAt: new Date().toISOString(),
+      });
+
+      it('creates, lists pending, answers (idempotent), and caches a result', async () => {
+        expect(await store.getPrompt('p1')).toBeNull();
+        await store.createPrompt(baseRow('p1'));
+        await store.createPrompt(baseRow('p2'));
+
+        const pending = await store.listPendingPrompts('b1');
+        expect(pending.map((p) => p.id).sort()).toEqual(['p1', 'p2']);
+        expect((await store.getPrompt('p1'))?.ev.context?.command).toBe('git push');
+        expect((await store.getPrompt('p1'))?.params).toEqual({ path: '/workspace' });
+
+        // First answer transitions; a second is a no-op (idempotent).
+        expect(await store.answerPrompt('p1', 'y')).toBe(true);
+        expect(await store.answerPrompt('p1', 'n')).toBe(false);
+        const p1 = await store.getPrompt('p1');
+        expect(p1?.status).toBe('answered');
+        expect(p1?.answer).toBe('y');
+
+        // Answered prompts drop out of the pending list.
+        expect((await store.listPendingPrompts('b1')).map((p) => p.id)).toEqual(['p2']);
+
+        // Result caching round-trips.
+        await store.setPromptResult('p1', { exitCode: 0, stdout: 'ok', stderr: '' });
+        expect((await store.getPrompt('p1'))?.result).toEqual({ exitCode: 0, stdout: 'ok', stderr: '' });
+      });
+
+      it('records a cancelled denial', async () => {
+        await store.createPrompt(baseRow('p3'));
+        expect(await store.answerPrompt('p3', 'n', true)).toBe(true);
+        const p3 = await store.getPrompt('p3');
+        expect(p3?.answer).toBe('n');
+        expect(p3?.cancelled).toBe(true);
+      });
+    });
   });
 }

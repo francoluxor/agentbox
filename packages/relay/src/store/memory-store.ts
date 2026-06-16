@@ -1,8 +1,8 @@
 import { BoxRegistry, EventBuffer } from '../registry.js';
 import { BoxStatusStore } from '../status-store.js';
 import type { BoxStatusSnapshot } from '../status-store.js';
-import type { BoxRegistration, RelayEvent } from '../types.js';
-import type { Store } from './store.js';
+import type { BoxRegistration, GitRpcResult, RelayEvent } from '../types.js';
+import type { PromptRow, Store } from './store.js';
 
 export interface MemoryStoreParts {
   registry?: BoxRegistry;
@@ -23,6 +23,7 @@ export class MemoryStore implements Store {
   readonly registry: BoxRegistry;
   readonly events: EventBuffer;
   readonly statusStore: BoxStatusStore;
+  private readonly prompts = new Map<string, PromptRow>();
 
   constructor(parts: MemoryStoreParts = {}) {
     this.registry = parts.registry ?? new BoxRegistry();
@@ -82,6 +83,39 @@ export class MemoryStore implements Store {
 
   deleteStatus(boxId: string): Promise<void> {
     this.statusStore.delete(boxId);
+    return Promise.resolve();
+  }
+
+  createPrompt(row: PromptRow): Promise<void> {
+    this.prompts.set(row.id, { ...row });
+    return Promise.resolve();
+  }
+
+  getPrompt(promptId: string): Promise<PromptRow | null> {
+    const row = this.prompts.get(promptId);
+    return Promise.resolve(row ? { ...row } : null);
+  }
+
+  answerPrompt(promptId: string, answer: 'y' | 'n', cancelled?: boolean): Promise<boolean> {
+    const row = this.prompts.get(promptId);
+    if (!row || row.status !== 'pending') return Promise.resolve(false);
+    row.status = 'answered';
+    row.answer = answer;
+    row.cancelled = cancelled;
+    return Promise.resolve(true);
+  }
+
+  listPendingPrompts(boxId: string): Promise<PromptRow[]> {
+    const out: PromptRow[] = [];
+    for (const row of this.prompts.values()) {
+      if (row.boxId === boxId && row.status === 'pending') out.push({ ...row });
+    }
+    return Promise.resolve(out);
+  }
+
+  setPromptResult(promptId: string, result: GitRpcResult): Promise<void> {
+    const row = this.prompts.get(promptId);
+    if (row) row.result = result;
     return Promise.resolve();
   }
 }

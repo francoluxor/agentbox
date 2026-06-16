@@ -29,7 +29,7 @@ if (!url) {
       adminPool = new Pool({ connectionString: url });
     }
     // Fresh state per test; RESTART IDENTITY makes event ids deterministic.
-    await adminPool.query('TRUNCATE boxes, events, box_status RESTART IDENTITY');
+    await adminPool.query('TRUNCATE boxes, events, box_status, prompts RESTART IDENTITY');
     return store;
   });
 

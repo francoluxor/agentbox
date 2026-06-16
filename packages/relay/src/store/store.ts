@@ -1,5 +1,32 @@
 import type { BoxStatusSnapshot } from '../status-store.js';
-import type { BoxRegistration, RelayEvent } from '../types.js';
+import type { BoxRegistration, GitRpcResult, PromptAskEvent, RelayEvent } from '../types.js';
+
+/**
+ * A pending (or answered) host-action approval, persisted so it survives across
+ * stateless function invocations. The blocking laptop relay keeps using the
+ * in-process `PendingPrompts`; the hosted control plane (poll mode) parks these
+ * rows instead: the box's `/rpc` returns `202 {promptId}`, the human answers via
+ * `/admin/prompts/answer`, and the box polls `/rpc/status/:id` until the row is
+ * answered — at which point the approved action runs and its result is cached
+ * on the row (`result`) so re-polls are idempotent.
+ */
+export interface PromptRow {
+  id: string;
+  boxId: string;
+  /** What to show the approver (message/detail/context). */
+  ev: PromptAskEvent;
+  /** The originating `/rpc` method + params, re-dispatched on approval. */
+  method: string;
+  params: unknown;
+  status: 'pending' | 'answered';
+  answer?: 'y' | 'n';
+  cancelled?: boolean;
+  /** Cached result of the approved action (set once executed). */
+  result?: GitRpcResult;
+  createdAt: string;
+  /** ISO-8601 auto-expiry; a poll past this resolves as denied. */
+  expiresAt?: string;
+}
 
 /**
  * The relay's persisted-state seam.
@@ -48,4 +75,13 @@ export interface Store {
   ): Promise<void>;
   getStatus(boxId: string): Promise<BoxStatusSnapshot | undefined>;
   deleteStatus(boxId: string): Promise<void>;
+
+  // --- prompt mailbox (poll-mode approvals; Phase 2) ---
+  createPrompt(row: PromptRow): Promise<void>;
+  getPrompt(promptId: string): Promise<PromptRow | null>;
+  /** pending → answered. Idempotent: returns true only on the first transition. */
+  answerPrompt(promptId: string, answer: 'y' | 'n', cancelled?: boolean): Promise<boolean>;
+  listPendingPrompts(boxId: string): Promise<PromptRow[]>;
+  /** Cache the executed result of an approved action (idempotent re-polls). */
+  setPromptResult(promptId: string, result: GitRpcResult): Promise<void>;
 }

@@ -1,8 +1,8 @@
 import type { Pool } from 'pg';
 import type { BoxStatusSnapshot } from '../status-store.js';
-import type { BoxRegistration, RelayEvent } from '../types.js';
+import type { BoxRegistration, GitRpcResult, RelayEvent } from '../types.js';
 import { RELAY_EVENT_RING_SIZE } from '../types.js';
-import type { Store } from './store.js';
+import type { PromptRow, Store } from './store.js';
 
 /**
  * Postgres-backed {@link Store} for the hosted control plane (Vercel-managed
@@ -46,6 +46,21 @@ CREATE TABLE IF NOT EXISTS box_status (
   status        jsonb NOT NULL,
   updated_at    timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS prompts (
+  id         text PRIMARY KEY,
+  box_id     text NOT NULL,
+  ev         jsonb NOT NULL,
+  method     text NOT NULL,
+  params     jsonb,
+  status     text NOT NULL DEFAULT 'pending',
+  answer     text,
+  cancelled  boolean,
+  result     jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS prompts_box_pending_idx ON prompts (box_id) WHERE status = 'pending';
 `;
 
 export interface PostgresStoreOptions {
@@ -227,6 +242,93 @@ export class PostgresStore implements Store {
   async deleteStatus(boxId: string): Promise<void> {
     await this.query(`DELETE FROM box_status WHERE box_id = $1`, [boxId]);
   }
+
+  // --- prompt mailbox ---
+
+  async createPrompt(row: PromptRow): Promise<void> {
+    await this.query(
+      `INSERT INTO prompts (id, box_id, ev, method, params, status, answer, cancelled, result, created_at, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       ON CONFLICT (id) DO NOTHING`,
+      [
+        row.id,
+        row.boxId,
+        JSON.stringify(row.ev),
+        row.method,
+        row.params === undefined ? null : JSON.stringify(row.params),
+        row.status,
+        row.answer ?? null,
+        row.cancelled ?? null,
+        row.result === undefined ? null : JSON.stringify(row.result),
+        row.createdAt,
+        row.expiresAt ?? null,
+      ],
+    );
+  }
+
+  async getPrompt(promptId: string): Promise<PromptRow | null> {
+    const rows = await this.query<PromptDbRow>(
+      `SELECT id, box_id, ev, method, params, status, answer, cancelled, result, created_at, expires_at
+       FROM prompts WHERE id = $1`,
+      [promptId],
+    );
+    return rows[0] ? rowToPrompt(rows[0]) : null;
+  }
+
+  async answerPrompt(promptId: string, answer: 'y' | 'n', cancelled?: boolean): Promise<boolean> {
+    const rows = await this.query<{ id: string }>(
+      `UPDATE prompts SET status = 'answered', answer = $2, cancelled = $3
+       WHERE id = $1 AND status = 'pending' RETURNING id`,
+      [promptId, answer, cancelled ?? null],
+    );
+    return rows.length > 0;
+  }
+
+  async listPendingPrompts(boxId: string): Promise<PromptRow[]> {
+    const rows = await this.query<PromptDbRow>(
+      `SELECT id, box_id, ev, method, params, status, answer, cancelled, result, created_at, expires_at
+       FROM prompts WHERE box_id = $1 AND status = 'pending' ORDER BY created_at`,
+      [boxId],
+    );
+    return rows.map(rowToPrompt);
+  }
+
+  async setPromptResult(promptId: string, result: GitRpcResult): Promise<void> {
+    await this.query(`UPDATE prompts SET result = $2 WHERE id = $1`, [
+      promptId,
+      JSON.stringify(result),
+    ]);
+  }
+}
+
+interface PromptDbRow {
+  id: string;
+  box_id: string;
+  ev: PromptRow['ev'];
+  method: string;
+  params: unknown;
+  status: 'pending' | 'answered';
+  answer: 'y' | 'n' | null;
+  cancelled: boolean | null;
+  result: GitRpcResult | null;
+  created_at: Date;
+  expires_at: Date | null;
+}
+
+function rowToPrompt(r: PromptDbRow): PromptRow {
+  return {
+    id: r.id,
+    boxId: r.box_id,
+    ev: r.ev,
+    method: r.method,
+    params: r.params ?? undefined,
+    status: r.status,
+    answer: r.answer ?? undefined,
+    cancelled: r.cancelled ?? undefined,
+    result: r.result ?? undefined,
+    createdAt: new Date(r.created_at).toISOString(),
+    expiresAt: r.expires_at ? new Date(r.expires_at).toISOString() : undefined,
+  };
 }
 
 interface EventRow {

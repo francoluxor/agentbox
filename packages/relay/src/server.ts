@@ -38,6 +38,7 @@ import {
   runHostIntegration,
   type IntegrationRpcParams,
 } from './integrations.js';
+import { gateApproval, type GateDeps, type PromptMode } from './permission.js';
 import { askPrompt, isPromptAnswerBody, PendingPrompts, PromptSubscribers } from './prompts.js';
 import { BoxRegistry, EventBuffer } from './registry.js';
 import { BoxStatusStore, isValidBoxStatus } from './status-store.js';
@@ -107,6 +108,12 @@ export interface RelayServerOptions {
    * relay injects a RemoteStore. See `./store/store.ts`.
    */
   store?: Store;
+  /**
+   * How host-action approvals are obtained. Defaults to 'poll' when
+   * `controlBox` is set (the stateless hosted plane), else 'block' (the
+   * long-lived laptop relay, today's behavior). See `./permission.ts`.
+   */
+  promptMode?: PromptMode;
 }
 
 export interface RelayServerHandle {
@@ -288,6 +295,11 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
   if (controlBox && adminToken.length === 0) {
     throw new Error('relay controlBox mode requires a non-empty adminToken');
   }
+  // The hosted plane is stateless per request, so it can't block on a human —
+  // it parks approvals in the store and the box polls. The laptop relay is a
+  // long-lived process and keeps blocking (today's behavior).
+  const promptMode: PromptMode = opts.promptMode ?? (controlBox ? 'poll' : 'block');
+  const gateDeps: GateDeps = { mode: promptMode, store, prompts, subscribers };
 
   // Host-mode pollers for cloud-tagged boxes; started on /admin/register-box,
   // stopped on /admin/forget-box. Lazy import to keep host-mode startup free
@@ -538,7 +550,7 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
             return;
           }
           if (!isAgentboxBranch && !hostInitiatedOk) {
-            const verdict = await askPrompt(prompts, subscribers, reg.boxId, {
+            const gate = await gateApproval(gateDeps, reg.boxId, 'git.push', body.params, {
               kind: 'confirm',
               message: `Allow git push from box ${reg.name}?`,
               detail: `${params?.remote ?? 'origin'} ${(params?.args ?? []).join(' ')}`.trim(),
@@ -549,7 +561,13 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
                 argv: params?.args,
               },
             });
-            if (verdict.answer !== 'y') {
+            // Poll mode: parked — the box polls /rpc/status/<promptId> for the
+            // verdict + result (the push runs there, on approval).
+            if (gate.kind === 'pending') {
+              send(res, 202, { status: 'pending', promptId: gate.promptId });
+              return;
+            }
+            if (gate.kind === 'deny') {
               send(res, 500, { exitCode: 10, stdout: '', stderr: 'denied by user\n' });
               return;
             }
@@ -772,6 +790,40 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
       return;
     }
 
+    // Poll-mode verdict + result for a parked approval (see ./permission.ts).
+    // The box polls this after a `/rpc` returned `202 {promptId}`:
+    //   - pending          → keep polling
+    //   - denied/cancelled → exit 10
+    //   - approved         → run the action once, cache the result, return it
+    if (req.method === 'GET' && url.pathname.startsWith('/rpc/status/')) {
+      const reg = await authBox(req, res);
+      if (!reg) return;
+      const promptId = decodeURIComponent(url.pathname.slice('/rpc/status/'.length));
+      const row = await store.getPrompt(promptId);
+      if (!row || row.boxId !== reg.boxId) {
+        send(res, 404, { error: 'no such prompt', promptId });
+        return;
+      }
+      if (row.status === 'pending') {
+        send(res, 200, { status: 'pending' });
+        return;
+      }
+      if (row.answer !== 'y' || row.cancelled) {
+        send(res, 200, {
+          status: 'done',
+          result: { exitCode: 10, stdout: '', stderr: 'denied by user\n' },
+        });
+        return;
+      }
+      // Approved. Idempotent: a cached result short-circuits re-polls; the box
+      // polls sequentially so there is no concurrent first-execute race here.
+      const cached = row.result;
+      const result = cached ?? (await dispatchApprovedAction(reg, row.method, row.params));
+      if (!cached) await store.setPromptResult(promptId, result);
+      send(res, 200, { status: 'done', result });
+      return;
+    }
+
     if (route === 'POST /admin/register-box') {
       const body = await readJsonBody<RegisterBoxBody>(req);
       if (
@@ -966,7 +1018,12 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
         send(res, 400, { error: 'missing boxId query param' });
         return;
       }
-      send(res, 200, { prompts: prompts.forBox(boxId) });
+      // Poll mode parks prompts in the store; block mode keeps them in-process.
+      const pending =
+        promptMode === 'poll'
+          ? (await store.listPendingPrompts(boxId)).map((r) => r.ev)
+          : prompts.forBox(boxId);
+      send(res, 200, { prompts: pending });
       return;
     }
 
@@ -1024,9 +1081,23 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
         send(res, 400, { error: 'expected {id, answer:"y"|"n", cancelled?}' });
         return;
       }
-      // Find which box this id belongs to before resolving, so we can target
-      // the prompt-resolved broadcast (other wrappers on the same box clear
-      // their stale footer).
+      // Poll mode: the answer lands on the store row; the box's /rpc/status
+      // poll picks it up and runs (or denies) the parked action.
+      if (promptMode === 'poll') {
+        const row = await store.getPrompt(body.id);
+        const hit = await store.answerPrompt(body.id, body.answer, body.cancelled);
+        if (!hit) {
+          send(res, 404, { error: 'no pending prompt with that id' });
+          return;
+        }
+        if (row) subscribers.broadcast(row.boxId, 'prompt-resolved', { id: body.id });
+        send(res, 204, null);
+        return;
+      }
+      // Block mode: resolve the in-process pending Promise (the parked /rpc
+      // call unblocks and runs/denies inline). Find the owning box first so we
+      // can target the prompt-resolved broadcast (other wrappers clear their
+      // stale footer).
       const targetBox = prompts.boxFor(body.id);
       const hit = prompts.resolve(body.id, body.answer, body.cancelled);
       if (!hit) {
@@ -1140,6 +1211,26 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
     }
 
     send(res, 404, { error: 'not found', route });
+  }
+
+  /**
+   * Run a host action that has already cleared its approval gate (poll mode:
+   * the box reached `/rpc/status` after a `y`). No re-gating here. Extended per
+   * method as the hosted plane grows (git.lease-token in Phase 3, …).
+   */
+  async function dispatchApprovedAction(
+    reg: BoxRegistration,
+    method: string,
+    params: unknown,
+  ): Promise<GitRpcResult> {
+    if (method === 'git.push' || method === 'git.fetch') {
+      return handleGitRpc(reg, method, params as GitRpcParams | undefined);
+    }
+    return {
+      exitCode: 64,
+      stdout: '',
+      stderr: `relay: no approved-action executor for ${method}\n`,
+    };
   }
 
   async function authBox(

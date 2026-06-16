@@ -1,5 +1,6 @@
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import { setTimeout as delay } from 'node:timers/promises';
 
 /**
  * Shared HTTP RPC poster for in-box ctl commands (git, checkpoint, cp,
@@ -7,10 +8,15 @@ import { request as httpsRequest } from 'node:https';
  * `/rpc`: bearer-auth POST with `{ method, params }`, response is a
  * `{ exitCode, stdout, stderr }` JSON or an `{ error }` shape.
  *
- * No client-side timeout: the relay holds the connection while a prompt
- * is open (per the "block indefinitely" design), so a 30s socket timeout
- * here would orphan the in-box command while the user thinks.
+ * Two relay shapes are supported transparently:
+ *   - block mode (laptop relay): the relay holds the connection while a prompt
+ *     is open, then returns the `{exitCode,…}` result. No client timeout.
+ *   - poll mode (hosted control plane): the relay replies `202 {promptId}` and
+ *     this client polls `GET /rpc/status/:promptId` until the host answers.
+ * A box never has to know which mode it's talking to.
  */
+const POLL_INTERVAL_MS = 1500;
+const POLL_MAX_MS = 10 * 60 * 1000; // give a human ~10 min to answer before giving up
 export interface RelayRpcResult {
   exitCode: number;
   stdout: string;
@@ -36,44 +42,73 @@ export interface PostRpcOutcome<TResult> {
 /**
  * Low-level: returns the raw outcome. Most callers want `postRpcAndExit`.
  */
-export function postRpc<TParams>(
-  method: string,
-  params: TParams,
-  opts: PostRpcOptions = {},
-): Promise<PostRpcOutcome<RelayRpcResult>> {
-  const prefix = opts.errorPrefix ?? 'agentbox-ctl rpc';
+interface RelayTarget {
+  url: URL;
+  token: string;
+  transport: typeof httpRequest;
+  port: number;
+}
+
+/** Resolve the relay endpoint from env, or null (after writing the error). */
+function resolveRelayTarget(prefix: string): RelayTarget | null {
   const urlStr = process.env.AGENTBOX_RELAY_URL;
   const token = process.env.AGENTBOX_RELAY_TOKEN;
   if (!urlStr || !token) {
     process.stderr.write(
       `${prefix}: AGENTBOX_RELAY_URL / AGENTBOX_RELAY_TOKEN not set; no relay configured for this box.\n`,
     );
-    return Promise.resolve({ status: 0, parsed: null, raw: '', internalExitCode: 65 });
+    return null;
   }
   let url: URL;
   try {
     url = new URL(urlStr);
   } catch {
     process.stderr.write(`${prefix}: invalid AGENTBOX_RELAY_URL: ${urlStr}\n`);
-    return Promise.resolve({ status: 0, parsed: null, raw: '', internalExitCode: 65 });
+    return null;
   }
+  const isHttps = url.protocol === 'https:';
+  return {
+    url,
+    token,
+    transport: isHttps ? httpsRequest : httpRequest,
+    port: url.port.length > 0 ? Number.parseInt(url.port, 10) : isHttps ? 443 : 80,
+  };
+}
+
+function parseRpcResult(text: string): RelayRpcResult | null {
+  try {
+    const v = JSON.parse(text) as unknown;
+    if (v && typeof v === 'object' && typeof (v as RelayRpcResult).exitCode === 'number') {
+      return v as RelayRpcResult;
+    }
+  } catch {
+    /* fall through */
+  }
+  return null;
+}
+
+export function postRpc<TParams>(
+  method: string,
+  params: TParams,
+  opts: PostRpcOptions = {},
+): Promise<PostRpcOutcome<RelayRpcResult>> {
+  const prefix = opts.errorPrefix ?? 'agentbox-ctl rpc';
+  const target = resolveRelayTarget(prefix);
+  if (!target) return Promise.resolve({ status: 0, parsed: null, raw: '', internalExitCode: 65 });
 
   const body = JSON.stringify({ method, params });
-  const isHttps = url.protocol === 'https:';
-  const transport = isHttps ? httpsRequest : httpRequest;
-  const port = url.port.length > 0 ? Number.parseInt(url.port, 10) : isHttps ? 443 : 80;
 
   return new Promise<PostRpcOutcome<RelayRpcResult>>((resolve) => {
-    const req = transport(
+    const req = target.transport(
       {
-        host: url.hostname,
-        port,
+        host: target.url.hostname,
+        port: target.port,
         method: 'POST',
-        path: `${url.pathname.replace(/\/$/, '')}/rpc`,
+        path: `${target.url.pathname.replace(/\/$/, '')}/rpc`,
         headers: {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(body).toString(),
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${target.token}`,
         },
       },
       (res) => {
@@ -82,20 +117,7 @@ export function postRpc<TParams>(
         res.on('end', () => {
           const status = res.statusCode ?? 0;
           const text = Buffer.concat(chunks).toString('utf8');
-          let parsed: RelayRpcResult | null = null;
-          try {
-            const v = JSON.parse(text) as unknown;
-            if (
-              v &&
-              typeof v === 'object' &&
-              typeof (v as RelayRpcResult).exitCode === 'number'
-            ) {
-              parsed = v as RelayRpcResult;
-            }
-          } catch {
-            parsed = null;
-          }
-          resolve({ status, parsed, raw: text, internalExitCode: null });
+          resolve({ status, parsed: parseRpcResult(text), raw: text, internalExitCode: null });
         });
       },
     );
@@ -104,6 +126,42 @@ export function postRpc<TParams>(
       resolve({ status: 0, parsed: null, raw: '', internalExitCode: 126 });
     });
     req.write(body);
+    req.end();
+  });
+}
+
+interface RpcStatusReply {
+  /** 'pending' while awaiting the host answer; 'done' once resolved. */
+  status?: 'pending' | 'done';
+  result?: RelayRpcResult;
+}
+
+/** GET /rpc/status/:promptId once. Returns null + writes the error on transport failure. */
+function getRpcStatus(promptId: string, prefix: string): Promise<RpcStatusReply | null> {
+  const target = resolveRelayTarget(prefix);
+  if (!target) return Promise.resolve(null);
+  return new Promise<RpcStatusReply | null>((resolve) => {
+    const req = target.transport(
+      {
+        host: target.url.hostname,
+        port: target.port,
+        method: 'GET',
+        path: `${target.url.pathname.replace(/\/$/, '')}/rpc/status/${encodeURIComponent(promptId)}`,
+        headers: { Authorization: `Bearer ${target.token}` },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')) as RpcStatusReply);
+          } catch {
+            resolve(null);
+          }
+        });
+      },
+    );
+    req.on('error', () => resolve(null));
     req.end();
   });
 }
@@ -127,6 +185,10 @@ export async function postRpcAndExit<TParams>(
   const prefix = opts.errorPrefix ?? 'agentbox-ctl rpc';
   const out = await postRpc(method, params, opts);
   if (out.internalExitCode !== null) return out.internalExitCode;
+  // Poll mode: the hosted relay parked this action for host approval.
+  if (out.status === 202) {
+    return pollParkedAction(out.raw, prefix);
+  }
   if (out.parsed) {
     if (out.parsed.stdout) process.stdout.write(out.parsed.stdout);
     if (out.parsed.stderr) process.stderr.write(out.parsed.stderr);
@@ -134,4 +196,33 @@ export async function postRpcAndExit<TParams>(
   }
   process.stderr.write(`${prefix}: relay returned ${String(out.status)}: ${out.raw}\n`);
   return out.status >= 200 && out.status < 300 ? 0 : 1;
+}
+
+/** Poll /rpc/status until the host answers the parked approval, then surface the result. */
+async function pollParkedAction(raw202: string, prefix: string): Promise<number> {
+  let promptId = '';
+  try {
+    const v = JSON.parse(raw202) as { promptId?: unknown };
+    if (typeof v.promptId === 'string') promptId = v.promptId;
+  } catch {
+    /* handled below */
+  }
+  if (!promptId) {
+    process.stderr.write(`${prefix}: relay parked the action but returned no promptId\n`);
+    return 1;
+  }
+  process.stderr.write(`${prefix}: waiting for approval on the host…\n`);
+  const deadline = Date.now() + POLL_MAX_MS;
+  while (Date.now() < deadline) {
+    await delay(POLL_INTERVAL_MS + Math.floor(Math.random() * 400));
+    const reply = await getRpcStatus(promptId, prefix);
+    if (reply && reply.status === 'done' && reply.result) {
+      if (reply.result.stdout) process.stdout.write(reply.result.stdout);
+      if (reply.result.stderr) process.stderr.write(reply.result.stderr);
+      return reply.result.exitCode;
+    }
+    // null (transient transport error) or pending → keep polling.
+  }
+  process.stderr.write(`${prefix}: timed out waiting for host approval\n`);
+  return 124;
 }
