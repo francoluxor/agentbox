@@ -120,6 +120,7 @@ export {
   createGitProject,
   deleteProject,
   patchProjectSettings,
+  projectHasEnv,
   upsertProjectEnv,
   createGitDeployment,
   getDeployment,

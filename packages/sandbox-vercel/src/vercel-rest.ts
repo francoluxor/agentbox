@@ -223,6 +223,19 @@ export async function upsertProjectEnv(
   });
 }
 
+/** Whether the project already has an env var named `key` (any target). */
+export async function projectHasEnv(
+  token: string,
+  teamId: string | undefined,
+  idOrName: string,
+  key: string,
+): Promise<boolean> {
+  const r = (await api(token, withTeam(`/v9/projects/${encodeURIComponent(idOrName)}/env`, teamId))) as {
+    envs?: Array<{ key?: string }>;
+  };
+  return (r.envs ?? []).some((e) => e.key === key);
+}
+
 export interface CreateGitDeploymentInput {
   name: string;
   projectId: string;

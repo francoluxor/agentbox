@@ -10,6 +10,7 @@ import {
   getProductionAlias,
   getProject,
   patchProjectSettings,
+  projectHasEnv,
   resolveVercelApiAuth,
   upsertProjectEnv,
   type VercelProjectFull,
@@ -157,8 +158,15 @@ async function apiDeploy(a: DeployArgs): Promise<{ url: string }> {
     });
   }
 
-  a.log('provisioning Neon Postgres…');
-  await provisionNeon(a.teamId, project.id, a.log);
+  // Idempotent: only provision Neon when the project has no Postgres yet —
+  // re-running otherwise provisions an orphan Neon that collides on the
+  // already-present POSTGRES_URL_NON_POOLING.
+  if (await projectHasEnv(a.token, a.teamId, project.id, 'POSTGRES_URL')) {
+    a.log('Postgres already attached — skipping Neon provisioning');
+  } else {
+    a.log('provisioning Neon Postgres…');
+    await provisionNeon(a.teamId, project.id, a.log);
+  }
   a.log('setting environment variables…');
   await upsertProjectEnv(a.token, a.teamId, project.id, envVars(a.env));
 
