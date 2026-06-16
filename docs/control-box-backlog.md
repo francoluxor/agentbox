@@ -72,18 +72,43 @@ box --(push directly with leased token)--> GitHub
   Dockerfile + README + Vercel notes. Verified: `next build`, live HTTP smoke vs
   postgres:16 (fail-closed admin gate, register/events persisted, agentbox/*
   lease, host-local -> 501).
-- [ ] **Phase 4b — Federated laptop relay (RemoteStore).** A `RemoteStore`
-  HTTP-client so a laptop relay backs its state with the hosted plane (one
-  cross-machine view) while still executing host-local actions locally; gate the
-  "point boxes at the hosted URL" bypass to CLOUD boxes only; retarget the admin
-  CLI base URL. NOTE: needs a generic store-sync admin API on the plane (the
-  current `/admin/*` is a curated set, not full Store CRUD) — design that first.
-- [ ] **Phase 5 — Box creation from the plane.** Bearer-gated `POST /remote/boxes`
-  (currently 501) -> durable worker (Vercel Cron/WDK; self-host worker) +
-  origin-clone workspace seeding (clone via a leased token, no host bundle).
+- [x] **Phase 4b — federation data layer (RemoteStore).** `store-rpc.ts`
+  (`applyStoreOp` allow-list) + `POST /admin/store` + `RemoteStore`; conformance
+  green. Remaining laptop wiring (autopause/queue over the store, docker
+  cloud-only bypass, admin-CLI retarget) deferred.
+- [~] **Phase 5 — Box creation from the plane.** Done: the durable job queue
+  (`create_jobs`, atomic claim), `POST /remote/boxes` (202 {jobId}) +
+  `GET /remote/boxes/:id`, and the `drainCreateJobs` worker (injectable
+  `CreateBoxFn`). The **origin-clone loop is proven live** (a real Hetzner box's
+  `/workspace` cloned from a token leased by the live plane — see below).
+  Remaining: the production `CreateBoxFn` — decouple `createCloudProvider().create()`
+  from the host workspace (`req.workspacePath` is used throughout) so it seeds via
+  origin-clone, + an `agentbox control-plane worker` command + the Vercel-cron /
+  self-host worker deployment.
+- [x] **Setup CLI — `agentbox control-plane`.** `setup` runs the GitHub App
+  **manifest flow** (localhost callback → browser → code exchange) and writes the
+  deploy env + admin token; `set-url` / `status`. Tested e2e against a fake GitHub.
 - [ ] **Phase 6 — Dashboard pages + remaining docs.** App-Router dashboard over
   the Postgres Store; finish docs sync (`host-relay.md`, `cloud-providers.md`,
   public `apps/web/content/docs/`).
+
+## Live validation (2026-06-16)
+
+The plane is deployed and validated on real infrastructure:
+
+- **Deploy:** `apps/control-plane` on **Vercel** (`madarcos-projects/agentbox-control-plane`,
+  Root Directory `apps/control-plane`, monorepo built via turbo) + **Neon Postgres**
+  (provisioned non-interactively via `vercel integration add neon`). Public URL
+  `agentbox-control-plane-two.vercel.app`.
+- **Verified live:** `/healthz` (tables auto-migrated on Neon), fail-closed admin
+  gate (401/200), `register-box` + `/events` persisted to Neon.
+- **Leasing live:** `git.lease-token` minted a real 1-hour GitHub-App installation
+  token for `madarco/agentbox-test-repo` (App `agentbox-control-plane`, installed
+  on the repo) with the authed remote URL.
+- **Box-creation loop live:** a Hetzner `cx23` provisioned via cloud-init cloned
+  `agentbox-test-repo` into `/workspace` using a plane-leased token (origin scrubbed
+  back to the bare URL afterward), then was destroyed. Proves enqueue → lease →
+  cloud box → origin-clone end to end.
 
 ## Security notes
 
