@@ -76,15 +76,24 @@ box --(push directly with leased token)--> GitHub
   (`applyStoreOp` allow-list) + `POST /admin/store` + `RemoteStore`; conformance
   green. Remaining laptop wiring (autopause/queue over the store, docker
   cloud-only bypass, admin-CLI retarget) deferred.
-- [~] **Phase 5 — Box creation from the plane.** Done: the durable job queue
-  (`create_jobs`, atomic claim), `POST /remote/boxes` (202 {jobId}) +
-  `GET /remote/boxes/:id`, and the `drainCreateJobs` worker (injectable
-  `CreateBoxFn`). The **origin-clone loop is proven live** (a real Hetzner box's
-  `/workspace` cloned from a token leased by the live plane — see below).
-  Remaining: the production `CreateBoxFn` — decouple `createCloudProvider().create()`
-  from the host workspace (`req.workspacePath` is used throughout) so it seeds via
-  origin-clone, + an `agentbox control-plane worker` command + the Vercel-cron /
-  self-host worker deployment.
+- [x] **Phase 5 — Box creation from the plane.** The durable job queue
+  (`create_jobs`, atomic `FOR UPDATE SKIP LOCKED` claim), `POST /remote/boxes`
+  (202 {jobId}) + `GET /remote/boxes/:id`, the `drainCreateJobs` worker
+  (injectable `CreateBoxFn`), and the `agentbox control-plane worker` command
+  (`--once` / loop; auto-loads the setup-written App creds; PostgresStore +
+  `GitHubAppLeaser` + `providerForCreate`). The worker's production `CreateBoxFn`
+  is origin-clone seeding: lease an App token → `git clone` the repo to a local
+  temp dir → scrub the remote back to the bare origin → hand the checkout to the
+  normal `provider.create({ workspacePath })` → `rm -rf` the temp dir. **Full loop
+  validated live** end to end (enqueue → atomic claim → lease → clone →
+  `provider.create()` → job `done` with `result.boxId` — see below).
+  - **Scope: cloud providers only** (matches §5 "the hosted plane creates cloud
+    boxes only"). Cloud providers seed the sandbox from the checkout (git bundle),
+    so the post-create temp-dir cleanup is safe. The **docker** provider is *not*
+    a valid plane target: it bind-mounts the workspace's `.git` as the box's
+    persistent backing, so the worker's `finally` cleanup deletes the live gitdir
+    out from under the container (the seeded files survive; in-box `git` breaks).
+    Docker boxes are created locally by `agentbox create`, never by the plane.
 - [x] **Setup CLI — `agentbox control-plane`.** `setup` runs the GitHub App
   **manifest flow** (localhost callback → browser → code exchange) and writes the
   deploy env + admin token; `set-url` / `status`. Tested e2e against a fake GitHub.
@@ -105,10 +114,18 @@ The plane is deployed and validated on real infrastructure:
 - **Leasing live:** `git.lease-token` minted a real 1-hour GitHub-App installation
   token for `madarco/agentbox-test-repo` (App `agentbox-control-plane`, installed
   on the repo) with the authed remote URL.
-- **Box-creation loop live:** a Hetzner `cx23` provisioned via cloud-init cloned
-  `agentbox-test-repo` into `/workspace` using a plane-leased token (origin scrubbed
-  back to the bare URL afterward), then was destroyed. Proves enqueue → lease →
-  cloud box → origin-clone end to end.
+- **Box-creation loop live (origin-clone, Hetzner):** a Hetzner `cx23` provisioned
+  via cloud-init cloned `agentbox-test-repo` into `/workspace` using a plane-leased
+  token (origin scrubbed back to the bare URL afterward), then was destroyed.
+- **Full worker loop live (queue → worker → box):** `POST /remote/boxes` enqueued a
+  job on Neon (`queued`); `agentbox control-plane worker --once --store <neon>`
+  atomically claimed it (`claimedBy`/`startedAt`), leased a 1h App token for
+  `madarco/agentbox-test-repo`, `git clone`d it locally, scrubbed the remote, ran
+  `provider.create()` (seeded `/workspace` with the repo content), and marked the
+  job `done` with `result.boxId` + `finishedAt`. Proves enqueue → atomic claim →
+  lease → clone → `provider.create()` → completion end to end against the live
+  Vercel+Neon plane. (Run with docker as a no-cost local target; see the Phase 5
+  docker caveat — the box was destroyed afterward.)
 
 ## Security notes
 
