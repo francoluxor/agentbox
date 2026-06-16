@@ -1,12 +1,24 @@
 import { confirm, isCancel, log, note, spinner, text } from '@clack/prompts';
 import { Command } from 'commander';
 import { spawn } from 'node:child_process';
-import { chmod, mkdir, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
+import { chmod, mkdir, rm, writeFile } from 'node:fs/promises';
+import { hostname, homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { setConfigValue } from '@agentbox/config';
+import { setTimeout as delay } from 'node:timers/promises';
+import { loadEffectiveConfig, setConfigValue } from '@agentbox/config';
 import { hostOpenCommand } from '@agentbox/sandbox-core';
+import {
+  drainCreateJobs,
+  GitHubAppLeaser,
+  loadGitHubAppConfig,
+  parseGitRemote,
+  PostgresStore,
+  toAuthedHttpsUrl,
+} from '@agentbox/relay';
 import { randomBytes } from 'node:crypto';
+import { providerForCreate } from '../provider/registry.js';
+import { makeControlPlaneCreateBox } from '../control-plane/create-box.js';
 import { runGitHubAppManifestFlow } from '../control-plane/github-app-manifest.js';
 import { handleLifecycleError } from './_errors.js';
 
@@ -165,8 +177,103 @@ const statusSub = new Command('status')
     }
   });
 
+/** Load the setup-written App creds into the env if not already set. */
+function loadControlPlaneEnv(): void {
+  if (process.env.GITHUB_APP_ID && process.env.GITHUB_APP_PRIVATE_KEY) return;
+  if (!existsSync(ENV_PATH)) return;
+  for (const line of readFileSync(ENV_PATH, 'utf8').split('\n')) {
+    const m = /^([A-Z_]+)=(.*)$/.exec(line.trim());
+    if (m && !process.env[m[1]!]) process.env[m[1]!] = m[2];
+  }
+}
+
+/** Run `git <args>`, rejecting on a non-zero exit. */
+function runGit(args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    child.stderr.on('data', (c: Buffer) => (err += c.toString('utf8')));
+    child.on('error', reject);
+    child.on('close', (code) =>
+      code === 0 ? resolve() : reject(new Error(`git ${args[0]} failed (${String(code)}): ${err.trim()}`)),
+    );
+  });
+}
+
+interface WorkerOpts {
+  store: string;
+  once?: boolean;
+  pollInterval: string;
+}
+
+const workerSub = new Command('worker')
+  .description(
+    'Drain the control plane box-creation queue and provision real boxes (long-running; needs provider creds + the App key)',
+  )
+  .requiredOption('--store <url>', 'Postgres URL of the control plane (same store the plane uses)')
+  .option('--once', 'drain the queue once and exit (default: loop)')
+  .option('--poll-interval <ms>', 'poll interval when looping', '5000')
+  .action(async (opts: WorkerOpts) => {
+    try {
+      loadControlPlaneEnv();
+      const appCfg = loadGitHubAppConfig();
+      if (!appCfg) {
+        log.error('No GitHub App configured. Run `agentbox control-plane setup` first.');
+        process.exitCode = 1;
+        return;
+      }
+      const store = new PostgresStore({ connectionString: opts.store });
+      await store.migrate();
+      const leaser = new GitHubAppLeaser(appCfg);
+      const cfg = await loadEffectiveConfig(process.cwd());
+
+      const createBox = makeControlPlaneCreateBox({
+        leaseRemoteUrl: async (repoUrl) => {
+          const { path } = parseGitRemote(repoUrl);
+          const [owner, repo] = path.replace(/\.git$/, '').split('/');
+          if (!owner || !repo) throw new Error(`cannot derive owner/repo from ${repoUrl}`);
+          const { token } = await leaser.leaseRepoToken(owner, repo);
+          return toAuthedHttpsUrl(repoUrl, token);
+        },
+        cloneRepo: async (authedUrl, repoUrl, dest) => {
+          await runGit(['clone', authedUrl, dest]);
+          // Scrub the leased token: leave the box pointing at the bare origin.
+          await runGit(['-C', dest, 'remote', 'set-url', 'origin', repoUrl]);
+        },
+        createBox: async ({ workspacePath, name, provider, onLog }) => {
+          const p = await providerForCreate({ flag: provider, config: cfg.effective });
+          const created = await p.create({ workspacePath, name, projectRoot: workspacePath, onLog });
+          return { id: created.record.id };
+        },
+        tmpDir: (jobId) => join(tmpdir(), `agentbox-cp-worker-${jobId}`),
+        cleanup: (dir) => rm(dir, { recursive: true, force: true }),
+        log: (line) => process.stdout.write(`agentbox-cp-worker: ${line}\n`),
+      });
+
+      const workerId = `worker-${hostname()}-${String(process.pid)}`;
+      const interval = Number.parseInt(opts.pollInterval, 10) || 5000;
+      let running = true;
+      const stop = (): void => {
+        running = false;
+      };
+      process.on('SIGINT', stop);
+      process.on('SIGTERM', stop);
+      process.stdout.write(`agentbox-cp-worker: draining create jobs as ${workerId}\n`);
+      do {
+        const n = await drainCreateJobs(store, createBox, workerId);
+        if (n > 0) process.stdout.write(`agentbox-cp-worker: processed ${String(n)} job(s)\n`);
+        if (opts.once) break;
+        await delay(interval);
+      } while (running);
+      await store.close();
+    } catch (err) {
+      handleLifecycleError(err);
+    }
+  });
+
 export const controlPlaneCommand = new Command('control-plane')
   .description('Set up + manage the hosted control plane (GitHub App, deploy config, reachability)')
   .addCommand(statusSub, { isDefault: true })
   .addCommand(setupSub)
-  .addCommand(setUrlSub);
+  .addCommand(setUrlSub)
+  .addCommand(workerSub);
