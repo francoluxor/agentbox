@@ -57,7 +57,7 @@ agentbox control-plane set-url https://<your-plane-url>
 agentbox control-plane status            # reachability check
 ```
 
-`set-url` writes [`relay.controlBoxUrl`](/docs/configuration). New cloud boxes then point at the plane for leasing, permission state, and the registry/events, and push to GitHub themselves with a leased token.
+`set-url` writes [`relay.controlPlaneUrl`](/docs/configuration). New cloud boxes then point at the plane for leasing, permission state, and the registry/events, and push to GitHub themselves with a leased token.
 
 ## Creating boxes from the plane
 

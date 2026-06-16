@@ -55,7 +55,7 @@ vercel env add GITHUB_APP_PRIVATE_KEY
 vercel deploy --prod
 ```
 
-Then point boxes/CLI at it: `agentbox config set relay.controlBoxUrl https://<deployment>`.
+Then point boxes/CLI at it: `agentbox control-plane set-url https://<deployment>`.
 
 ## GitHub App setup (for leasing)
 

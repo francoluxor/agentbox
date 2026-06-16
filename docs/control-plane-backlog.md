@@ -1,4 +1,4 @@
-# Control plane (control-box v2) — build-out status
+# Control plane — build-out status
 
 Status of the **control plane**: a portable service that holds the centralized
 concerns for boxes — git credentials (GitHub-App token leasing), permission
@@ -8,23 +8,23 @@ convention).
 
 Plan of record: `~/.claude/plans/design-a-new-approach-synthetic-bee.md`.
 
-## The pivot (vs v1)
+## The pivot (vs the first attempt)
 
-v1 was a **dedicated control-box**: an always-on Hetzner VPS running the relay
-binary with a long-lived fine-grained PAT. It worked but (1) billed a
-never-sleeping VPS for something mostly idle, and (2) pushed by reaching back
-into the box over the cloud SDK to make + download a git bundle — the part that
-resists a stateless/serverless deployment.
+The first attempt ran the relay on a **dedicated always-on VPS** with a
+long-lived fine-grained PAT. It worked but (1) billed a never-sleeping VPS for
+something mostly idle, and (2) pushed by reaching back into the box over the
+cloud SDK to make + download a git bundle — the part that resists a
+stateless/serverless deployment.
 
-v2 is **one portable control plane** — the `@agentbox/relay` core wrapped as a
-single **Next.js + Postgres app** (`apps/control-plane`). The same code deploys
-to **Vercel** (managed) or self-hosts on a **VPS** (Postgres + `next start`, via
-docker-compose). It is stateless per request (all state in Postgres) and does no
-host execution. Git auth is **GitHub-App leasing**: it mints 1-hour, single-repo
-installation tokens and leases them to boxes, which push to GitHub directly — no
-bundle transfer, no SDK reach-back. The dedicated control-box (VPS + PAT) is
-removed. The laptop loopback relay (`agentbox-relay serve`) is unchanged and
-shares the same core.
+The current design is **one portable control plane** — the `@agentbox/relay`
+core wrapped as a single **Next.js + Postgres app** (`apps/control-plane`). The
+same code deploys to **Vercel** (managed) or self-hosts on a **VPS** (Postgres +
+`next start`, via docker-compose). It is stateless per request (all state in
+Postgres) and does no host execution. Git auth is **GitHub-App leasing**: it
+mints 1-hour, single-repo installation tokens and leases them to boxes, which
+push to GitHub directly — no bundle transfer, no SDK reach-back. That dedicated
+always-on VPS (with its stored PAT) is removed. The laptop loopback relay
+(`agentbox-relay serve`) is unchanged and shares the same core.
 
 ## Architecture
 
@@ -65,7 +65,7 @@ box --(push directly with leased token)--> GitHub
 - [x] **Phase 3 — GitHub-App leasing + remove dedicated control-box.**
   `github-app.ts`, `git.lease-token`, in-box lease/push; deleted the
   `agentbox control-box` command + `sandbox-hetzner/control-box.ts`. The
-  `relay.controlBoxUrl` key stays (now points at the hosted plane). The relay's
+  `relay.controlPlaneUrl` key stays (now points at the hosted plane). The relay's
   legacy `--control-box` admin-bearer mode + its stored-PAT bundle-push
   (`pushBundleWithPat`/`pushBundleToRemote`) were later removed once the hosted
   plane + App leasing fully superseded them (see Cleanup below).
@@ -108,7 +108,7 @@ box --(push directly with leased token)--> GitHub
   and recent events; polls every 4s. Coexists with the `/[...path]` API route
   handler (the catch-all is required, so `/` is free). Docs synced: new public
   `control-plane.mdx` reference page (+ nav entry, `agentbox control-plane` CLI
-  commands in `cli.mdx`, `relay.controlBoxUrl` row in `configuration.mdx`), a
+  commands in `cli.mdx`, `relay.controlPlaneUrl` row in `configuration.mdx`), a
   hosted-control-plane section in `docs/host-relay.md`, and the stale
   `agentbox control-box` command references removed from `config/types.ts` +
   `host-actions.ts`. (`cloud-providers.md` already had no control-box refs.)
@@ -123,7 +123,7 @@ box --(push directly with leased token)--> GitHub
   control-box branches in `host-actions.ts`; the now-dead `pushBundleToRemote` in
   `git-pat.ts` (its URL helpers `toAuthedHttpsUrl`/`parseGitRemote`/
   `repoSlugFromRemote` stay — leasing reuses them); and `control-box-admin.test.ts`.
-  Kept: `relay.controlBoxUrl` (points at the hosted plane) and the plane's own
+  Kept: `relay.controlPlaneUrl` (points at the hosted plane) and the plane's own
   always-on admin-bearer gating in `core/handler.ts`. Relay suite green
   (224 tests), CLI typechecks.
 

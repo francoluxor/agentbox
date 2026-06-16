@@ -4,7 +4,7 @@
 #   export AGENTBOX_RELAY_ADMIN_TOKEN=$(openssl rand -hex 32)
 #   docker compose up --build
 #
-# The relay/box CLIs then point at it with `relay.controlBoxUrl=http://<host>:8787`.
+# Point boxes/CLI at it: `agentbox control-plane set-url http://<host>:8787`.
 services:
   db:
     image: postgres:16

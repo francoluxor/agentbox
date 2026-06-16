@@ -332,10 +332,9 @@ async function probeGh(): Promise<GitRpcResult | null> {
     };
   }
   // gh authenticates directly from GH_TOKEN/GITHUB_TOKEN in the environment and
-  // ignores any stored `gh auth login`. On a control box the PAT is supplied
-  // this way and there is no stored login, so `gh auth status` would falsely
-  // report "not logged in" even though every API call succeeds. Treat a present
-  // token as authenticated.
+  // ignores any stored `gh auth login`. When a token is supplied that way with
+  // no stored login, `gh auth status` would falsely report "not logged in" even
+  // though every API call succeeds. Treat a present token as authenticated.
   if ((process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN ?? '').length > 0) {
     return null;
   }

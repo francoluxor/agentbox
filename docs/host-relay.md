@@ -28,7 +28,7 @@
 
 ## Hosted control plane (laptop-off for cloud boxes)
 
-The same `@agentbox/relay` core also ships as a **hosted control plane** — a Next.js + Postgres app (`apps/control-plane`) deployable to Vercel or self-host — so **cloud** boxes keep pushing / opening PRs with the laptop off. The full design + build-out status lives in [`control-box-backlog.md`](./control-box-backlog.md) (the v2 plan of record); the short version of how it relates to this relay:
+The same `@agentbox/relay` core also ships as a **hosted control plane** — a Next.js + Postgres app (`apps/control-plane`) deployable to Vercel or self-host — so **cloud** boxes keep pushing / opening PRs with the laptop off. The full design + build-out status lives in [`control-plane-backlog.md`](./control-plane-backlog.md) (the plan of record); the short version of how it relates to this relay:
 
 - **Shared core.** Routing is extracted into `packages/relay/src/core/handler.ts` (`handleRelayRequest(GenericRequest) -> RelayResponse`). The laptop relay (`server.ts`, `node:http`, loopback-gated admin) and the hosted plane (the Next.js catch-all route, fail-closed admin-bearer) are both thin adapters over it.
 - **Store seam.** Every handler talks to an async `Store` (`packages/relay/src/store/`). The laptop relay defaults to `MemoryStore` (wraps the in-memory `registry.ts` / `status-store.ts` / `host-initiated.ts` verbatim → zero regression); the plane uses `PostgresStore` (`pg`, lazy + bundler-external so the laptop carries no pg); `RemoteStore` lets a federated laptop relay push its state up to the plane.

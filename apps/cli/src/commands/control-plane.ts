@@ -123,13 +123,13 @@ const setupSub = new Command('setup')
   });
 
 const setUrlSub = new Command('set-url')
-  .description('Point boxes + the CLI at a deployed control plane (sets relay.controlBoxUrl)')
+  .description('Point boxes + the CLI at a deployed control plane (sets relay.controlPlaneUrl)')
   .argument('<url>', 'base URL of the deployed control plane, e.g. https://plane.example.com')
   .action(async (url: string) => {
     try {
       const trimmed = url.replace(/\/$/, '');
-      await setConfigValue('global', 'relay.controlBoxUrl', trimmed, process.cwd());
-      log.success(`Set relay.controlBoxUrl = ${trimmed}`);
+      await setConfigValue('global', 'relay.controlPlaneUrl', trimmed, process.cwd());
+      log.success(`Set relay.controlPlaneUrl = ${trimmed}`);
     } catch (err) {
       handleLifecycleError(err);
     }
@@ -142,13 +142,13 @@ interface StatusOpts {
 
 const statusSub = new Command('status')
   .description('Check whether the configured control plane is reachable')
-  .option('--url <url>', 'override the control-plane URL (default: relay.controlBoxUrl)')
+  .option('--url <url>', 'override the control-plane URL (default: relay.controlPlaneUrl)')
   .option('--json', 'emit JSON')
   .action(async (opts: StatusOpts) => {
     try {
       const { loadEffectiveConfig } = await import('@agentbox/config');
       const cfg = await loadEffectiveConfig(process.cwd());
-      const url = (opts.url ?? cfg.effective.relay.controlBoxUrl ?? '').replace(/\/$/, '');
+      const url = (opts.url ?? cfg.effective.relay.controlPlaneUrl ?? '').replace(/\/$/, '');
       if (!url) {
         log.error('No control plane configured. Run `agentbox control-plane set-url <url>` (or pass --url).');
         process.exitCode = 1;
