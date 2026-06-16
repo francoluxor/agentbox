@@ -56,10 +56,19 @@ export async function runGitHubAppManifestFlow(
   const state = randomBytes(16).toString('hex');
 
   return new Promise<ManifestFlowResult>((resolve, reject) => {
+    // Captured once at listen() time — NEVER read server.address() per request:
+    // after the flow settles we close the server, and a stray follow-up request
+    // (favicon, a reloaded tab) would otherwise hit a null address and throw.
+    let listenPort = 0;
+    let settled = false;
     const server = createServer((req, res) => {
+      if (settled) {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
       const url = new URL(req.url ?? '/', `http://127.0.0.1`);
-      const port = (server.address() as AddressInfo).port;
-      const redirectUrl = `http://127.0.0.1:${String(port)}/callback`;
+      const redirectUrl = `http://127.0.0.1:${String(listenPort)}/callback`;
 
       if (url.pathname === '/') {
         // The manifest GitHub will turn into an App. Repo-scoped write perms.
@@ -81,7 +90,7 @@ export async function runGitHubAppManifestFlow(
 </form>
 <script>document.getElementById('f').submit()</script>
 </body></html>`;
-        res.writeHead(200, { 'content-type': 'text/html' });
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         res.end(page);
         return;
       }
@@ -126,16 +135,18 @@ export async function runGitHubAppManifestFlow(
               htmlUrl: body.html_url ?? `${githubUrl}/apps/${body.slug}`,
               installUrl: `${githubUrl}/apps/${body.slug}/installations/new`,
             };
-            res.writeHead(200, { 'content-type': 'text/html' });
+            settled = true;
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
             res.end(
-              `<!doctype html><html><body><h2>GitHub App created ✓</h2>` +
+              `<!doctype html><html><head><meta charset="utf-8"></head><body><h2>GitHub App created ✓</h2>` +
                 `<p>App: ${htmlEscape(result.slug)} (id ${result.appId}). You can close this tab and return to the terminal.</p></body></html>`,
             );
             server.close();
             resolve(result);
           })
           .catch((err: unknown) => {
-            res.writeHead(500, { 'content-type': 'text/plain' });
+            settled = true;
+            res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
             res.end('conversion failed');
             server.close();
             reject(err instanceof Error ? err : new Error(String(err)));
@@ -161,8 +172,8 @@ export async function runGitHubAppManifestFlow(
       reject(err);
     });
     server.listen(0, '127.0.0.1', () => {
-      const port = (server.address() as AddressInfo).port;
-      const startUrl = `http://127.0.0.1:${String(port)}/`;
+      listenPort = (server.address() as AddressInfo).port;
+      const startUrl = `http://127.0.0.1:${String(listenPort)}/`;
       log(`opening ${startUrl} to create the GitHub App…`);
       void Promise.resolve(opts.openBrowser(startUrl)).catch((err: unknown) => {
         log(`could not open the browser automatically: ${err instanceof Error ? err.message : String(err)}`);

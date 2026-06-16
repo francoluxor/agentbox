@@ -502,7 +502,7 @@ export async function runInstallWizard(opts: RunInstallWizardOptions = {}): Prom
   const prepareMsg =
     providerName === 'docker'
       ? 'Build the box image now? (~1GB, a few minutes)'
-      : `Bake the ${providerName} base snapshot now? (a few minutes, uses cloud time)`;
+      : `Create the ${providerName} base snapshot now? (a few minutes, uses cloud time)`;
   const wantPrepare = opts.yes ? true : await confirm({ message: prepareMsg, initialValue: true });
   if (wantPrepare) {
     try {

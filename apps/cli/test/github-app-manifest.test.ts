@@ -67,6 +67,23 @@ describe('runGitHubAppManifestFlow (e2e against a fake GitHub)', () => {
     expect(conversions).toEqual(['tmp-code-123']); // the code was exchanged exactly once
   });
 
+  it('a stray request after success (favicon/reload) does not crash', async () => {
+    // Regression: the handler used to read server.address().port per request,
+    // which is null after the post-success server.close() → uncaught throw.
+    const result = await runGitHubAppManifestFlow({
+      appName: 'agentbox-control-plane',
+      apiBaseUrl: fakeApiUrl,
+      openBrowser: async (startUrl) => {
+        const html = await (await fetch(startUrl)).text();
+        const state = /state=([0-9a-f]+)/.exec(html)?.[1];
+        await fetch(`${startUrl}callback?code=ok&state=${state!}`);
+        // Browser fetches /favicon.ico against the now-closing server.
+        await fetch(`${startUrl}favicon.ico`).catch(() => undefined);
+      },
+    });
+    expect(result.appId).toBe('424242');
+  });
+
   it('rejects a callback with a mismatched state (CSRF guard)', async () => {
     await expect(
       runGitHubAppManifestFlow({
