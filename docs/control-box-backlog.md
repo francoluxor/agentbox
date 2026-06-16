@@ -69,10 +69,26 @@ laptop CLI --(register-box, admin bearer)--> same relay
   control-box variants; `assertGhReady` honors `GH_TOKEN`; server `/rpc` routes
   cloud-kind boxes through `executeCloudAction`. Unit tests:
   `packages/relay/test/git-pat.test.ts` (incl. a real local bundle→bare-repo push).
-- [ ] **W4 — `agentbox control-box` command + provisioning + PAT lifecycle.**
-  `create` / `set-token` / `status` / `stop` / `destroy`; provision a persistent
-  cloud box, run the relay `--control-box`, expose 8787, generate + store the
-  admin token; push the PAT to a root-only on-box env file.
+- [x] **W4 — `agentbox control-box` command + Hetzner provisioning.** Live-validated
+  2026-06-16 on a real `cx23` VPS: Caddy + Let's Encrypt TLS for `<ip>.sslip.io`,
+  relay in `--control-box` mode reachable over public HTTPS, admin endpoints
+  401-without / 200-with the bearer. `create`/`set-token`/`status`/`destroy` in
+  `apps/cli/src/commands/control-box.ts`; provisioning in
+  `packages/sandbox-hetzner/src/control-box.ts`. Secrets (admin token + PAT) in
+  `/etc/agentbox/relay.env` 0600; **no provider tokens** on the box.
+  `relay.controlBoxUrl` persisted to global config; admin token in
+  `~/.agentbox/control-box.json` (0600).
+
+  **Open decision (blocks W2 box-wiring): pull vs push-up.** The control box has no
+  provider tokens / per-box SSH keys, so it can't `backend.exec`/`downloadFile`
+  into boxes (the current `runGitRpc` pull model). Two options:
+  - **push-up (preferred):** the in-box `git push` bundles locally and uploads the
+    bundle in the `/rpc` body; the control box materializes a repo + pushes with the
+    PAT. Provider-agnostic, minimal blast radius. Needs a bundle-carrying `/rpc`
+    path + larger body cap.
+  - **pull:** ship every provider SDK + tokens (+ per-box SSH keys for hetzner) to
+    the control box and keep the current `runGitRpc`. Heavier, bigger secret surface
+    on a public VPS.
 - [ ] **W5 — create boxes from the control box.** Provider tokens on the box;
   `seedCloudWorkspace` origin-clone mode (clone via PAT, strip after); bearer-
   gated `POST /remote/queue/enqueue` reusing `startQueueLoop` + `runCloudJob`.
