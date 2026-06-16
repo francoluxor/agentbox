@@ -324,10 +324,14 @@ agentbox self-update --dry-run
 ## Control plane
 
 ```bash
-# Create the GitHub App that leases push tokens + write the deploy env
+# Create the GitHub App, deploy the plane, and point the CLI at it
 agentbox control-plane setup
+agentbox control-plane setup --deploy hetzner   # or vercel | none (non-interactive)
 
-# Point boxes + the CLI at a deployed control plane (sets relay.controlPlaneUrl)
+# Authorize the current project's repo on the plane's GitHub App
+agentbox control-plane add
+
+# Point boxes + the CLI at an already-deployed plane (sets relay.controlPlaneUrl)
 agentbox control-plane set-url https://<your-plane-url>
 
 # Check whether the configured plane is reachable
@@ -338,7 +342,7 @@ agentbox control-plane worker --store "$POSTGRES_URL"
 agentbox control-plane worker --store "$POSTGRES_URL" --once
 ```
 
-The optional [control plane](/docs/control-plane) is a hosted service (Next.js + Postgres) that holds the centralized concerns — git-token leasing via a GitHub App, permission state, the box registry/events — so cloud boxes keep pushing and opening PRs with your laptop off. `setup` runs the GitHub App creation flow in your browser and writes the deploy env; `set-url` points boxes at the deployment; `worker` is the long-running process that provisions boxes from the plane's queue.
+The optional [control plane](/docs/control-plane) is a hosted service (Next.js + Postgres) that holds the centralized concerns — git-token leasing via a GitHub App, permission state, the box registry/events — so cloud boxes keep pushing and opening PRs with your laptop off. `setup` creates the GitHub App, deploys the plane (Vercel or a Hetzner VPS at `https://<ip>.sslip.io`), and wires `relay.controlPlaneUrl`; `add` authorizes a repo on the App; `set-url` points boxes at an existing deployment; `worker` provisions boxes from the plane's queue.
 
 <Callout type="warn" title="HEADS UP">`agentbox queue cancel` only cancels *queued* jobs — a job that's already running is not killed; destroy its box (`agentbox destroy <box>`) to stop it. And `prune --all` removes docker containers, volumes, and snapshots — run `--dry-run` first.</Callout>
 

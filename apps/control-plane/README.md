@@ -36,6 +36,10 @@ first request (`PostgresStore.migrate`).
 
 ## Deploy
 
+The turnkey path is `agentbox control-plane setup` (creates the GitHub App, then
+`--deploy vercel|hetzner`, then points the CLI at it). The recipes below are the
+manual equivalents / self-host path.
+
 ### Self-host (docker-compose)
 
 ```bash

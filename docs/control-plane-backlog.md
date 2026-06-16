@@ -126,6 +126,26 @@ box --(push directly with leased token)--> GitHub
   Kept: `relay.controlPlaneUrl` (points at the hosted plane) and the plane's own
   always-on admin-bearer gating in `core/handler.ts`. Relay suite green
   (224 tests), CLI typechecks.
+- [x] **Turnkey setup — deploy + repo onboarding.** `control-plane setup` now
+  autogenerates the App name (`agentbox-<rand>`), and after creating the App runs
+  a **deploy step** (interactive `select` or `--deploy vercel|hetzner|none`),
+  auto-`set-url`s + polls `/healthz`, and opens the App's repo-selection page.
+  - **Vercel** (`deploy-vercel.ts`): shells the logged-in `vercel` CLI — link →
+    `vercel integration add neon --non-interactive` (Postgres) → push env from
+    `control-plane.env` → `deploy --prod`. Falls back to printed manual steps on
+    failure.
+  - **Hetzner** (`deployControlPlaneToHetzner` in `@agentbox/sandbox-hetzner` +
+    `deploy-hetzner.ts`): stock Ubuntu `cx23`, cloud-init installs Docker + clones
+    the public repo (`controlPlaneCloudInit`), firewall `:22` host-only + `:80/:443`
+    open (`controlPlaneInboundRules`), secret `.env` + a Caddy compose overlay
+    scp'd, `docker compose up -d --build`; HTTPS at `https://<ip>.sslip.io` via
+    Caddy + Let's Encrypt; persists `~/.agentbox/control-plane/deploy.json`.
+  - **`control-plane add`** authorizes the current repo on the App; the agent
+    launchers (`claude`/`codex`/`opencode`) call a shared
+    `ensureProjectRepoOnControlPlane` that checks install status (local App key
+    or the new `GET /admin/app/repo-installed` / `GitHubAppLeaser.isRepoInstalled`)
+    and prompts once per project when missing (`repos.json` ack; unattended only
+    warns). Relay suite 228 green.
 
 ## Live validation (2026-06-16)
 
