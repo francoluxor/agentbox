@@ -358,8 +358,8 @@ const workerSub = new Command('worker')
           const { token } = await leaser.leaseRepoToken(owner, repo);
           return toAuthedHttpsUrl(repoUrl, token);
         },
-        cloneRepo: async (authedUrl, repoUrl, dest) => {
-          await runGit(['clone', authedUrl, dest]);
+        cloneRepo: async (authedUrl, repoUrl, dest, branch) => {
+          await runGit(branch ? ['clone', '--branch', branch, authedUrl, dest] : ['clone', authedUrl, dest]);
           // Scrub the leased token: leave the box pointing at the bare origin.
           await runGit(['-C', dest, 'remote', 'set-url', 'origin', repoUrl]);
         },

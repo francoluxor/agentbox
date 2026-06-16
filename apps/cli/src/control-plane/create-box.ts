@@ -12,8 +12,11 @@ import type { CreateJobRequest } from '@agentbox/relay';
 export interface CreateBoxDeps {
   /** Mint an authed HTTPS remote URL for the repo (App lease → x-access-token URL). */
   leaseRemoteUrl(repoUrl: string): Promise<string>;
-  /** Clone `authedUrl` into `dest`, then scrub the remote back to the bare `repoUrl`. */
-  cloneRepo(authedUrl: string, repoUrl: string, dest: string): Promise<void>;
+  /**
+   * Clone `authedUrl` into `dest` (checking out `branch` when given), then scrub
+   * the remote back to the bare `repoUrl`.
+   */
+  cloneRepo(authedUrl: string, repoUrl: string, dest: string, branch?: string): Promise<void>;
   /** Provision the cloud box from the local checkout. Returns the new box id. */
   createBox(opts: {
     workspacePath: string;
@@ -37,8 +40,8 @@ export function makeControlPlaneCreateBox(
     try {
       log(`leasing a push token for ${request.repoUrl}`);
       const authedUrl = await deps.leaseRemoteUrl(request.repoUrl);
-      log(`cloning ${request.repoUrl} into ${dir}`);
-      await deps.cloneRepo(authedUrl, request.repoUrl, dir);
+      log(`cloning ${request.repoUrl}${request.branch ? `@${request.branch}` : ''} into ${dir}`);
+      await deps.cloneRepo(authedUrl, request.repoUrl, dir, request.branch);
       log(`provisioning ${request.provider} box from the clone`);
       const box = await deps.createBox({
         workspacePath: dir,

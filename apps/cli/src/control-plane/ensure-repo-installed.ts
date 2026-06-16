@@ -147,7 +147,15 @@ export async function ensureProjectRepoOnControlPlane(args: {
     writeReposState(state);
     return;
   }
-  if (state[key]?.promptedAt) return; // already nudged once; don't nag
+  if (state[key]?.promptedAt) {
+    // Already prompted once — don't re-nag with a blocking prompt, but a one-line
+    // reminder beats a silent lease failure later. (The live check above still
+    // auto-clears this and goes quiet once the repo is actually authorized.)
+    clog.warn(
+      `${owner}/${repo} isn't authorized on the control plane's GitHub App yet — run \`agentbox control-plane add\`.`,
+    );
+    return;
+  }
 
   const meta = loadControlPlaneMeta();
   const url = addRepoUrl(meta);

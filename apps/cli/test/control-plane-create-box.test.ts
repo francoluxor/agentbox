@@ -40,6 +40,23 @@ describe('makeControlPlaneCreateBox', () => {
     ]);
   });
 
+  it('passes the requested branch through to the clone', async () => {
+    let clonedBranch: string | undefined = 'UNSET';
+    const deps: CreateBoxDeps = {
+      leaseRemoteUrl: () => Promise.resolve('https://x-access-token:t@github.com/a/b.git'),
+      cloneRepo: (_authedUrl, _repoUrl, _dest, branch) => {
+        clonedBranch = branch;
+        return Promise.resolve();
+      },
+      createBox: () => Promise.resolve({ id: 'box-9' }),
+      tmpDir: () => '/tmp/cp-b',
+      cleanup: () => Promise.resolve(),
+    };
+    const fn = makeControlPlaneCreateBox(deps);
+    await fn({ repoUrl: 'https://github.com/a/b.git', provider: 'hetzner', branch: 'dev' }, 'jb');
+    expect(clonedBranch).toBe('dev');
+  });
+
   it('cleans up even when create fails', async () => {
     let cleaned = false;
     const deps: CreateBoxDeps = {
