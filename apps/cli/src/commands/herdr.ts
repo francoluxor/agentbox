@@ -77,16 +77,25 @@ const linkCommand = new Command('link')
     if (!link) return;
     if (link.verb !== 'web') return;
 
+    // The link carries the box's unique id (see list --herdr), so resolve by id.
     const boxes = await listBoxes();
-    const box = boxes.find((b) => b.name === link.box);
-    const webUrl = box?.endpoints.endpoints.find((e) => e.kind === 'web' && e.url)?.url;
+    const box = boxes.find((b) => b.id === link.box);
+    if (!box) {
+      herdrSend('notification.show', {
+        title: 'AgentBox',
+        body: `box ${link.box} no longer exists`,
+        sound: 'request',
+      });
+      return;
+    }
+    const webUrl = box.endpoints.endpoints.find((e) => e.kind === 'web' && e.url)?.url;
     if (webUrl) {
       spawnSync(hostOpenCommand(), [webUrl], { stdio: 'ignore' });
       return;
     }
-    // No exposed web app: notify and do nothing (per the chosen behavior).
+    // Box exists but exposes no web app: notify and do nothing (chosen behavior).
     herdrSend('notification.show', {
-      title: link.box,
+      title: box.name,
       body: 'no web app exposed (add a service `expose:` in agentbox.yaml)',
       sound: 'request',
     });

@@ -123,18 +123,25 @@ describe('renderCmuxRows', () => {
     expect(rows.split('\n')[1]).toBe('solo'); // no index prefix
   });
 
-  it('wraps box names in an agentbox://web OSC 8 hyperlink when linkNames is set (Herdr)', () => {
+  it('wraps box names in an agentbox://web OSC 8 hyperlink keyed on the box id (Herdr)', () => {
     const rows = renderCmuxRows(
-      [box({ name: 'api', projectIndex: 1, projectRoot: '/Users/me/api', claudeActivity: 'idle' })],
+      [
+        box({
+          name: 'api',
+          id: 'b084ed411',
+          projectIndex: 1,
+          projectRoot: '/Users/me/api',
+          claudeActivity: 'idle',
+        }),
+      ],
       false,
       40,
       true,
     );
     const nameLine = rows.split('\n')[1]!;
-    // OSC 8: ESC ]8;;<url> ST <label> ESC ]8;; ST
-    expect(nameLine).toContain('\x1b]8;;agentbox://web/api\x1b\\');
+    // OSC 8: ESC ]8;;<url> ST <label> ESC ]8;; ST — URL uses the unique id, label the name
+    expect(nameLine).toContain('\x1b]8;;agentbox://web/b084ed411\x1b\\');
     expect(nameLine).toContain('api');
-    // the URL uses the full box name even when the label is truncated
     expect(nameLine.startsWith('1 ')).toBe(true);
   });
 

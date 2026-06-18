@@ -254,8 +254,10 @@ export function renderCmuxRows(
       const idx = b.projectIndex ? `${String(b.projectIndex)} ` : '';
       const disp = tailKeep(b.name, Math.max(1, width - idx.length));
       // force OSC 8: the Herdr overlay always supports it and the link is what
-      // drives Ctrl+click routing, so don't gate on terminal detection.
-      const name = linkNames ? hyperlink(disp, `agentbox://web/${b.name}`, undefined, true) : disp;
+      // drives Ctrl+click routing, so don't gate on terminal detection. The URL
+      // uses the box's unique id (not its name — the overlay is global and names
+      // can repeat across projects) so the click resolves to the right box.
+      const name = linkNames ? hyperlink(disp, `agentbox://web/${b.id}`, undefined, true) : disp;
       lines.push(`${idx}${name}`);
       lines.push('  ' + cmuxStatusCell(b, color));
     }
