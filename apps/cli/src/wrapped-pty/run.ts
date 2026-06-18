@@ -694,6 +694,10 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
       }
       capturingPrompt = null;
       applyBandChange();
+      // Local answer: revert the Herdr agent from the forced `blocked` (approval)
+      // back to its real activity. `onResolved` (the SSE echo) won't do it — it's
+      // guarded on `capturingPrompt` still matching, which we just cleared.
+      if (herdrOn) reportHerdrAgentState(opts.mode, lastActivity, opts.boxName);
     },
     leaderChords,
     onLeaderChange: (open) => {
