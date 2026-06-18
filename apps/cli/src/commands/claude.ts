@@ -74,7 +74,7 @@ import { maybeRunSetupWizard } from '../wizard.js';
 import { evaluateBaseFreshness } from '../checkpoint-lookup.js';
 import { runPrepare } from './prepare.js';
 import { runWrappedAttach } from '../wrapped-pty/index.js';
-import { pasteHostClipboardImage } from '../lib/paste-image.js';
+import { pasteHostClipboardImage, uploadImageFileToBox } from '../lib/paste-image.js';
 import { clipboardCaptureAvailable } from '../lib/host-clipboard.js';
 import { handleLifecycleError } from './_errors.js';
 
@@ -143,6 +143,7 @@ export async function attachClaudeWrapped(
     onError,
     openIn,
     onPasteImage: canPaste ? () => pasteHostClipboardImage(provider, box) : undefined,
+    onPasteImageFile: canPaste ? (p) => uploadImageFileToBox(provider, box, p) : undefined,
   });
   process.exit(code);
 }

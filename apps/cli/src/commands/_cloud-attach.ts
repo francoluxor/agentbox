@@ -8,7 +8,7 @@ import type { BoxRecord, Provider } from '@agentbox/core';
 import type { AttachOpenIn } from '@agentbox/config';
 import { providerForBox } from '../provider/registry.js';
 import { runWrappedAttach } from '../wrapped-pty/index.js';
-import { pasteHostClipboardImage } from '../lib/paste-image.js';
+import { pasteHostClipboardImage, uploadImageFileToBox } from '../lib/paste-image.js';
 import { clipboardCaptureAvailable } from '../lib/host-clipboard.js';
 
 const RELAY_HOST_URL = `http://127.0.0.1:${String(DEFAULT_RELAY_PORT)}`;
@@ -266,6 +266,7 @@ export async function cloudAgentAttach(args: CloudAgentAttachArgs): Promise<void
       onPasteImage: canPaste
         ? () => pasteHostClipboardImage(provider, box)
         : undefined,
+      onPasteImageFile: canPaste ? (p) => uploadImageFileToBox(provider, box, p) : undefined,
     });
     process.exit(code);
   } finally {

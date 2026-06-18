@@ -93,6 +93,10 @@ export interface WrappedAttachOptions {
    *  this settles, so Claude Code reads the now-loaded clipboard. Omitted →
    *  Ctrl+V forwards verbatim. */
   onPasteImage?: () => Promise<'pasted' | 'no-image' | 'error'>;
+  /** Upload a pasted *host* image file into the box and return the box path
+   *  (or null). Wired for claude only; drives the Herdr screenshot-paste fix —
+   *  the router substitutes the box path so Claude attaches it. */
+  onPasteImageFile?: (hostPath: string) => Promise<string | null>;
   /**
    * Re-establish the connection after the inner PTY drops. The wrapper decides
    * *whether* to call this (a checkpoint reboot — signalled by an active
@@ -634,6 +638,38 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
     redrawChrome();
   };
 
+  // Herdr screenshot-paste: Herdr inserts a *host* image path (which a boxed
+  // agent can't read). Ship that file into the box and return the box path; the
+  // router forwards the box path so Claude attaches it. Flash the outcome; never
+  // throws.
+  const handlePasteImageFile = async (hostPath: string): Promise<string | null> => {
+    if (!opts.onPasteImageFile) return null;
+    if (flashTimer) {
+      clearTimeout(flashTimer);
+      flashTimer = null;
+    }
+    flashMessage = 'Pasting image…';
+    recomputeFooter();
+    redrawChrome();
+    let boxPath: string | null = null;
+    try {
+      boxPath = await opts.onPasteImageFile(hostPath);
+    } catch (e) {
+      logErr(`paste-image-file failed: ${(e as Error).message}`);
+    }
+    flashMessage = boxPath ? 'Image pasted' : 'Image paste failed';
+    flashTimer = setTimeout(() => {
+      flashTimer = null;
+      flashMessage = null;
+      recomputeFooter();
+      redrawChrome();
+    }, FLASH_DURATION_MS);
+    if (typeof flashTimer.unref === 'function') flashTimer.unref();
+    recomputeFooter();
+    redrawChrome();
+    return boxPath;
+  };
+
   // Wire stdin -> pty (through the router so prompts + the leader can intercept).
   const router: InputRouter = createInputRouter({
     onForward: (b) => {
@@ -669,6 +705,7 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
       runAction(name);
     },
     onPasteImage: opts.onPasteImage ? handlePasteImage : undefined,
+    onPasteImageFile: opts.onPasteImageFile ? handlePasteImageFile : undefined,
   });
 
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
