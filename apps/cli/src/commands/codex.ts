@@ -43,6 +43,7 @@ import {
 import { parseMaxOption } from '../lib/queue/parse-max-option.js';
 import { submitQueueJob } from '../lib/queue/submit.js';
 import { captureOpenTerminalContext } from '../terminal/queue-open.js';
+import { hostAwareOpenIn } from '../terminal/host.js';
 import { buildPromptArgs } from '../lib/queue/build-prompt-args.js';
 import { maybeResyncWorkspace } from '../lib/resync-start.js';
 import { buildResyncWarning } from '../lib/resync-warning.js';
@@ -572,7 +573,7 @@ export const codexCommand = new Command('codex')
         mode: 'codex',
         extraArgs: applyCodexSkipPermissions(codexArgs, cfg.effective),
         verbose: opts.verbose === true,
-        openIn: cfg.effective.attach.openIn,
+        openIn: hostAwareOpenIn(cfg),
         attach: opts.attach !== false,
         beforeStart: resumePrepared
           ? async (box) => {
@@ -732,7 +733,7 @@ export const codexCommand = new Command('codex')
         sessionName,
         reattachRef(result.record),
         (m) => cmdLog.write(m),
-        cfg.effective.attach.openIn,
+        hostAwareOpenIn(cfg),
       );
     } catch (err) {
       s.stop('failed');
@@ -787,7 +788,7 @@ async function startOrAttachCodex(
   if (opts.resync !== undefined) cliOverrides.box = { resyncOnStart: opts.resync };
   const cfg = await loadEffectiveConfig(box.workspacePath, { cliOverrides });
   const sessionName = cfg.effective.codex.sessionName;
-  const openIn = cfg.effective.attach.openIn;
+  const openIn = hostAwareOpenIn(cfg);
   const wantAttach = opts.attach !== false;
 
   const insp = await inspectBox(box.id);
@@ -934,7 +935,7 @@ const codexAttachCommand = new Command('attach')
           binary: 'codex',
           sessionName: opts.sessionName ?? 'codex',
           mode: 'codex',
-          openIn: cfg.effective.attach.openIn,
+          openIn: hostAwareOpenIn(cfg),
         });
         return;
       }
@@ -1043,7 +1044,7 @@ const codexStartCommand = new Command('start')
           sessionName: opts.sessionName ?? 'codex',
           mode: 'codex',
           extraArgs: effectiveCodexArgs,
-          openIn: cfg.effective.attach.openIn,
+          openIn: hostAwareOpenIn(cfg),
         });
         return;
       }

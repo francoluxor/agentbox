@@ -43,6 +43,7 @@ import {
 import { parseMaxOption } from '../lib/queue/parse-max-option.js';
 import { submitQueueJob } from '../lib/queue/submit.js';
 import { captureOpenTerminalContext } from '../terminal/queue-open.js';
+import { hostAwareOpenIn } from '../terminal/host.js';
 import { maybeResyncWorkspace } from '../lib/resync-start.js';
 import { buildResyncWarning } from '../lib/resync-warning.js';
 import {
@@ -547,7 +548,7 @@ export const opencodeCommand = new Command('opencode')
         mode: 'opencode',
         extraArgs: opencodeArgs,
         verbose: opts.verbose === true,
-        openIn: cfg.effective.attach.openIn,
+        openIn: hostAwareOpenIn(cfg),
         attach: opts.attach !== false,
       });
       return;
@@ -651,7 +652,7 @@ export const opencodeCommand = new Command('opencode')
         sessionName,
         reattachRef(result.record),
         (m) => cmdLog.write(m),
-        cfg.effective.attach.openIn,
+        hostAwareOpenIn(cfg),
       );
     } catch (err) {
       s.stop('failed');
@@ -697,7 +698,7 @@ async function startOrAttachOpencode(
   if (opts.resync !== undefined) cliOverrides.box = { resyncOnStart: opts.resync };
   const cfg = await loadEffectiveConfig(box.workspacePath, { cliOverrides });
   const sessionName = cfg.effective.opencode.sessionName;
-  const openIn = cfg.effective.attach.openIn;
+  const openIn = hostAwareOpenIn(cfg);
   const wantAttach = opts.attach !== false;
 
   const insp = await inspectBox(box.id);
@@ -807,7 +808,7 @@ const opencodeAttachCommand = new Command('attach')
           binary: 'opencode',
           sessionName: opts.sessionName ?? 'opencode',
           mode: 'opencode',
-          openIn: cfg.effective.attach.openIn,
+          openIn: hostAwareOpenIn(cfg),
         });
         return;
       }
@@ -892,7 +893,7 @@ const opencodeStartCommand = new Command('start')
           sessionName: opts.sessionName ?? 'opencode',
           mode: 'opencode',
           extraArgs: effectiveOpencodeArgs,
-          openIn: cfg.effective.attach.openIn,
+          openIn: hostAwareOpenIn(cfg),
         });
         return;
       }

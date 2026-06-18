@@ -43,6 +43,7 @@ import { applyClaudeSkipPermissions } from '../lib/skip-permissions.js';
 import { parseMaxOption } from '../lib/queue/parse-max-option.js';
 import { submitQueueJob } from '../lib/queue/submit.js';
 import { captureOpenTerminalContext } from '../terminal/queue-open.js';
+import { hostAwareOpenIn } from '../terminal/host.js';
 import {
   ATTACH_IN_HELP,
   INLINE_HELP,
@@ -766,7 +767,7 @@ export const claudeCommand = new Command('claude')
         mode: 'claude',
         extraArgs: effectiveClaudeArgs,
         verbose: opts.verbose === true,
-        openIn: cfg.effective.attach.openIn,
+        openIn: hostAwareOpenIn(cfg),
         attach: opts.attach !== false,
         beforeStart:
           resumePrepared || planPrepared
@@ -982,7 +983,7 @@ export const claudeCommand = new Command('claude')
         sessionName,
         reattachRef(result.record),
         (m) => cmdLog.write(m),
-        cfg.effective.attach.openIn,
+        hostAwareOpenIn(cfg),
       );
     } catch (err) {
       s.stop('failed');
@@ -1037,7 +1038,7 @@ async function startOrAttachClaude(
   if (opts.resync !== undefined) cliOverrides.box = { resyncOnStart: opts.resync };
   const cfg = await loadEffectiveConfig(box.workspacePath, { cliOverrides });
   const sessionName = cfg.effective.claude.sessionName;
-  const openIn = cfg.effective.attach.openIn;
+  const openIn = hostAwareOpenIn(cfg);
   const wantAttach = opts.attach !== false;
   // Read-only — used to gate the first-run login offer (respect an intentional
   // host ANTHROPIC_API_KEY). The box already exists, so `resolved.env` is not
@@ -1239,7 +1240,7 @@ const claudeAttachCommand = new Command('attach')
           binary: 'claude',
           sessionName: opts.sessionName ?? 'claude',
           mode: 'claude',
-          openIn: cfg.effective.attach.openIn,
+          openIn: hostAwareOpenIn(cfg),
         });
         return;
       }
@@ -1353,7 +1354,7 @@ const claudeStartCommand = new Command('start')
           sessionName: opts.sessionName ?? 'claude',
           mode: 'claude',
           extraArgs: effectiveClaudeArgs,
-          openIn: cfg.effective.attach.openIn,
+          openIn: hostAwareOpenIn(cfg),
         });
         return;
       }

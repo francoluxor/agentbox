@@ -56,6 +56,14 @@ Mechanics:
 - Anything that fails (unknown host, shell mode, spawn non-zero / no pane id)
   falls through to inline attach.
 
+**Herdr default override.** The global `attach.openIn` default is `split`, but a
+split pane is cramped for an attached agent under Herdr, so `hostAwareOpenIn`
+(`host.ts`) maps it to `tab` **only when the value is the built-in default**
+(`cfg.sources['attach.openIn'] === 'default'`) and the host is Herdr. An explicit
+`--attach-in` / configured value (any non-default source) is honored as-is. It's
+applied at each command's `cfg.effective.attach.openIn` read site (claude / codex
+/ opencode / attach), so both the docker and cloud foreground paths get it.
+
 ## `queue.openIn` — open a background `-i` box when it is ready
 
 `QueueOpenIn = 'none' | 'split' | 'window' | 'tab'` (config key `queue.openIn`,

@@ -9,6 +9,7 @@ import { attachClaudeWrapped } from './claude.js';
 import { attachCodexWrapped } from './codex.js';
 import { attachOpencodeWrapped } from './opencode.js';
 import { ATTACH_IN_HELP, INLINE_HELP, resolveAttachInOption } from './_attach-in.js';
+import { hostAwareOpenIn } from '../terminal/host.js';
 import { cloudAgentAttach } from './_cloud-attach.js';
 import { handleLifecycleError } from './_errors.js';
 
@@ -232,7 +233,7 @@ export const attachCommand = new Command('attach')
           binary: winner.kind,
           sessionName: winner.sessionName,
           mode: winner.kind,
-          openIn: cfg.effective.attach.openIn,
+          openIn: hostAwareOpenIn(cfg),
         });
         return;
       }
@@ -241,7 +242,7 @@ export const attachCommand = new Command('attach')
       const cfg = await loadEffectiveConfig(box.workspacePath, {
         cliOverrides: attachIn ? { attach: { openIn: attachIn } } : {},
       });
-      await dispatchDocker(box, winner, cfg.effective.attach.openIn);
+      await dispatchDocker(box, winner, hostAwareOpenIn(cfg));
     } catch (err) {
       handleLifecycleError(err);
     }

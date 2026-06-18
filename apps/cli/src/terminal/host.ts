@@ -1,8 +1,30 @@
 import { spawn } from 'node:child_process';
-import type { AttachOpenIn } from '@agentbox/config';
+import type { AttachOpenIn, LoadedConfig } from '@agentbox/config';
 import { herdrRequest } from './herdr-socket.js';
 
 export type HostTerminal = 'tmux' | 'cmux' | 'herdr' | 'iterm2' | 'unknown';
+
+/**
+ * The effective `attach.openIn`, adjusted for the host terminal. Under Herdr the
+ * default is a **tab** rather than a split (a split pane is cramped for an
+ * attached agent) — but only when the user hasn't chosen: an explicit
+ * `--attach-in` / configured value (any source other than the built-in default)
+ * is honored as-is. No effect on other terminals.
+ */
+export function hostAwareOpenIn(
+  cfg: LoadedConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): AttachOpenIn {
+  const openIn = cfg.effective.attach.openIn;
+  if (
+    openIn === 'split' &&
+    cfg.sources['attach.openIn'] === 'default' &&
+    detectHostTerminal(env) === 'herdr'
+  ) {
+    return 'tab';
+  }
+  return openIn;
+}
 
 /**
  * Identify the user's host terminal from env vars. tmux wins over everything

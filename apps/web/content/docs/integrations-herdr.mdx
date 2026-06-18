@@ -38,21 +38,23 @@ Some prompts don't come from the agent at all — they come from AgentBox's **ho
 
 ## Boxes as splits, tabs, or workspaces
 
-The [`attach.openIn`](/docs/configuration) config key (CLI flag `--attach-in`) decides where an attached session lands. Under Herdr:
+The [`attach.openIn`](/docs/configuration) config key (CLI flag `--attach-in`) decides where an attached session lands. **Under Herdr the default is a new tab** (a split pane is cramped for an attached agent), but you can pick any mode:
 
-| Mode                | What happens                                               |
-| ------------------- | --------------------------------------------------------- |
-| `split` _(default)_ | New split beside the current pane (`pane.split`)          |
-| `tab`               | New tab in the current workspace (`tab.create`)           |
-| `window`            | Separate Herdr workspace (`workspace.create`)             |
-| `same`              | Inline in the current pane (no spawn) — same as `--inline` |
+| Mode              | What happens                                               |
+| ----------------- | --------------------------------------------------------- |
+| `tab` _(default)_ | New tab in the current workspace (`tab.create`)           |
+| `split`           | New split beside the current pane (`pane.split`)          |
+| `window`          | Separate Herdr workspace (`workspace.create`)             |
+| `same`            | Inline in the current pane (no spawn) — same as `--inline` |
+
+The global default is `split` (for tmux/cmux/iTerm2); Herdr overrides it to `tab` only when you haven't set `attach.openIn` yourself. Setting it explicitly — globally or per run — is always honored:
 
 ```bash
-# open the box as a tab in the current workspace
-agentbox claude mybox --attach-in tab
+# force a split for this run, even under Herdr
+agentbox claude mybox --attach-in split
 
-# make that the default everywhere
-agentbox config set attach.openIn tab
+# change the default everywhere
+agentbox config set attach.openIn window
 ```
 
 This also works for background `-i` runs: set [`queue.openIn`](/docs/configuration) and the box opens in Herdr the moment its worker finishes creating it.
