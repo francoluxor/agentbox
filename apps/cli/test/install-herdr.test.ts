@@ -1,48 +1,40 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   buildHerdrManifest,
   herdrBinary,
+  herdrBuildScript,
   herdrConfigPath,
   herdrKeybindingsBlock,
   herdrPluginDir,
+  herdrShimContent,
   upsertHerdrKeybindings,
 } from '../src/commands/install-herdr.js';
 
-const PATHS = {
-  version: '9.9.9',
-  node: '/usr/local/bin/node',
-  cliEntry: '/opt/agentbox/dist/index.js',
-  herdrBin: '/Applications/Herdr.app/Contents/MacOS/herdr',
-};
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 describe('buildHerdrManifest', () => {
-  const toml = buildHerdrManifest(PATHS);
+  const toml = buildHerdrManifest();
 
-  it('declares the plugin id and version', () => {
+  it('declares the plugin id, a stable own version, and platforms', () => {
     expect(toml).toContain('id = "agentbox"');
-    expect(toml).toContain('version = "9.9.9"');
+    expect(toml).toContain('version = "0.1.0"'); // plugin version, not the CLI version
     expect(toml).toContain('min_herdr_version = "0.7.0"');
     expect(toml).toContain('platforms = ["linux", "macos", "windows"]');
   });
 
-  it('declares the boxes overlay pane running `list --herdr --watch` with absolute paths', () => {
-    expect(toml).toContain('placement = "overlay"');
-    expect(toml).toContain(
-      'command = ["/usr/local/bin/node", "/opt/agentbox/dist/index.js", "list", "--herdr", "--watch"]',
-    );
+  it('routes agentbox commands through the shim and runs the build step', () => {
+    expect(toml).toContain('command = ["sh", "build.sh"]');
+    expect(toml).toContain('command = ["sh", "agentbox-shim.sh", "list", "--herdr", "--watch"]');
+    expect(toml).toContain('command = ["sh", "agentbox-shim.sh", "herdr", "new"]');
+    expect(toml).toContain('command = ["sh", "agentbox-shim.sh", "herdr", "link"]');
+    // pane-open uses bare `herdr` (reliably on PATH inside a Herdr pane)
+    expect(toml).toContain('"herdr", "plugin", "pane", "open"');
   });
 
-  it('wires the three actions with resolved commands', () => {
-    // boxes overlay opens via the herdr binary
-    expect(toml).toContain(
-      'command = ["/Applications/Herdr.app/Contents/MacOS/herdr", "plugin", "pane", "open", "--plugin", "agentbox", "--entrypoint", "boxes", "--placement", "overlay"]',
-    );
-    // new + link route back into the agentbox CLI
-    expect(toml).toContain('command = ["/usr/local/bin/node", "/opt/agentbox/dist/index.js", "herdr", "new"]');
-    expect(toml).toContain('command = ["/usr/local/bin/node", "/opt/agentbox/dist/index.js", "herdr", "link"]');
-  });
-
-  it('does NOT declare keybindings in the manifest (Herdr ignores manifest keys)', () => {
+  it('does NOT declare keybindings (Herdr ignores manifest keys)', () => {
     expect(toml).not.toContain('[[keys.command]]');
     expect(toml).not.toContain('plugin_action');
   });
@@ -50,6 +42,36 @@ describe('buildHerdrManifest', () => {
   it('registers the agentbox:// link handler routed to the link action', () => {
     expect(toml).toContain('pattern = "^agentbox://"');
     expect(toml).toContain('action = "link"');
+  });
+});
+
+describe('committed plugin stays in sync with the builders', () => {
+  it('herdr-plugin/herdr-plugin.toml matches buildHerdrManifest()', () => {
+    const committed = readFileSync(join(REPO_ROOT, 'herdr-plugin', 'herdr-plugin.toml'), 'utf8');
+    expect(committed).toBe(buildHerdrManifest());
+  });
+
+  it('herdr-plugin/build.sh matches herdrBuildScript()', () => {
+    const committed = readFileSync(join(REPO_ROOT, 'herdr-plugin', 'build.sh'), 'utf8');
+    expect(committed).toBe(herdrBuildScript());
+  });
+});
+
+describe('herdrShimContent', () => {
+  it('exec-launches the CLI by absolute node + entry, shell-quoted', () => {
+    const shim = herdrShimContent('/usr/local/bin/node', '/opt/agentbox/dist/index.js');
+    expect(shim).toContain("exec '/usr/local/bin/node' '/opt/agentbox/dist/index.js' \"$@\"");
+    expect(shim.startsWith('#!/bin/sh')).toBe(true);
+  });
+});
+
+describe('herdrBuildScript', () => {
+  const sh = herdrBuildScript();
+  it('installs setup when the CLI is present, instructs (exit 0) when not', () => {
+    expect(sh).toContain('command -v agentbox');
+    expect(sh).toContain('install herdr --plugin-keys');
+    expect(sh).toContain('npm i -g @madarco/agentbox');
+    expect(sh).toContain('exit 0'); // never aborts the plugin install
   });
 });
 
@@ -84,30 +106,18 @@ describe('herdr keybindings (config.toml)', () => {
   });
 });
 
-describe('herdrConfigPath', () => {
-  it('honors HERDR_CONFIG_PATH', () => {
-    expect(herdrConfigPath({ HERDR_CONFIG_PATH: '/x/herdr.toml' })).toBe('/x/herdr.toml');
+describe('herdrPluginDir / herdrConfigPath / herdrBinary', () => {
+  it('plugin dir lives under AGENTBOX_HOME, else ~/.agentbox', () => {
+    expect(herdrPluginDir({ AGENTBOX_HOME: '/tmp/ab' })).toBe('/tmp/ab/herdr/plugin');
+    expect(herdrPluginDir({})).toMatch(/\.agentbox\/herdr\/plugin$/);
   });
-  it('honors XDG_CONFIG_HOME, else ~/.config', () => {
+  it('config path honors HERDR_CONFIG_PATH / XDG_CONFIG_HOME', () => {
+    expect(herdrConfigPath({ HERDR_CONFIG_PATH: '/x/herdr.toml' })).toBe('/x/herdr.toml');
     expect(herdrConfigPath({ XDG_CONFIG_HOME: '/cfg' })).toBe('/cfg/herdr/config.toml');
     expect(herdrConfigPath({})).toMatch(/\.config\/herdr\/config\.toml$/);
   });
-});
-
-describe('herdrPluginDir', () => {
-  it('lives under AGENTBOX_HOME when set', () => {
-    expect(herdrPluginDir({ AGENTBOX_HOME: '/tmp/ab' })).toBe('/tmp/ab/herdr/plugin');
-  });
-  it('falls back to ~/.agentbox', () => {
-    expect(herdrPluginDir({})).toMatch(/\.agentbox\/herdr\/plugin$/);
-  });
-});
-
-describe('herdrBinary', () => {
-  it('prefers the in-session HERDR_BIN_PATH', () => {
+  it('herdr binary prefers HERDR_BIN_PATH, else bare herdr', () => {
     expect(herdrBinary({ HERDR_BIN_PATH: '/x/herdr' })).toBe('/x/herdr');
-  });
-  it('falls back to bare `herdr` on PATH', () => {
     expect(herdrBinary({})).toBe('herdr');
   });
 });

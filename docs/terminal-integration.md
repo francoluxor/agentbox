@@ -294,22 +294,42 @@ design is the inverse: we **proxy state transparently** and let Herdr do the res
   `HERDR_ENV=1` + `HERDR_SOCKET_PATH` + `HERDR_PANE_ID` (`herdrStatusActive`), so
   it works even when a tmux is nested inside Herdr.
 
-## Herdr plugin (`agentbox install herdr`)
+## Herdr plugin (`agentbox install herdr` + `herdr-plugin/`)
 
-`apps/cli/src/commands/install-herdr.ts` generates a Herdr plugin
-(https://herdr.dev/docs/plugins) and links it. Unlike `install cmux` (which
-writes a JSON dock entry), the manifest is **generated** because Herdr runs
-plugin commands as a bare argv with no shell expansion — so every `command`
-argv gets absolute paths baked in (`process.execPath` + `process.argv[1]` for the
-agentbox calls; resolved `HERDR_BIN_PATH` for the pane-open). `buildHerdrManifest`
-is pure (unit-tested); the manifest is written to `~/.agentbox/herdr/plugin/` and
-registered with `herdr plugin link` (+ best-effort `herdr server reload-config`).
+`apps/cli/src/commands/install-herdr.ts` is the source of truth for a Herdr
+plugin (https://herdr.dev/docs/plugins) reachable two ways, both producing the
+same files:
+- **discovery:** `herdr plugin install madarco/agentbox/herdr-plugin` → the
+  committed `herdr-plugin/` dir; its `[[build]]` runs `build.sh` →
+  `agentbox install herdr --plugin-keys`.
+- **local:** `agentbox install herdr` → the same files under
+  `~/.agentbox/herdr/plugin/`, then `herdr plugin unlink agentbox` (best-effort) →
+  `herdr plugin link` → `herdr server reload-config`.
+
+**Static manifest + a shim.** Herdr runs plugin commands as a bare argv with no
+shell expansion and an unreliable PATH (e.g. nvm). Rather than bake machine paths
+into the manifest, agentbox commands route through `agentbox-shim.sh`
+(`herdrShimContent` → `exec <node> <cliEntry> "$@"`), written at install time.
+That keeps `buildHerdrManifest()` **pure + parameterless** so the committed
+`herdr-plugin/herdr-plugin.toml` is byte-identical to what the local install
+writes — a test (`committed plugin stays in sync`) asserts it, as does
+`herdr-plugin/build.sh` vs `herdrBuildScript()`. The plugin carries its own
+`version` (constant), independent of the CLI version, so the committed file is
+stable across releases.
 
 Manifest contents:
-- `[[panes]]` `boxes` (placement `overlay`) → `agentbox list --herdr --watch`.
-- `[[actions]]` `boxes` (opens the pane via `herdr plugin pane open`), `new`
-  (`agentbox herdr new`), `link` (`agentbox herdr link`).
+- `[[build]]` → `["sh", "build.sh"]` (run only by `herdr plugin install`, not by
+  `herdr plugin link`).
+- `[[panes]]` `boxes` (placement `overlay`) → `sh agentbox-shim.sh list --herdr --watch`.
+- `[[actions]]` `boxes` (opens the pane via bare `herdr plugin pane open`), `new`
+  (`sh agentbox-shim.sh herdr new`), `link` (`sh agentbox-shim.sh herdr link`).
 - `[[link_handlers]]` `^agentbox://` → action `link`.
+
+`build.sh` (committed): if `command -v agentbox` resolves, run
+`agentbox install herdr --plugin-keys` (writes the shim into the plugin root +
+keybindings + reload, no relink); else print the `npm i -g` hint and `exit 0` —
+the plugin installs but stays inert until the CLI arrives (never aborts the
+install).
 
 **Keybindings live in the user's `config.toml`, not the manifest.** Verified
 against Herdr 0.7: manifest `[[keys.command]]` entries are ignored (they don't

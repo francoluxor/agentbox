@@ -5,27 +5,35 @@
  *   - a **new box** shortcut (`prefix+shift+a`) opening `agentbox` in a new tab
  *   - a **Ctrl+click** link handler that opens a box's web app (`agentbox://…`)
  *
- * Unlike `install cmux` (which writes a JSON dock entry), we generate the plugin
- * manifest with absolute paths baked into every `command` argv — Herdr runs
- * action/pane commands as a bare argv with **no shell expansion**, so `$PATH` /
- * `$HERDR_BIN_PATH` can't be relied on. The manifest is written to a stable dir
- * under `~/.agentbox` and registered with `herdr plugin link`.
+ * The same plugin is reachable two ways, both producing identical behavior:
+ *   - discovery: `herdr plugin install madarco/agentbox/herdr-plugin` → the
+ *     committed manifest; its `[[build]]` runs `build.sh` → `agentbox install
+ *     herdr --plugin-keys`.
+ *   - local: `agentbox install herdr` → the same files under `~/.agentbox`, linked.
  *
- * Herdr v1 has no sidebar/menu extension point, so the boxes list is an overlay
- * toggled by a key, not a pinned sidebar panel. Herdr's *native* sidebar agent
- * panel (`agent_panel_scope = "all"`) already shows attached boxes globally
- * (phase-1 reports them) — the success note points the user at it.
+ * Herdr runs plugin commands as a bare argv with no shell expansion and an
+ * unreliable PATH (e.g. under nvm). So agentbox commands route through a small
+ * **shim** (`agentbox-shim.sh`) written at install time with the absolute CLI
+ * path — which keeps the manifest itself fully static (committable + identical
+ * across machines). Keybindings can't live in the manifest (Herdr ignores
+ * manifest keys), so they're spliced into the user's `config.toml`.
  */
 
 import { intro, log, note, outro } from '@clack/prompts';
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { AGENTBOX_VERSION } from '../version.js';
 
-/** Directory the generated plugin lives in (stable across package upgrades). */
+/**
+ * The plugin's own version — independent of the CLI version so the committed
+ * `herdr-plugin/herdr-plugin.toml` stays stable across releases. Bump when the
+ * plugin's manifest changes.
+ */
+const PLUGIN_VERSION = '0.1.0';
+
+/** Directory the locally-generated plugin lives in (stable across upgrades). */
 export function herdrPluginDir(env: NodeJS.ProcessEnv = process.env): string {
   const home = env['AGENTBOX_HOME'] ?? join(homedir(), '.agentbox');
   return join(home, 'herdr', 'plugin');
@@ -44,6 +52,106 @@ export function herdrConfigPath(env: NodeJS.ProcessEnv = process.env): string {
 export function herdrBinary(env: NodeJS.ProcessEnv = process.env): string {
   const b = env['HERDR_BIN_PATH'];
   return b && b.length > 0 ? b : 'herdr';
+}
+
+/**
+ * The static plugin manifest. Pure + parameterless, so the committed
+ * `herdr-plugin/herdr-plugin.toml` is byte-identical to what the local install
+ * writes (a test asserts this). agentbox commands go through `agentbox-shim.sh`;
+ * the pane-open action uses bare `herdr` (reliably on PATH inside a Herdr pane).
+ */
+export function buildHerdrManifest(): string {
+  return `# AgentBox Herdr plugin (https://herdr.dev/docs/plugins).
+# Install:  herdr plugin install madarco/agentbox/herdr-plugin
+# Or, with the AgentBox CLI already installed:  agentbox install herdr
+#
+# agentbox commands route through ./agentbox-shim.sh, written at install time
+# with the absolute path to your AgentBox CLI — Herdr runs plugin commands as a
+# bare argv with no shell expansion / unreliable PATH (e.g. under nvm).
+id = "agentbox"
+name = "AgentBox"
+version = "${PLUGIN_VERSION}"
+min_herdr_version = "0.7.0"
+platforms = ["linux", "macos", "windows"]
+description = "AgentBox: live boxes overlay, shortcuts, and Ctrl+click to open a box web app."
+
+[[build]]
+command = ["sh", "build.sh"]
+
+[[panes]]
+id = "boxes"
+title = "AgentBox"
+placement = "overlay"
+command = ["sh", "agentbox-shim.sh", "list", "--herdr", "--watch"]
+
+[[actions]]
+id = "boxes"
+title = "AgentBox: boxes overlay"
+contexts = ["workspace"]
+command = ["herdr", "plugin", "pane", "open", "--plugin", "agentbox", "--entrypoint", "boxes", "--placement", "overlay"]
+
+[[actions]]
+id = "new"
+title = "AgentBox: new box"
+contexts = ["workspace"]
+command = ["sh", "agentbox-shim.sh", "herdr", "new"]
+
+[[actions]]
+id = "link"
+title = "AgentBox: open box link"
+contexts = ["workspace"]
+command = ["sh", "agentbox-shim.sh", "herdr", "link"]
+
+# Keybindings are NOT declared here — Herdr ignores manifest keys. They're added
+# to the user's config.toml by \`agentbox install herdr\` / the build step.
+
+[[link_handlers]]
+id = "web"
+title = "AgentBox: open box web app"
+pattern = "^agentbox://"
+action = "link"
+`;
+}
+
+/** Single-quote a string for /bin/sh. */
+function shq(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * The shim that the manifest's agentbox commands run. Written at install time
+ * with the absolute node + CLI entry, so it works regardless of the Herdr
+ * server's PATH. Pure (path in → content out).
+ */
+export function herdrShimContent(node: string, cliEntry: string): string {
+  return `#!/bin/sh
+# Generated by \`agentbox install herdr\`. Routes Herdr plugin commands to the
+# AgentBox CLI by absolute path (Herdr runs commands without a reliable PATH).
+exec ${shq(node)} ${shq(cliEntry)} "$@"
+`;
+}
+
+/**
+ * The committed plugin's `build.sh` — runs during `herdr plugin install`. If the
+ * AgentBox CLI is present it finishes setup (shim + keybindings + reload) via
+ * `--plugin-keys`; if not, it prints how to get it and exits 0 so the plugin
+ * still installs (inert until the CLI arrives). Never aborts the install.
+ */
+export function herdrBuildScript(): string {
+  return `#!/bin/sh
+# AgentBox Herdr plugin bootstrap — runs during \`herdr plugin install\`.
+# (Local installs via \`agentbox install herdr\` set things up directly instead.)
+AGB="$(command -v agentbox || true)"
+if [ -z "$AGB" ]; then
+  echo "AgentBox CLI not found — the Herdr plugin is installed but inert."
+  echo "Install it and finish setup:"
+  echo "  npm i -g @madarco/agentbox && agentbox install herdr"
+  exit 0
+fi
+"$AGB" install herdr --plugin-keys || \\
+  echo "AgentBox plugin setup hit an issue; finish with: agentbox install herdr"
+exit 0
+`;
 }
 
 const KEY_BEGIN = '# >>> agentbox install herdr (managed) >>>';
@@ -89,117 +197,80 @@ function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-export interface HerdrManifestPaths {
-  version: string;
-  /** node executable (process.execPath). */
-  node: string;
-  /** absolute path to the agentbox CLI entry (process.argv[1]). */
-  cliEntry: string;
-  /** herdr control binary (for the pane-open action). */
-  herdrBin: string;
+/** Write the agentbox shim into `dir`, executable. */
+function writeShim(dir: string): void {
+  const p = join(dir, 'agentbox-shim.sh');
+  writeFileSync(p, herdrShimContent(process.execPath, process.argv[1] ?? 'agentbox'));
+  chmodSync(p, 0o755);
 }
 
-/** Format an argv as a TOML array of basic strings (JSON escaping is TOML-safe). */
-function tomlArgv(argv: string[]): string {
-  return `[${argv.map((a) => JSON.stringify(a)).join(', ')}]`;
-}
-
-/**
- * Build the `herdr-plugin.toml` text. Pure — no I/O — so it can be unit-tested.
- * Every command argv is fully resolved (node + CLI entry, or the herdr binary)
- * because Herdr does not shell-expand action commands.
- */
-export function buildHerdrManifest(p: HerdrManifestPaths): string {
-  const ab = [p.node, p.cliEntry];
-  return `# AgentBox Herdr plugin — generated by \`agentbox install herdr\`.
-# Do not edit by hand; re-run the command to regenerate.
-id = "agentbox"
-name = "AgentBox"
-version = ${JSON.stringify(p.version)}
-min_herdr_version = "0.7.0"
-platforms = ["linux", "macos", "windows"]
-description = "AgentBox: live boxes overlay, shortcuts, and Ctrl+click to open a box web app."
-
-[[panes]]
-id = "boxes"
-title = "AgentBox"
-placement = "overlay"
-command = ${tomlArgv([...ab, 'list', '--herdr', '--watch'])}
-
-[[actions]]
-id = "boxes"
-title = "AgentBox: boxes overlay"
-contexts = ["workspace"]
-command = ${tomlArgv([p.herdrBin, 'plugin', 'pane', 'open', '--plugin', 'agentbox', '--entrypoint', 'boxes', '--placement', 'overlay'])}
-
-[[actions]]
-id = "new"
-title = "AgentBox: new box"
-contexts = ["workspace"]
-command = ${tomlArgv([...ab, 'herdr', 'new'])}
-
-[[actions]]
-id = "link"
-title = "AgentBox: open box link"
-contexts = ["workspace"]
-command = ${tomlArgv([...ab, 'herdr', 'link'])}
-
-# NOTE: keybindings are NOT declared here — Herdr ignores manifest keys. They are
-# added to the user's config.toml by \`agentbox install herdr\` instead.
-
-[[link_handlers]]
-id = "web"
-title = "AgentBox: open box web app"
-pattern = "^agentbox://"
-action = "link"
-`;
+/** Splice the keybindings into config.toml + reload the running server. */
+function applyKeybindings(): string {
+  const cfg = herdrConfigPath();
+  const existing = existsSync(cfg) ? readFileSync(cfg, 'utf8') : '';
+  mkdirSync(dirname(cfg), { recursive: true });
+  writeFileSync(cfg, upsertHerdrKeybindings(existing, herdrKeybindingsBlock()));
+  spawnSync(herdrBinary(), ['server', 'reload-config'], { stdio: 'ignore' });
+  return cfg;
 }
 
 interface InstallHerdrOptions {
   dryRun?: boolean;
+  pluginKeys?: boolean;
 }
 
 export const installHerdrCommand = new Command('herdr')
   .description(
     'Install a Herdr plugin: a boxes-list overlay, keyboard shortcuts, and Ctrl+click to open a box web app.',
   )
-  .option('--dry-run', 'print the generated herdr-plugin.toml without writing or linking it')
+  .option('--dry-run', 'print the generated files without writing or linking anything')
+  // Internal: invoked by the committed plugin's build.sh after a `herdr plugin
+  // install`. The manifest is already registered, so only finish setup.
+  .addOption(new Option('--plugin-keys', 'finish setup for a herdr-installed plugin').hideHelp())
   .action((opts: InstallHerdrOptions) => {
-    const dir = herdrPluginDir();
-    const manifest = buildHerdrManifest({
-      version: AGENTBOX_VERSION,
-      node: process.execPath,
-      cliEntry: process.argv[1] ?? 'agentbox',
-      herdrBin: herdrBinary(),
-    });
+    // Build-step mode: the plugin is already registered by `herdr plugin
+    // install`; just drop the shim next to the manifest (cwd = plugin root) and
+    // wire the keybindings.
+    if (opts.pluginKeys) {
+      writeShim(process.cwd());
+      const cfg = applyKeybindings();
+      process.stdout.write(
+        `AgentBox: Herdr shortcuts installed (prefix a / prefix shift a) in ${cfg}.\n`,
+      );
+      return;
+    }
 
+    const dir = herdrPluginDir();
     const file = join(dir, 'herdr-plugin.toml');
     const cfgPath = herdrConfigPath();
-    const keyBlock = herdrKeybindingsBlock();
 
     if (opts.dryRun) {
       intro('agentbox install herdr (dry run)');
-      process.stdout.write(manifest);
-      process.stdout.write(`\n# --- appended to ${cfgPath} ---\n${keyBlock}\n`);
-      outro(`would write ${file}, edit ${cfgPath}, and run \`herdr plugin link ${dir}\``);
+      process.stdout.write(`# --- ${file} ---\n${buildHerdrManifest()}\n`);
+      process.stdout.write(`# --- ${join(dir, 'build.sh')} ---\n${herdrBuildScript()}\n`);
+      process.stdout.write(
+        `# --- ${join(dir, 'agentbox-shim.sh')} ---\n${herdrShimContent(process.execPath, process.argv[1] ?? 'agentbox')}\n`,
+      );
+      process.stdout.write(`# --- appended to ${cfgPath} ---\n${herdrKeybindingsBlock()}\n`);
+      outro(`would write ${dir}/*, edit ${cfgPath}, and run \`herdr plugin link ${dir}\``);
       return;
     }
 
     mkdirSync(dir, { recursive: true });
-    writeFileSync(file, manifest);
-
-    // Keybindings live in the user's config.toml (Herdr ignores manifest keys).
-    // Splice our managed block in idempotently, preserving the rest of the file.
-    const existingCfg = existsSync(cfgPath) ? readFileSync(cfgPath, 'utf8') : '';
-    mkdirSync(dirname(cfgPath), { recursive: true });
-    writeFileSync(cfgPath, upsertHerdrKeybindings(existingCfg, keyBlock));
+    writeFileSync(file, buildHerdrManifest());
+    const buildPath = join(dir, 'build.sh');
+    writeFileSync(buildPath, herdrBuildScript());
+    chmodSync(buildPath, 0o755);
+    writeShim(dir);
+    const cfg = applyKeybindings();
 
     intro('AgentBox Herdr plugin');
 
-    // Register (or re-register) the plugin and reload so the keys take effect.
-    // Best-effort: if `herdr` isn't on PATH (not installed / not in a Herdr
-    // session) we still wrote the files, so tell the user the commands to run.
+    // Register (or re-register) the plugin. unlink-then-link makes re-runs and a
+    // GitHub→local transition clean (both use id `agentbox`). Best-effort: if
+    // `herdr` isn't on PATH we still wrote the files, so tell the user the cmds.
     const bin = herdrBinary();
+    spawnSync(bin, ['plugin', 'unlink', 'agentbox'], { stdio: 'ignore' });
     const linked = spawnSync(bin, ['plugin', 'link', dir], { stdio: 'ignore' });
     if (linked.status === 0) {
       spawnSync(bin, ['server', 'reload-config'], { stdio: 'ignore' });
@@ -211,8 +282,8 @@ export const installHerdrCommand = new Command('herdr')
     }
 
     note(
-      `Wrote ${file}\n` +
-        `Added shortcuts to ${cfgPath}\n` +
+      `Wrote ${dir}/\n` +
+        `Added shortcuts to ${cfg}\n` +
         (linked.status === 0 ? `Linked with: herdr plugin link ${dir}\n` : '') +
         '\nShortcuts (under Herdr prefix, default Ctrl+b — press the prefix, then the key):\n' +
         '  prefix a        boxes overlay (all boxes)\n' +

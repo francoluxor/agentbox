@@ -65,14 +65,28 @@ AgentBox detects Herdr from the `HERDR_SOCKET_PATH` / `HERDR_PANE_ID` environmen
 
 ## The Herdr plugin
 
-`agentbox install herdr` installs a [Herdr plugin](https://herdr.dev/docs/plugins) that adds a boxes overlay, two shortcuts, and a Ctrl+click handler:
+A [Herdr plugin](https://herdr.dev/docs/plugins) adds a boxes overlay, two shortcuts, and a Ctrl+click handler. Install it either way:
+
+**From Herdr (discover it there):**
 
 ```bash
-agentbox install herdr            # generate + link the plugin
-agentbox install herdr --dry-run  # print the generated herdr-plugin.toml, change nothing
+herdr plugin install madarco/agentbox/herdr-plugin
 ```
 
-It writes `~/.agentbox/herdr/plugin/herdr-plugin.toml` (with absolute paths baked in — Herdr runs plugin commands without shell expansion) and registers it with `herdr plugin link`. Re-run any time to update it.
+The install runs a build step that finishes setup if the AgentBox CLI is present. If the CLI isn't installed yet, the plugin still installs and prints how to get it:
+
+```bash
+npm i -g @madarco/agentbox && agentbox install herdr
+```
+
+**From the AgentBox CLI (if you already have it):**
+
+```bash
+agentbox install herdr            # write + link the plugin, add the shortcuts
+agentbox install herdr --dry-run  # print everything it would write, change nothing
+```
+
+Both produce the same plugin. Plugin commands route through a small `agentbox-shim.sh` written at install time with the absolute path to your CLI, so it works regardless of the Herdr server's `PATH` (including under nvm). Keyboard shortcuts go into your `~/.config/herdr/config.toml` (Herdr doesn't take keybindings from plugin manifests). Re-run any time to refresh; remove the shortcuts with `herdr config reset-keys`.
 
 ### Boxes overlay + shortcuts
 
