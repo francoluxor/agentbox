@@ -104,6 +104,24 @@ export async function herdrStatusEnabled(env: NodeJS.ProcessEnv = process.env): 
   }
 }
 
+/** Report a `pane.report_agent` for this box's pane. Carries the box name as
+ *  `custom_status` so the box is identifiable in Herdr's agent list. */
+function sendAgentState(
+  mode: HerdrAgentMode,
+  boxName: string,
+  state: HerdrSemanticState,
+  message: string,
+  env: NodeJS.ProcessEnv,
+): void {
+  const pane = env['HERDR_PANE_ID'];
+  if (!pane) return;
+  herdrSend(
+    'pane.report_agent',
+    { pane_id: pane, source: `agentbox:${mode}`, agent: mode, state, message, custom_status: boxName },
+    env,
+  );
+}
+
 /** Report the box agent's activity on this Herdr pane. */
 export function reportHerdrAgentState(
   mode: HerdrAgentMode,
@@ -113,21 +131,21 @@ export function reportHerdrAgentState(
 ): void {
   const view = mapActivityToAgentState(mode, activity);
   if (!view) return;
-  const pane = env['HERDR_PANE_ID'];
-  if (!pane) return;
-  herdrSend(
-    'pane.report_agent',
-    {
-      pane_id: pane,
-      source: `agentbox:${mode}`,
-      agent: mode,
-      state: view.state,
-      message: view.message,
-      // Carry the box name so the box is identifiable in Herdr's agent list.
-      custom_status: boxName,
-    },
-    env,
-  );
+  sendAgentState(mode, boxName, view.state, view.message, env);
+}
+
+/**
+ * Force the box agent to `blocked` while an AgentBox host-relay approval prompt
+ * is pending. The in-box agent is still "working", but the pending approval
+ * takes precedence so Herdr highlights the agent (and its space) as needs-input.
+ */
+export function reportHerdrApprovalState(
+  mode: HerdrAgentMode,
+  boxName: string,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  if (mode === 'shell') return;
+  sendAgentState(mode, boxName, 'blocked', `${AGENT_LABEL[mode]} · approval needed`, env);
 }
 
 /** Reset this Herdr pane's agent to idle on detach. */
@@ -137,20 +155,7 @@ export function clearHerdrAgentState(
   env: NodeJS.ProcessEnv = process.env,
 ): void {
   if (mode === 'shell') return;
-  const pane = env['HERDR_PANE_ID'];
-  if (!pane) return;
-  herdrSend(
-    'pane.report_agent',
-    {
-      pane_id: pane,
-      source: `agentbox:${mode}`,
-      agent: mode,
-      state: 'idle',
-      message: `${AGENT_LABEL[mode]} · detached`,
-      custom_status: boxName,
-    },
-    env,
-  );
+  sendAgentState(mode, boxName, 'idle', `${AGENT_LABEL[mode]} · detached`, env);
 }
 
 /** Herdr's notification body cap (sanitized to 240 chars server-side). */

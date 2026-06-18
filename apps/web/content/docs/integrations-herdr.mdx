@@ -10,7 +10,10 @@ description: AgentBox in Herdr — boxes appear as normal agents, Herdr handles 
 - AgentBox's own **approval prompts** (git push, PR, checkpoint, …) — which Herdr can't otherwise see — get an explicit Herdr notification
 - attached sessions open as Herdr splits, tabs, or workspaces via `--attach-in`
 
-<Figure caption="A box in Herdr: the pane reports its agent as a normal Claude agent (working → blocked → idle), and AgentBox raises a Herdr notification when one of its own approval prompts needs an answer." />
+<Figure
+  src="/screenshots/herdr-permission-prompt.png"
+  caption="Boxes across several projects running in Herdr — each shows up as a normal agent in Herdr's sidebar (left). The focused box's Claude has just run `gh pr create`, so AgentBox's host relay blocks on an approval band in the footer — you approve it on the host."
+/>
 
 ## A box looks like a normal agent
 
@@ -98,6 +101,11 @@ Under Herdr's prefix (default `Ctrl+b`):
 | `prefix shift a` | **New box** — open `agentbox` in a new Herdr tab for the current project. |
 
 The overlay lists every box (global), including paused/background ones. To open it from anywhere, just press `prefix a` again — it works from any workspace.
+
+<Figure
+  src="/screenshots/herdr-overlay.png"
+  caption="The boxes overlay (centre) lists every box grouped by project with its agent's live status; Herdr's sidebar agent panel (left, scope “all”) shows the same boxes as normal agents."
+/>
 
 ### Ctrl+click a box → its web app
 

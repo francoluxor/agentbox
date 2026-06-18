@@ -18,6 +18,7 @@ import {
   herdrStatusEnabled,
   notifyHerdrApprovalPrompt,
   reportHerdrAgentState,
+  reportHerdrApprovalState,
 } from '../terminal/herdr-status.js';
 import { popTerminalTitle, pushTerminalTitle, setTerminalTitle } from '../terminal/title.js';
 import {
@@ -723,8 +724,13 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
       capturingPrompt = ev;
       applyBandChange();
       // Special highlight for AgentBox's own host-relay approval prompts: Herdr
-      // can't know about these (they're not the box agent), so surface a toast.
-      if (herdrOn) notifyHerdrApprovalPrompt(opts.boxName, ev);
+      // can't know about these, so surface a toast AND flip the box agent to
+      // `blocked` (the in-box agent is still "working", but the pending approval
+      // takes precedence) so Herdr highlights the agent + its space until answered.
+      if (herdrOn) {
+        notifyHerdrApprovalPrompt(opts.boxName, ev);
+        reportHerdrApprovalState(opts.mode, opts.boxName);
+      }
       // capture() returns a Promise that resolves with the answer body; the
       // input-router's onAnswer callback already POSTs and resets the band.
       // We just need to await so unhandled rejections (router.abort) don't
@@ -744,6 +750,9 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
         capturingPrompt = null;
         router.abort('resolved-elsewhere');
         applyBandChange();
+        // Revert the Herdr agent from the forced `blocked` (approval) back to the
+        // box's real activity, which the poll has kept current in `lastActivity`.
+        if (herdrOn) reportHerdrAgentState(opts.mode, lastActivity, opts.boxName);
       }
     },
     onNotice: (ev: BoxNoticeEvent) => {
@@ -805,8 +814,11 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
       }
       // Mirror the agent's activity onto the Herdr pane on each transition.
       // Herdr surfaces needs-input itself from the `blocked` state, so (unlike
-      // cmux) there's no separate attention notification here.
-      if (herdrOn && nextActivity !== lastActivity) {
+      // cmux) there's no separate attention notification here. While a host-relay
+      // approval prompt is pending, the agent is force-reported as `blocked`
+      // (onPrompt) and we must not downgrade it back to working — so skip while
+      // `capturingPrompt` is set; `onResolved` re-syncs to the real activity.
+      if (herdrOn && nextActivity !== lastActivity && !capturingPrompt) {
         reportHerdrAgentState(opts.mode, nextActivity, opts.boxName);
       }
       // Mirror the live title to the host terminal/tab, falling back to the box
