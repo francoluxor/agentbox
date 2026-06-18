@@ -698,6 +698,23 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
   };
   process.stdout.on('resize', onResize);
 
+  // Resolve the cmux/Herdr status gates BEFORE subscribing to the prompt stream:
+  // the relay flushes any pending `prompt-ask` backlog the instant the SSE
+  // connects, and `onPrompt` gates the Herdr approval-prompt toast on `herdrOn`
+  // — so a reattach with a queued approval would miss the toast if we resolved
+  // the gate afterwards. `cmuxOrig` holds the cmux workspace's prior
+  // colour/description to restore on detach; the Herdr path needs no capture
+  // (its agent association is ours, reset to idle on detach). The poll loop
+  // below also reads these gates.
+  let cmuxOn = false;
+  let cmuxOrig: CmuxWorkspaceState | null = null;
+  let herdrOn = false;
+  if (opts.mode !== 'shell') {
+    cmuxOn = await cmuxStatusEnabled();
+    if (cmuxOn) cmuxOrig = captureCmuxWorkspace();
+    herdrOn = await herdrStatusEnabled();
+  }
+
   // SSE: subscribe to the relay's prompt stream for this box.
   const stream: PromptStream = subscribePrompts({
     relayBaseUrl: opts.relayBaseUrl,
@@ -745,19 +762,10 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
     },
   });
 
-  // When attached inside cmux, reflect the agent's activity on the box's cmux
-  // workspace (colour + description, set in the poll loop below) so the sidebar
-  // shows what each box is doing. Resolved (env + config) just before the first
-  // poll; `cmuxOrig` holds the workspace's prior colour/description to restore on
-  // detach.
-  let cmuxOn = false;
-  let cmuxOrig: CmuxWorkspaceState | null = null;
-  // When attached inside Herdr, report the box agent's activity to its pane so
-  // Herdr treats it like a normal agent pane (its native needs-input handling
-  // included). No capture/restore: the agent association is ours, reset to idle
-  // on detach.
-  let herdrOn = false;
-
+  // cmux (workspace colour/description) + Herdr (pane agent state) reflect the
+  // box agent's activity from the poll loop below; both gates (`cmuxOn`,
+  // `herdrOn`) were resolved above, before the prompt subscription.
+  //
   // Poll the box's status.json for `claude.sessionTitle` so the idle
   // footer can show what claude set as its terminal title (mirrors the
   // dashboard's sidebar entry). Best-effort — paused/stopped boxes and
@@ -842,11 +850,6 @@ export async function runWrappedAttach(opts: WrappedAttachOptions): Promise<numb
       logErr(`status poll failed: ${(e as Error).message}`);
     }
   };
-  if (opts.mode !== 'shell') {
-    cmuxOn = await cmuxStatusEnabled();
-    if (cmuxOn) cmuxOrig = captureCmuxWorkspace();
-    herdrOn = await herdrStatusEnabled();
-  }
   void pollStatus();
   const statusTimer = setInterval(() => {
     void pollStatus();
