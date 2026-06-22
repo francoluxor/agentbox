@@ -665,6 +665,10 @@ export function createCloudProvider(
           fromBranch: req.fromBranch,
           useBranch: req.useBranch,
           overlay: Boolean(snapshotName),
+          // `--no-resync` (resyncOnStart === false): re-branch the box to the
+          // host tip but skip replaying the host's uncommitted/untracked state
+          // onto the warm checkpoint tree — matches docker's gated resync.
+          skipCarryOver: Boolean(snapshotName) && req.resyncOnStart === false,
           onLog: log,
         });
         // Checkpoint-restore conflicts (overlay): surface to the CLI so it

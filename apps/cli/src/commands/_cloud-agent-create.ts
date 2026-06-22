@@ -16,10 +16,13 @@
  * only runs when the caller pre-resolved a non-docker provider.
  */
 
-import type { BoxRecord, CreateBoxRequest, Provider } from '@agentbox/core';
+import type { AgentKind, BoxRecord, CreateBoxRequest, Provider } from '@agentbox/core';
 import type { AttachOpenIn } from '@agentbox/config';
+import { log } from '@clack/prompts';
 import { makeProgressReporter } from '../lib/progress.js';
 import { printLaunchRecap } from '../lib/launch-recap.js';
+import { buildPromptArgs } from '../lib/queue/build-prompt-args.js';
+import { buildResyncWarning } from '../lib/resync-warning.js';
 import { cloudAgentAttach } from './_cloud-attach.js';
 
 export interface CloudAgentCreateArgs {
@@ -52,6 +55,19 @@ export interface CloudAgentCreateArgs {
    * mutate `extraArgs` indirectly via the returned `agentArgsPrefix`.
    */
   beforeStart?: (box: BoxRecord) => Promise<{ agentArgsPrefix?: string[] } | void>;
+  /**
+   * Whether the caller already set a seed prompt in `extraArgs` (plan / launch-
+   * with-prompt / resume). On a checkpoint-restore conflict the warning is
+   * injected as the agent's opening turn only when there's no seed; otherwise it
+   * goes to stderr so it doesn't fight an existing first turn — mirrors the
+   * docker create path.
+   */
+  hasSeedPrompt?: boolean;
+}
+
+/** Agent CLI launcher kind for the prompt-arg builder. */
+function agentKindFor(mode: 'claude' | 'codex' | 'opencode'): AgentKind {
+  return mode === 'claude' ? 'claude-code' : mode;
 }
 
 /**
@@ -78,6 +94,15 @@ export async function cloudAgentCreate(args: CloudAgentCreateArgs): Promise<void
       if (hook && hook.agentArgsPrefix && hook.agentArgsPrefix.length > 0) {
         extraArgs = [...hook.agentArgsPrefix, ...(extraArgs ?? [])];
       }
+    }
+    // On-create resync conflicts (checkpoint-restore path): inject the
+    // "host changes SKIPPED … agentbox-ctl reload" warning as the agent's
+    // opening turn, or surface on stderr when a seed prompt already owns it —
+    // same behavior as the docker create path.
+    const resyncWarning = result.resync ? buildResyncWarning(result.resync) : null;
+    if (resyncWarning) {
+      if (args.hasSeedPrompt) log.warn(resyncWarning);
+      else extraArgs = buildPromptArgs(agentKindFor(args.mode), resyncWarning, extraArgs ?? []);
     }
     await printLaunchRecap({
       record: result.record,

@@ -409,6 +409,8 @@ Dockerfile.box  --(prepare --provider daytona)-->  base snapshot      (one-off, 
     (`checkpointTip..hostTarget`) as a **git bundle** fetched into the existing
     `.git`. If the box diverged / the tip is unknown / the bundle can't build, it
     **falls back** to a full shallow-clone `.git` swap.
+  - **`--no-resync` (`resyncOnStart: false`)** re-branches to the host tip but
+    skips the stash + untracked overlay (matches docker's gated `resyncWorkspaceFromHost`).
   - **Conflicts are box-wins + reported:** a host uncommitted/untracked change
     that collides with the box's restored tree is **skipped** (the box version
     kept) and recorded; the create returns a `ResyncResult` on `CreatedBox.resync`

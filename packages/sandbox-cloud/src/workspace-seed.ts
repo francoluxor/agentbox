@@ -68,6 +68,14 @@ export interface SeedCloudWorkspaceArgs {
    * the snapshot baked them (no branch / carry-over concept).
    */
   overlay?: boolean;
+  /**
+   * Checkpoint-restore only: when true, re-branch to the host target but DON'T
+   * replay the host's uncommitted (stash) / untracked carry-over. Set when the
+   * user passed `--no-resync` (`resyncOnStart === false`) — mirrors docker's
+   * checkpoint restore, which forks the fresh branch but skips
+   * `resyncWorkspaceFromHost` when resync is off. Ignored on a fresh seed.
+   */
+  skipCarryOver?: boolean;
   onLog?: (line: string) => void;
 }
 
@@ -123,6 +131,7 @@ export async function seedCloudWorkspace(
       fromBranch: args.fromBranch,
       useBranch: args.useBranch,
       overlay: args.overlay,
+      skipCarryOver: args.skipCarryOver,
       onLog: log,
     });
     if (args.overlay) resyncRepos.push({ containerPath: workspaceDir, ...rootConflicts });
@@ -141,6 +150,7 @@ export async function seedCloudWorkspace(
         workspaceDir: sub,
         bundleDepth: args.bundleDepth,
         overlay: args.overlay,
+        skipCarryOver: args.skipCarryOver,
         onLog: log,
       });
       if (args.overlay) resyncRepos.push({ containerPath: sub, ...nestedConflicts });
@@ -180,6 +190,8 @@ interface SeedFromGitCloneArgs {
   useBranch?: string;
   /** See `SeedCloudWorkspaceArgs.overlay`. Swap only `.git`, keep the tree. */
   overlay?: boolean;
+  /** See `SeedCloudWorkspaceArgs.skipCarryOver`. Re-branch but skip stash/untracked. */
+  skipCarryOver?: boolean;
   onLog?: (line: string) => void;
 }
 
@@ -329,10 +341,12 @@ async function seedFromGitClone(args: SeedFromGitCloneArgs): Promise<RepoSeedCon
   // committed tip, not the host's uncommitted state (which may belong to a
   // different branch). Mirrors the docker reuse path, which builds its
   // RepoCarryOver with `stashSha: null` / empty untracked.
-  const stashSha = args.useBranch ? null : await safeStashCreate(args.hostRepo);
-  const untrackedSize = args.useBranch
-    ? 0
-    : await maybeBuildUntrackedTar(args.hostRepo, untrackedTarPath);
+  const stashSha =
+    args.useBranch || args.skipCarryOver ? null : await safeStashCreate(args.hostRepo);
+  const untrackedSize =
+    args.useBranch || args.skipCarryOver
+      ? 0
+      : await maybeBuildUntrackedTar(args.hostRepo, untrackedTarPath);
   let stashRefCreated = false;
   try {
     if (stashSha) {
@@ -539,10 +553,12 @@ async function tryReseedRepoDelta(args: SeedFromGitCloneArgs): Promise<RepoSeedC
   const bundlePath = join(stage, 'delta.bundle');
   const untrackedTarPath = join(stage, 'untracked.tar.gz');
   // --use-branch reuses the committed tip; no host uncommitted carry-over.
-  const stashSha = args.useBranch ? null : await safeStashCreate(args.hostRepo);
-  const untrackedSize = args.useBranch
-    ? 0
-    : await maybeBuildUntrackedTar(args.hostRepo, untrackedTarPath);
+  const stashSha =
+    args.useBranch || args.skipCarryOver ? null : await safeStashCreate(args.hostRepo);
+  const untrackedSize =
+    args.useBranch || args.skipCarryOver
+      ? 0
+      : await maybeBuildUntrackedTar(args.hostRepo, untrackedTarPath);
   let stashRefCreated = false;
   try {
     if (stashSha) {

@@ -761,9 +761,14 @@ export const claudeCommand = new Command('claude')
           limits: resolveLimits(cfg.effective.box, opts),
           fromBranch,
           useBranch,
+          resyncOnStart: opts.resync,
           projectRoot,
         },
         binary: 'claude',
+        hasSeedPrompt:
+          Boolean(planPrepared) ||
+          (wiz.action === 'launch-with-prompt' && Boolean(wiz.initialPrompt)) ||
+          Boolean(resumePrepared),
         sessionName: cfg.effective.claude.sessionName,
         mode: 'claude',
         extraArgs: effectiveClaudeArgs,

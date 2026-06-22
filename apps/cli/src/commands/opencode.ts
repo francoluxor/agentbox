@@ -541,11 +541,15 @@ export const opencodeCommand = new Command('opencode')
           limits: resolveLimits(cfg.effective.box, opts),
           fromBranch,
           useBranch,
+          resyncOnStart: opts.resync,
           projectRoot,
         },
         binary: 'opencode',
         sessionName: cfg.effective.opencode.sessionName,
         mode: 'opencode',
+        // opencode surfaces the resync warning on stderr (matches its docker
+        // path, which never injects it as an opening turn).
+        hasSeedPrompt: true,
         extraArgs: opencodeArgs,
         verbose: opts.verbose === true,
         openIn: hostAwareOpenIn(cfg),
