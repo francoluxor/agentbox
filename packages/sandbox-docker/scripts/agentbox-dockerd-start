@@ -129,4 +129,12 @@ for _ in $(seq 1 300); do
   sleep 0.1
 done
 
+# Open the socket to the unprivileged box user. dockerd creates it root:docker
+# 0660; the in-box agent and the ctl supervisor's `image:` services run as the
+# box user, whose already-running session may not carry the docker group, so
+# widen to 0666. Single-tenant box, so this is safe; correctly timed here (run
+# as root, right after the socket is ready) so the cloud launcher's poll — which
+# runs `docker info` as the box user — can succeed.
+chmod 666 /var/run/docker.sock 2>/dev/null || true
+
 disown -a

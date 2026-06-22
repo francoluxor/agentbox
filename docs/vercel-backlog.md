@@ -11,10 +11,15 @@ implementation (per the project convention), not as end-of-PR cleanup.
   Dockerfile build. The base environment is a **Vercel snapshot** baked once by
   `agentbox prepare --provider vercel` (boot fresh node24 → run `provision.sh`
   → `sandbox.snapshot()`), exactly the hetzner-style one-time prerequisite.
-- **No nested containers** (validated 2026-05-18, memory
-  `project-vercel-sandbox-no-containers`): seccomp blocks `clone`/`unshare`, no
-  `CAP_SYS_ADMIN`. The provider sets `launchDockerd: false`; in-box `docker` is
-  unavailable by design.
+- **Nested containers (in-box docker) supported.** Vercel added Docker support
+  in 2026 (https://vercel.com/changelog/run-docker-containers-inside-vercel-sandbox),
+  reversing the earlier "no containers" finding (memory
+  `project-vercel-sandbox-no-containers`). The base snapshot now bakes the
+  docker engine and the provider sets `launchDockerd: true`, so the cloud
+  scaffold auto-starts `dockerd` (via the shared `agentbox-dockerd-start`) on
+  create/resume. The socket is widened to 0666 so the unprivileged box user and
+  the ctl `image:` services drive `docker` without sudo. Pulled images carry
+  over across pause/resume (persistent snapshot).
 - **No SSH.** `sandbox.domain(port)` is an HTTPS(+WebSocket) proxy only. There's
   no `attachArgv`; attach goes through a custom SDK-streaming helper.
 - **Persistent by default.** Stopping a sandbox auto-snapshots; the next
@@ -111,8 +116,9 @@ Confirmed live 2026-05-28:
    (~1.3 GB) in a few minutes; the snapshot comes back usable. claude / codex /
    opencode are all present in a booted box.
 2. [x] **User mapping.** A booted box runs as `vscode` (uid 1001) with `/workspace`
-   checked out on `agentbox/<box>`; `docker` is correctly unavailable
-   (`launchDockerd:false`). vscode passwordless sudo now works (see bug #3).
+   checked out on `agentbox/<box>`. vscode passwordless sudo now works (see bug
+   #3). (In-box `docker` is now baked in + auto-started — `launchDockerd:true`;
+   this note historically tracked the now-reversed "no docker" state.)
 3. [x] **Workspace seed.** The shallow-clone seed (`$SUDO rm/mkdir/chown` +
    tar-extract as vscode) lands `/workspace` on the box branch — gated on the
    sudoers fix (#3). Agent-credential / carry / env-file ownership beyond this was

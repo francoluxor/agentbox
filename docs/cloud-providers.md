@@ -10,7 +10,7 @@ AgentBox runs on five backends today, behind a single `Provider` interface
 | `docker` (default) | Local Docker container | Fast, free, owns the host. Good default. |
 | `daytona` | Daytona Cloud sandbox | When the workload outgrows the laptop, when teammates need to attach, when you want a snapshot-ready remote env. |
 | `hetzner` | Hetzner Cloud VPS (1:1 per box) | When you want bare-VPS control (root, full kernel, your own region), pure OpenSSH (no third-party agent in the box), and a Cloud Firewall locked to your egress IP. ~€4/mo per running box. |
-| `vercel` | Vercel Sandbox (Firecracker microVM) | When you want a fast snapshot-based remote env with public HTTPS preview URLs and persistent pause/resume. No nested containers (no in-box `docker`); region `iad1` only. See §3b. |
+| `vercel` | Vercel Sandbox (Firecracker microVM) | When you want a fast snapshot-based remote env with public HTTPS preview URLs and persistent pause/resume. In-box `docker` (DinD) is baked in and auto-started; region `iad1` only. See §3b. |
 | `e2b` | E2B Sandbox (Firecracker microVM) | When you want a Firecracker microVM with public HTTPS preview URLs and **the base image built straight from a Dockerfile** (`Template.build()`) — the only cloud provider that bakes from a Dockerfile rather than a one-time snapshot. No nested containers, no SSH; 1-hour platform session cap on Hobby. See §3c. |
 
 Switch backends per box: `agentbox create --provider daytona` (or `--provider

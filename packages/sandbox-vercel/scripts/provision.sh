@@ -9,8 +9,9 @@
 # Differences from the hetzner installer (packages/sandbox-hetzner/scripts/
 # install-box.sh), which this mirrors:
 #   - dnf, not apt (Amazon Linux 2023).
-#   - NO docker / dockerd / iptables — Vercel Sandbox blocks the namespace
-#     syscalls a container runtime needs, so DinD is impossible here.
+#   - docker is installed from the AL2023 repos (Vercel Sandbox now supports
+#     nested containers). dockerd is NOT auto-started by systemd; the cloud
+#     scaffold launches it via agentbox-dockerd-start on create/resume.
 #   - The `vscode` user is created without forcing uid 1000 (the Vercel default
 #     user may already hold it; there are no bind mounts so the exact uid is
 #     irrelevant — only ownership of /workspace + /home/vscode matters).
@@ -18,6 +19,7 @@
 # Required inputs (uploaded to /tmp before this runs):
 #   /tmp/agentbox-ctl                  -- prebuilt @agentbox/ctl bundle (cjs)
 #   /tmp/agentbox-vnc-start            -- VNC startup helper
+#   /tmp/agentbox-dockerd-start        -- in-box dockerd startup helper
 #   /tmp/agentbox-checkpoint-cleanup   -- pre-snapshot cleanup helper
 #   /tmp/agentbox-open                 -- in-box xdg-open shim
 #   /tmp/agentbox-gh-shim              -- in-box `gh` shim (routes to host gh)
@@ -104,6 +106,18 @@ chmod 755 /workspace
 chown vscode:vscode /workspace /run/agentbox /var/log/agentbox /var/lib/agentbox
 done_ "agentbox base dirs + /workspace ownership"
 
+step "docker engine (in-box DinD)"
+# Vercel Sandbox now supports nested containers. Install the engine + iptables
+# from the AL2023 repos; dockerd itself is launched by the cloud scaffold via
+# agentbox-dockerd-start (NOT systemd), so the agentbox path owns its lifecycle.
+# No /etc/docker/daemon.json here — agentbox-dockerd-start rewrites it with the
+# resolved storage-driver on every start.
+dnf install -y -q --allowerasing docker iptables
+groupadd -f docker
+usermod -aG docker vscode
+systemctl disable --now docker.service docker.socket 2>/dev/null || true
+done_ "docker engine (in-box DinD)"
+
 step "node setcap (bind <1024 without root)"
 # The cloud WebProxy binds port 80; grant node the capability so it needn't run
 # as root. Best-effort — if setcap is unavailable the WebProxy can still be
@@ -134,8 +148,9 @@ step "agentbox-ctl install"
 install -m 0755 /tmp/agentbox-ctl /usr/local/bin/agentbox-ctl
 done_ "agentbox-ctl install"
 
-step "baked helper scripts (vnc / cleanup / xdg-open)"
+step "baked helper scripts (vnc / dockerd / cleanup / xdg-open)"
 install -m 0755 /tmp/agentbox-vnc-start          /usr/local/bin/agentbox-vnc-start
+install -m 0755 /tmp/agentbox-dockerd-start      /usr/local/bin/agentbox-dockerd-start
 install -m 0755 /tmp/agentbox-checkpoint-cleanup /usr/local/bin/agentbox-checkpoint-cleanup
 install -m 0755 /tmp/agentbox-open               /usr/local/bin/agentbox-open
 ln -sf /usr/local/bin/agentbox-open /usr/local/bin/xdg-open
@@ -143,7 +158,7 @@ ln -sf /usr/local/bin/agentbox-open /usr/local/bin/xdg-open
 # Installing them here would put the relay-routing `git` on PATH ahead of
 # /usr/bin/git and route provision.sh's own noVNC `git clone` through a relay
 # that doesn't exist during the bake.
-done_ "baked helper scripts (vnc / cleanup / xdg-open)"
+done_ "baked helper scripts (vnc / dockerd / cleanup / xdg-open)"
 
 step "baked config files (claude / codex / setup guide / tmux.conf)"
 install -m 0644 /tmp/agentbox-custom-CLAUDE.md      /etc/claude-code/CLAUDE.md
@@ -328,7 +343,7 @@ install -m 0755 /tmp/agentbox-linear-shim /usr/local/bin/linear
 done_ "relay shims (gh + git + ntn + linear)"
 
 step "trim /tmp/agentbox-*"
-rm -f /tmp/agentbox-ctl /tmp/agentbox-vnc-start \
+rm -f /tmp/agentbox-ctl /tmp/agentbox-vnc-start /tmp/agentbox-dockerd-start \
       /tmp/agentbox-checkpoint-cleanup /tmp/agentbox-open \
       /tmp/agentbox-gh-shim /tmp/agentbox-git-shim /tmp/agentbox-ntn-shim \
       /tmp/agentbox-linear-shim \
