@@ -16,8 +16,8 @@
 
 import { execa } from 'execa';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { isAbsolute, join, resolve } from 'node:path';
 import type { CloudBackend, CloudHandle } from '@agentbox/core';
 import { findBox, hostOpenCommand, readState } from '@agentbox/sandbox-core';
 import {
@@ -644,6 +644,34 @@ async function lookupCloudBox(boxId: string): Promise<BoxLookup> {
 }
 
 /**
+ * The box's registered host workspace (the host dir that mirrors `/workspace`),
+ * used as the base for resolving relative host paths in `cp`/`download` RPCs.
+ * Returns `undefined` when the box isn't in state. Shared by the docker
+ * (server.ts) and cloud handlers so a relative host path never silently
+ * resolves against the long-lived relay daemon's CWD (which is arbitrary — one
+ * relay serves many boxes/projects).
+ */
+export async function boxWorkspacePath(boxId: string): Promise<string | undefined> {
+  const state = await readState();
+  const hit = findBox(boxId, state);
+  return hit.kind === 'ok' ? hit.box.workspacePath : undefined;
+}
+
+/**
+ * Resolve a host path supplied by an in-box agent to an absolute host path.
+ * Absolute paths pass through; a leading `~`/`~/` expands against the host
+ * home; anything else is relative to the box's host `workspacePath` (NOT the
+ * relay daemon's CWD). When `workspacePath` is unknown, relative paths fall
+ * back to `path.resolve` (process CWD) — same as the old behaviour.
+ */
+export function resolveHostPath(workspacePath: string | undefined, hostPath: string): string {
+  if (isAbsolute(hostPath)) return hostPath;
+  if (hostPath === '~') return homedir();
+  if (hostPath.startsWith('~/')) return join(homedir(), hostPath.slice(2));
+  return workspacePath ? resolve(workspacePath, hostPath) : resolve(hostPath);
+}
+
+/**
  * Cloud cp helpers live in `@agentbox/sandbox-cloud` — same dynamic-import
  * trick as `resolveCloudBackend` keeps the relay bundle from eagerly pulling
  * the cloud package (and its sandbox-docker transitive). Imports the helpers
@@ -708,6 +736,11 @@ async function runCpRpc(
     };
   }
   const direction = action.method === 'cp.toHost' ? 'box -> host' : 'host -> box';
+  // Resolve the host path against THIS box's workspace before prompting so the
+  // user sees the real destination and a relative path doesn't land under the
+  // relay daemon's CWD (which belongs to whichever project started the relay).
+  const lookup = await lookupCloudBox(deps.boxId);
+  const hostAbs = resolveHostPath(lookup.workspacePath, params.hostPath);
   // Same askPrompt UX as docker's /rpc handler — keeps the in-box agent from
   // pulling host files / scattering box files without explicit consent.
   if (deps.prompts && deps.subscribers) {
@@ -716,27 +749,26 @@ async function runCpRpc(
       message: `Allow cp (${direction}) on ${deps.boxName ?? deps.boxId}?`,
       detail:
         action.method === 'cp.toHost'
-          ? `${params.boxPath} -> ${params.hostPath}`
-          : `${params.hostPath} -> ${params.boxPath}`,
+          ? `${params.boxPath} -> ${hostAbs}`
+          : `${hostAbs} -> ${params.boxPath}`,
       defaultAnswer: 'n',
       context: {
         command: action.method,
-        argv: [params.boxPath, params.hostPath],
+        argv: [params.boxPath, hostAbs],
       },
     });
     if (verdict.answer !== 'y') {
       return { exitCode: 10, stdout: '', stderr: 'denied by user\n' };
     }
   }
-  const lookup = await lookupCloudBox(deps.boxId);
   const backend = await resolveCloudBackend(deps.backendName);
   const handle: CloudHandle = { sandboxId: lookup.cloudSandboxId };
   const cp = await loadCloudCp();
   try {
     const result =
       action.method === 'cp.toHost'
-        ? await cp.downloadFromCloudBox(backend, handle, params.boxPath, params.hostPath)
-        : await cp.uploadToCloudBox(backend, handle, params.hostPath, params.boxPath);
+        ? await cp.downloadFromCloudBox(backend, handle, params.boxPath, hostAbs)
+        : await cp.uploadToCloudBox(backend, handle, hostAbs, params.boxPath);
     return { exitCode: 0, stdout: `${result.finalPath}\n`, stderr: '' };
   } catch (err) {
     return {
@@ -844,9 +876,10 @@ async function runDownloadRpc(
   const handle: CloudHandle = { sandboxId: lookup.cloudSandboxId };
   const cp = await loadCloudCp();
   // params.hostPath is reserved in the wire shape; v1 lands /workspace under
-  // box.workspacePath (the host project root), matching docker's default.
+  // box.workspacePath (the host project root), matching docker's default. A
+  // relative override resolves against the box workspace, not the relay's CWD.
   const hostDst = typeof params.hostPath === 'string' && params.hostPath.length > 0
-    ? params.hostPath
+    ? resolveHostPath(lookup.workspacePath, params.hostPath)
     : lookup.workspacePath;
   try {
     const result = await cp.pullCloudDirContents(backend, handle, '/workspace', hostDst);

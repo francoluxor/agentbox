@@ -41,8 +41,10 @@ function buildCpParams(boxPath: string, hostPath: string, opts: CpCliOptions): C
  * with `denied by user` on stderr.
  *
  * `<boxPath>` is a path inside this container (no `<name>:` prefix — the
- * relay knows which box we are from the bearer token). `<hostPath>` is an
- * absolute or `~`-anchored path on the host.
+ * relay knows which box we are from the bearer token). `<hostPath>` may be
+ * absolute, `~`-anchored, or relative — a relative path resolves against this
+ * box's host workspace (the host dir that mirrors `/workspace`), not wherever
+ * the host relay happens to be running.
  *
  * Direction labels chosen for clarity at the agent's call site:
  *   `toHost`   = box -> host (push out)
@@ -54,7 +56,7 @@ export const cpCommand = new Command('cp')
     new Command('toHost')
       .description('Copy box:<boxPath> -> host:<hostPath>')
       .argument('<boxPath>', 'source path inside the container')
-      .argument('<hostPath>', 'destination path on the host')
+      .argument('<hostPath>', 'destination on the host (relative resolves against the box workspace)')
       .option('--no-recursive', 'reserved; current implementation is always recursive (docker cp -a)')
       .option('--exclude <pattern>', 'exclude paths matching <pattern> (repeatable)', collectExclude, [])
       .option('--no-default-excludes', 'keep heavy dirs the host drops by default (.git, node_modules, ...)')
@@ -69,7 +71,7 @@ export const cpCommand = new Command('cp')
   .addCommand(
     new Command('fromHost')
       .description('Copy host:<hostPath> -> box:<boxPath>')
-      .argument('<hostPath>', 'source path on the host')
+      .argument('<hostPath>', 'source on the host (relative resolves against the box workspace)')
       .argument('<boxPath>', 'destination path inside the container')
       .option('--no-recursive', 'reserved; current implementation is always recursive (docker cp -a)')
       .option('--exclude <pattern>', 'exclude paths matching <pattern> (repeatable)', collectExclude, [])

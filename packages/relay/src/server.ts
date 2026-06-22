@@ -1,6 +1,11 @@
 import { spawn } from 'node:child_process';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { executeCloudAction, refreshCloudPreviewUrl } from './host-actions.js';
+import {
+  boxWorkspacePath,
+  executeCloudAction,
+  refreshCloudPreviewUrl,
+  resolveHostPath,
+} from './host-actions.js';
 import { HostActionQueue } from './host-action-queue.js';
 import { BoxNotices } from './notices.js';
 import { hostOpenCommand } from '@agentbox/sandbox-core';
@@ -479,10 +484,15 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
           return;
         }
         const direction = body.method === 'cp.toHost' ? 'box -> host' : 'host -> box';
+        // Resolve the host path against THIS box's workspace so a relative path
+        // doesn't land under the relay daemon's CWD (whichever project started
+        // the relay), and so the consent prompt shows the real destination.
+        const workspacePath = await boxWorkspacePath(reg.boxId);
+        const hostAbs = resolveHostPath(workspacePath, params.hostPath);
         const pathDetail =
           body.method === 'cp.toHost'
-            ? `${params.boxPath} -> ${params.hostPath}`
-            : `${params.hostPath} -> ${params.boxPath}`;
+            ? `${params.boxPath} -> ${hostAbs}`
+            : `${hostAbs} -> ${params.boxPath}`;
         const detailParts = [pathDetail];
         if (params.exclude && params.exclude.length > 0) {
           detailParts.push(`exclude: ${params.exclude.join(', ')}`);
@@ -496,14 +506,17 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
           defaultAnswer: 'n',
           context: {
             command: body.method,
-            argv: [params.boxPath, params.hostPath],
+            argv: [params.boxPath, hostAbs],
           },
         });
         if (verdict.answer !== 'y') {
           send(res, 500, { exitCode: 10, stdout: '', stderr: 'denied by user\n' });
           return;
         }
-        const result = await handleCpRpc(reg, body.method, params);
+        const result = await handleCpRpc(reg, body.method, params, {
+          hostPath: hostAbs,
+          cwd: workspacePath,
+        });
         const status = result.exitCode === 0 ? 200 : 500;
         send(res, status, result);
         return;
@@ -1481,6 +1494,7 @@ async function handleCpRpc(
   reg: BoxRegistration,
   method: 'cp.toHost' | 'cp.fromHost',
   params: CpRpcParams,
+  opts: { hostPath: string; cwd?: string },
 ): Promise<GitRpcResult> {
   const entry = process.env.AGENTBOX_CLI_ENTRY;
   if (!entry) {
@@ -1491,7 +1505,9 @@ async function handleCpRpc(
     };
   }
   // `agentbox cp` is positional: <src> [dst]. Direction is encoded by which
-  // arg carries the `<boxName>:` prefix.
+  // arg carries the `<boxName>:` prefix. `opts.hostPath` is already resolved to
+  // an absolute host path (against the box workspace); `opts.cwd` (the box
+  // workspace) makes the host CLI's project-config lookup box-correct too.
   const boxRef = `${reg.name}:${params.boxPath}`;
   const flags: string[] = [];
   for (const pat of params.exclude ?? []) flags.push('--exclude', pat);
@@ -1499,9 +1515,9 @@ async function handleCpRpc(
   if (params.yes) flags.push('--yes');
   const argv =
     method === 'cp.toHost'
-      ? [process.execPath, entry, 'cp', boxRef, params.hostPath, ...flags]
-      : [process.execPath, entry, 'cp', params.hostPath, boxRef, ...flags];
-  return runHostCommand(argv, CP_RPC_TIMEOUT_MS);
+      ? [process.execPath, entry, 'cp', boxRef, opts.hostPath, ...flags]
+      : [process.execPath, entry, 'cp', opts.hostPath, boxRef, ...flags];
+  return runHostCommand(argv, CP_RPC_TIMEOUT_MS, opts.cwd);
 }
 
 /**
@@ -1530,7 +1546,10 @@ async function handleDownloadRpc(
   // are subcommands of `download`.
   if (kind !== 'workspace') argv.push(kind);
   argv.push(reg.name, '-y');
-  return runHostCommand(argv, DOWNLOAD_RPC_TIMEOUT_MS);
+  // Run from the box's host workspace so the host CLI's project-config lookup
+  // is box-correct (the destination already defaults to box.workspacePath).
+  const cwd = await boxWorkspacePath(reg.boxId);
+  return runHostCommand(argv, DOWNLOAD_RPC_TIMEOUT_MS, cwd);
 }
 
 /**
@@ -1579,6 +1598,7 @@ export function isOpenableUrl(value: string): boolean {
 function runHostCommand(
   argv: string[],
   timeoutMs: number = GIT_RPC_TIMEOUT_MS,
+  cwd?: string,
 ): Promise<GitRpcResult> {
   return new Promise<GitRpcResult>((resolve) => {
     const [cmd, ...rest] = argv;
@@ -1589,6 +1609,10 @@ function runHostCommand(
     const child = spawn(cmd, rest, {
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
+      // Default to the relay daemon's CWD when unset (legacy behaviour); callers
+      // that know the box pass its workspace so relative host paths + project
+      // config resolve against the box, not whatever dir launched the relay.
+      ...(cwd ? { cwd } : {}),
     });
     let stdout = '';
     let stderr = '';
