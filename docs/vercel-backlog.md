@@ -527,3 +527,27 @@ agentbox/<box>` shows the commit, then try `agentbox-ctl git pull` and a `gh pr`
     public-URL clouds (vercel/daytona/e2b); docker/hetzner keep `<name>.localhost`.
     Unit-tested (`deriveCloudBoxHost`, `launchCloudCtlDaemon` script). See
     `docs/cloud-providers.md` §1.0.1.
+21. [x] **Boxes from a checkpoint were frozen on the source box's branch.** Done —
+    cloud create restored a snapshot and **skipped** workspace seeding entirely, so
+    every checkpoint-derived box reused the snapshot's `/workspace/.git` verbatim:
+    same `agentbox/<source-box>` branch, none of the new box's uncommitted/untracked
+    host state. Now `seedCloudWorkspace` gains an **overlay** mode used on the
+    snapshot path (`overlay: Boolean(snapshotName)`): it keeps the snapshot's
+    gitignored warm tree (node_modules, build caches), moves the box onto a fresh
+    `agentbox/<new-box>` branch at the host base ref (`git checkout -f -B` + `git
+    reset --hard`, dropping the checkpoint's own commits — matching docker), and
+    replays the host stash + untracked carry-over. **Transport is incremental:**
+    ships only the commits the checkpoint lacks (`checkpointTip..hostTarget`) as a
+    git bundle fetched into the existing `.git`, with a full-clone `.git`-swap
+    fallback when the box diverged / the tip is unknown. **Carry-over conflicts are
+    box-wins + reported** (host change skipped, never left unmerged) via
+    `CreatedBox.resync` → the existing `buildResyncWarning` injects the same
+    *"conflicting host changes SKIPPED … `agentbox-ctl reload`"* prompt into
+    claude/codex/opencode that docker does. The cloud analogue of docker's
+    `regenerateRestoredWorktrees`+`resyncWorkspaceFromHost`. Generic across the
+    cloud providers (the shared `cloud-provider.ts` create path); non-git
+    workspaces keep the snapshot tree as-is. Verified live on Vercel: a box from a
+    checkpoint landed on a fresh `agentbox/<box>` branch with the host's new commit
+    (delta shipped it), carried a host untracked file created after the checkpoint,
+    and kept the snapshot's warm root marker. See `docs/cloud-create-flow.md` +
+    `docs/create-and-checkpoints.md`.

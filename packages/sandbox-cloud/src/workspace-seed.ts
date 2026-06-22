@@ -2,7 +2,7 @@ import { execa } from 'execa';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { CloudBackend, CloudHandle } from '@agentbox/core';
+import type { CloudBackend, CloudHandle, ResyncResult } from '@agentbox/core';
 import { detectGitRepos } from '@agentbox/sandbox-core';
 import { bashScript, quoteShellArgv } from './shell.js';
 
@@ -57,6 +57,17 @@ export interface SeedCloudWorkspaceArgs {
    * `useBranch`.
    */
   useBranch?: string;
+  /**
+   * Checkpoint-restore overlay mode. When true, `/workspace` already exists
+   * (restored from a snapshot, carrying the checkpoint's gitignored warm
+   * artifacts — node_modules, build caches, …). Instead of wiping it, swap
+   * only `<repo>/.git` for a fresh host clone, move onto a fresh per-box
+   * branch at the host's current base ref (`git checkout -f -B` + `git reset
+   * --hard`), and overlay the host's uncommitted/untracked carry-over — the
+   * gitignored warm state is left untouched. Non-git workspaces are left as
+   * the snapshot baked them (no branch / carry-over concept).
+   */
+  overlay?: boolean;
   onLog?: (line: string) => void;
 }
 
@@ -65,6 +76,11 @@ export interface SeedCloudWorkspaceResult {
   fromGit: boolean;
   /** Resolved branch (matches `branch` arg). */
   branch: string;
+  /**
+   * Conflicts from an overlay (checkpoint-restore) carry-over, in the shape the
+   * CLI's `buildResyncWarning` consumes. Absent on a fresh (non-overlay) seed.
+   */
+  resync?: ResyncResult;
 }
 
 const WORKSPACE_DIR_DEFAULT = '/workspace';
@@ -78,13 +94,26 @@ export async function seedCloudWorkspace(
   const root = repos.find((r) => r.kind === 'root');
   const nested = repos.filter((r) => r.kind === 'nested');
 
+  if (!root && args.overlay) {
+    // Checkpoint restore of a non-git workspace: there's no branch to fork and
+    // no git carry-over to apply, and overlaying a tar would clobber the warm
+    // snapshot tree. Keep /workspace exactly as the snapshot baked it.
+    log('checkpoint restore: non-git workspace — keeping snapshot /workspace as-is');
+    return { fromGit: false, branch: args.branch };
+  }
+
   if (root) {
     log(
-      nested.length > 0
-        ? `seeding /workspace from shallow git clone (+${String(nested.length)} nested repo${nested.length === 1 ? '' : 's'})`
-        : 'seeding /workspace from shallow git clone',
+      args.overlay
+        ? nested.length > 0
+          ? `checkpoint restore: re-branching /workspace + ${String(nested.length)} nested repo${nested.length === 1 ? '' : 's'} (warm artifacts kept)`
+          : 'checkpoint restore: re-branching /workspace onto a fresh per-box branch (warm artifacts kept)'
+        : nested.length > 0
+          ? `seeding /workspace from shallow git clone (+${String(nested.length)} nested repo${nested.length === 1 ? '' : 's'})`
+          : 'seeding /workspace from shallow git clone',
     );
-    await seedFromGitClone({
+    const resyncRepos: ResyncResult['repos'] = [];
+    const rootConflicts = await reseedRepo({
       backend: args.backend,
       handle: args.handle,
       hostRepo: root.hostMainRepo,
@@ -93,8 +122,10 @@ export async function seedCloudWorkspace(
       bundleDepth: args.bundleDepth,
       fromBranch: args.fromBranch,
       useBranch: args.useBranch,
+      overlay: args.overlay,
       onLog: log,
     });
+    if (args.overlay) resyncRepos.push({ containerPath: workspaceDir, ...rootConflicts });
     // Each nested repo gets its own clone at /workspace/<rel>. We do these
     // after the root clone because the root extract wipes /workspace; a
     // nested dir created during the root checkout (if tracked) would be
@@ -102,17 +133,27 @@ export async function seedCloudWorkspace(
     for (const r of nested) {
       const sub = `${workspaceDir}/${r.relPathFromWorkspace}`;
       log(`seeding nested repo ${r.relPathFromWorkspace} from shallow git clone`);
-      await seedFromGitClone({
+      const nestedConflicts = await reseedRepo({
         backend: args.backend,
         handle: args.handle,
         hostRepo: r.hostMainRepo,
         branch: args.branch,
         workspaceDir: sub,
         bundleDepth: args.bundleDepth,
+        overlay: args.overlay,
         onLog: log,
       });
+      if (args.overlay) resyncRepos.push({ containerPath: sub, ...nestedConflicts });
     }
-    return { fromGit: true, branch: args.branch };
+    const resync: ResyncResult | undefined = args.overlay
+      ? {
+          repos: resyncRepos,
+          hadConflicts: resyncRepos.some(
+            (r) => r.mergeConflicts.length > 0 || r.overlaySkipped.length > 0,
+          ),
+        }
+      : undefined;
+    return { fromGit: true, branch: args.branch, resync };
   }
 
   log('seeding /workspace from workspace tarball (no git detected)');
@@ -137,6 +178,8 @@ interface SeedFromGitCloneArgs {
   fromBranch?: string;
   /** See `SeedCloudWorkspaceArgs.useBranch`. Root clone only. */
   useBranch?: string;
+  /** See `SeedCloudWorkspaceArgs.overlay`. Swap only `.git`, keep the tree. */
+  overlay?: boolean;
   onLog?: (line: string) => void;
 }
 
@@ -149,6 +192,94 @@ interface SeedFromGitCloneArgs {
 const STASH_CARRYOVER_REF = 'refs/agentbox-carryover/stash';
 const REMOTE_UNTRACKED_TAR = '/tmp/agentbox-carryover-untracked.tar.gz';
 
+// In-box markers the carry-over script prints to stdout so the host can build a
+// `ResyncResult`. On a checkpoint restore the box wins every conflict (the host
+// change is skipped, never left unmerged) and the skipped path is reported here
+// — mirrors docker's `resyncWorkspaceFromHost` so the CLI injects the same
+// "conflicting host changes SKIPPED … agentbox-ctl reload" prompt to the agent.
+const MERGE_CONFLICT_MARKER = '__AGENTBOX_MERGE_CONFLICT__:';
+const OVERLAY_SKIP_MARKER = '__AGENTBOX_OVERLAY_SKIP__:';
+
+/** Per-repo conflict outcome of an overlay (checkpoint-restore) carry-over. */
+export interface RepoSeedConflicts {
+  mergeConflicts: string[];
+  overlaySkipped: string[];
+}
+
+export function parseSeedConflicts(stdout: string): RepoSeedConflicts {
+  const merge = new Set<string>();
+  const overlay = new Set<string>();
+  for (const raw of stdout.split('\n')) {
+    const line = raw.trim();
+    if (line.startsWith(MERGE_CONFLICT_MARKER)) {
+      const p = line.slice(MERGE_CONFLICT_MARKER.length).trim();
+      if (p) merge.add(p);
+    } else if (line.startsWith(OVERLAY_SKIP_MARKER)) {
+      const p = line.slice(OVERLAY_SKIP_MARKER.length).trim();
+      if (p) overlay.add(p);
+    }
+  }
+  return { mergeConflicts: [...merge], overlaySkipped: [...overlay] };
+}
+
+/**
+ * In-box carry-over steps: replay the host's uncommitted (stash) + untracked
+ * state onto the freshly checked-out tree. `detectConflicts` (checkpoint
+ * restore) makes every collision resolve box-wins and emit a marker:
+ *   - stash apply conflict → `git checkout --ours` the unmerged paths (keep the
+ *     box's version), report them as MERGE_CONFLICT.
+ *   - untracked file already present in the box → skip it (`tar --skip-old-files`)
+ *     and report it as OVERLAY_SKIP.
+ * Fresh seed (no `detectConflicts`) checks out onto an empty tree, so the simple
+ * apply/extract can never collide. Pipes (not `< <(...)`) — the box has no
+ * /dev/fd (Vercel/Firecracker). All steps are `-e`-safe.
+ */
+export function buildCarryOverSteps(opts: {
+  workspaceDir: string;
+  hasStash: boolean;
+  hasUntracked: boolean;
+  detectConflicts: boolean;
+}): string[] {
+  const wd = quoteShellArgv([opts.workspaceDir]);
+  const stashRef = quoteShellArgv(['refs/remotes/origin/agentbox-carryover/stash']);
+  const untracked = quoteShellArgv([REMOTE_UNTRACKED_TAR]);
+  const steps: string[] = [];
+  if (opts.hasStash) {
+    steps.push(
+      opts.detectConflicts
+        ? `if git -C ${wd} rev-parse --verify ${stashRef} >/dev/null 2>&1; then ` +
+            `if ! git -C ${wd} stash apply ${stashRef} >/dev/null 2>&1; then ` +
+            `git -C ${wd} diff --name-only --diff-filter=U | while IFS= read -r p; do [ -n "$p" ] && echo "${MERGE_CONFLICT_MARKER}$p"; done || true ; ` +
+            `git -C ${wd} checkout --ours -- . >/dev/null 2>&1 || true ; ` +
+            `git -C ${wd} add -A >/dev/null 2>&1 || true ; ` +
+            `fi ; ` +
+            `git -C ${wd} update-ref -d ${stashRef} || true ; ` +
+            `fi`
+        : `if git -C ${wd} rev-parse --verify ${stashRef} >/dev/null 2>&1; then ` +
+            `git -C ${wd} stash apply ${stashRef} || ` +
+            `echo "agentbox: stash apply soft-failed; carry-over may be incomplete" >&2 ; ` +
+            `git -C ${wd} update-ref -d ${stashRef} || true ; ` +
+            `fi`,
+    );
+  }
+  if (opts.hasUntracked) {
+    steps.push(
+      opts.detectConflicts
+        ? `if [ -f ${untracked} ]; then ` +
+            // Report (but don't clobber) untracked files that already exist in
+            // the box tree, then extract only the new ones (--skip-old-files).
+            `tar -tzf ${untracked} | while IFS= read -r p; do case "$p" in ''|*/) continue ;; esac; if [ -e ${wd}/"$p" ]; then echo "${OVERLAY_SKIP_MARKER}$p"; fi; done || true ; ` +
+            `tar -C ${wd} --skip-old-files -xzf ${untracked} || true ; ` +
+            `rm -f ${untracked} ; ` +
+            `fi`
+        : `if [ -f ${untracked} ]; then ` +
+            `tar -C ${wd} -xzf ${untracked} && rm -f ${untracked} ; ` +
+            `fi`,
+    );
+  }
+  return steps;
+}
+
 /**
  * Adaptive cap on the host-side shallow clone. Default keeps cold cloud
  * creates fast on big monorepos: clone the last 200 commits; if the tarred
@@ -159,8 +290,27 @@ const DEFAULT_BUNDLE_DEPTH = 200;
 const LARGE_BUNDLE_DEPTH = 100;
 const LARGE_BUNDLE_THRESHOLD_BYTES = 20 * 1024 * 1024;
 
-async function seedFromGitClone(args: SeedFromGitCloneArgs): Promise<void> {
+/**
+ * Per-repo seed dispatcher. Fresh create → full shallow clone. Checkpoint
+ * restore (`overlay`) → try the incremental delta-bundle path (ship only the
+ * host commits the checkpoint's `.git` is missing), falling back to the
+ * full-clone overlay (`.git` swap) when the box diverged / the delta isn't
+ * computable. Returns the carry-over conflicts (empty for a fresh seed).
+ */
+async function reseedRepo(args: SeedFromGitCloneArgs): Promise<RepoSeedConflicts> {
+  if (args.overlay) {
+    const delta = await tryReseedRepoDelta(args);
+    if (delta) return delta;
+    (args.onLog ?? (() => {}))(
+      `checkpoint restore: ${args.workspaceDir}: delta not usable, falling back to full clone`,
+    );
+  }
+  return seedFromGitClone(args);
+}
+
+async function seedFromGitClone(args: SeedFromGitCloneArgs): Promise<RepoSeedConflicts> {
   const log = args.onLog ?? (() => {});
+  let conflicts: RepoSeedConflicts = { mergeConflicts: [], overlaySkipped: [] };
   const stage = await mkdtemp(join(tmpdir(), 'agentbox-clone-'));
   const cloneDir = join(stage, 'clone');
   const tarPath = join(stage, 'workspace.tar.gz');
@@ -257,23 +407,44 @@ async function seedFromGitClone(args: SeedFromGitCloneArgs): Promise<void> {
     // local changes against a commit outside the depth window). Soft-fail
     // is better than blocking provision; any unapplied changes can be
     // re-derived from the host as a fallback.
-    const carryOverSteps: string[] = stashSha
+    const carryOverSteps = buildCarryOverSteps({
+      workspaceDir: args.workspaceDir,
+      hasStash: Boolean(stashSha),
+      hasUntracked: untrackedSize > 0,
+      // Conflict detection (box-wins + markers) only matters on a checkpoint
+      // restore, where /workspace already has the snapshot's files to collide
+      // with. A fresh seed checks out onto an empty tree — nothing to conflict.
+      detectConflicts: Boolean(args.overlay),
+    });
+    // Overlay (checkpoint restore) keeps the snapshot's working tree (its
+    // gitignored warm artifacts are the checkpoint's value) and swaps only
+    // `<dir>/.git`; the force-checkout + `reset --hard` then move the box onto
+    // a fresh per-box branch at the host base ref, dropping the source box's
+    // stale TRACKED deviations while leaving untracked/ignored files intact.
+    // Fresh seed wipes the dir and materializes the tree from scratch.
+    const gitDir = `${args.workspaceDir}/.git`;
+    const prepSteps = args.overlay
+      ? [`$SUDO rm -rf ${quoteShellArgv([gitDir])}`]
+      : [
+          `$SUDO rm -rf ${quoteShellArgv([args.workspaceDir])}`,
+          `$SUDO mkdir -p ${quoteShellArgv([args.workspaceDir])}`,
+          `$SUDO chown "$(id -un):$(id -gn)" ${quoteShellArgv([args.workspaceDir])}`,
+        ];
+    const checkoutSteps = args.overlay
       ? [
-          `if git -C ${quoteShellArgv([args.workspaceDir])} rev-parse --verify ${quoteShellArgv([`refs/remotes/origin/agentbox-carryover/stash`])} >/dev/null 2>&1; then ` +
-            `git -C ${quoteShellArgv([args.workspaceDir])} stash apply ${quoteShellArgv([`refs/remotes/origin/agentbox-carryover/stash`])} || ` +
-            `echo "agentbox: stash apply soft-failed; carry-over may be incomplete" >&2 ; ` +
-            `git -C ${quoteShellArgv([args.workspaceDir])} update-ref -d ${quoteShellArgv([`refs/remotes/origin/agentbox-carryover/stash`])} || true ; ` +
-            `fi`,
+          args.useBranch
+            ? `git -C ${quoteShellArgv([args.workspaceDir])} checkout -f ${quoteShellArgv([args.branch])}`
+            : `git -C ${quoteShellArgv([args.workspaceDir])} checkout -f -B ${quoteShellArgv([args.branch])}`,
+          `git -C ${quoteShellArgv([args.workspaceDir])} reset --hard HEAD`,
         ]
-      : [];
-    if (untrackedSize > 0) {
-      carryOverSteps.push(
-        `if [ -f ${quoteShellArgv([REMOTE_UNTRACKED_TAR])} ]; then ` +
-          `tar -C ${quoteShellArgv([args.workspaceDir])} -xzf ${quoteShellArgv([REMOTE_UNTRACKED_TAR])} && ` +
-          `rm -f ${quoteShellArgv([REMOTE_UNTRACKED_TAR])} ; ` +
-          `fi`,
-      );
-    }
+      : [
+          // reuse: the clone already landed on `<branch>` (pinned via
+          // `--branch`); a plain checkout materializes the working tree without
+          // resetting the ref. fork: `-B` (re)points `<branch>` at clone HEAD.
+          args.useBranch
+            ? `git -C ${quoteShellArgv([args.workspaceDir])} checkout ${quoteShellArgv([args.branch])}`
+            : `git -C ${quoteShellArgv([args.workspaceDir])} checkout -B ${quoteShellArgv([args.branch])}`,
+        ];
     const script = [
       `set -euo pipefail`,
       // Move out of any cwd we might inherit from Daytona's executeCommand
@@ -283,20 +454,13 @@ async function seedFromGitClone(args: SeedFromGitCloneArgs): Promise<void> {
       // with "Unable to read current working directory".
       `cd /tmp`,
       SUDO,
-      // rm -rf only the directory we're about to extract into — for nested
-      // repos this is just `/workspace/<rel>`, so the root clone (already
-      // at `/workspace`) is preserved.
-      `$SUDO rm -rf ${quoteShellArgv([args.workspaceDir])}`,
-      `$SUDO mkdir -p ${quoteShellArgv([args.workspaceDir])}`,
-      `$SUDO chown "$(id -un):$(id -gn)" ${quoteShellArgv([args.workspaceDir])}`,
+      // Fresh: rm -rf only the dir we extract into (for nested repos that's
+      // `/workspace/<rel>`, so the root clone is preserved). Overlay: rm only
+      // `<dir>/.git`, preserving the warm working tree.
+      ...prepSteps,
       `tar -C ${quoteShellArgv([args.workspaceDir])} -xzf ${quoteShellArgv([remoteTar])}`,
       setOrigin,
-      // reuse: the clone already landed on `<branch>` (pinned via `--branch`);
-      // a plain checkout materializes the working tree without resetting the
-      // ref. fork: `-B` (re)points `<branch>` at the clone HEAD.
-      args.useBranch
-        ? `git -C ${quoteShellArgv([args.workspaceDir])} checkout ${quoteShellArgv([args.branch])}`
-        : `git -C ${quoteShellArgv([args.workspaceDir])} checkout -B ${quoteShellArgv([args.branch])}`,
+      ...checkoutSteps,
       ...carryOverSteps,
       `rm -f ${quoteShellArgv([remoteTar])}`,
     ].join('\n');
@@ -307,6 +471,7 @@ async function seedFromGitClone(args: SeedFromGitCloneArgs): Promise<void> {
     if (r.exitCode !== 0) {
       throw new Error(`workspace seed (clone) failed: ${r.stderr || r.stdout}`);
     }
+    if (args.overlay) conflicts = parseSeedConflicts(r.stdout);
   } finally {
     // Defensive cleanup of the temp stash ref on host. If we threw between
     // updates, the ref may still be present; delete it so re-runs don't
@@ -316,6 +481,163 @@ async function seedFromGitClone(args: SeedFromGitCloneArgs): Promise<void> {
         reject: false,
       });
     }
+    await rm(stage, { recursive: true, force: true });
+  }
+  return conflicts;
+}
+
+const DELTA_TARGET_REF = 'refs/agentbox-delta/target';
+const REMOTE_DELTA_BUNDLE = '/tmp/agentbox-delta.bundle';
+const SHA_RE = /^[0-9a-f]{40}$/;
+
+/**
+ * Incremental checkpoint-restore for one repo: instead of re-cloning the whole
+ * history, ship only the commits the snapshot's `/workspace/.git` is MISSING
+ * (`checkpointTip..hostTarget`) as a git bundle, fetch them into the existing
+ * `.git`, then move onto the fresh per-box branch at the host target and replay
+ * carry-over. Returns the carry-over conflicts on success, or `null` to signal
+ * the caller to fall back to a full-clone overlay (box diverged / tip unknown /
+ * bundle build failed). Drops the checkpoint's own tracked commits by resetting
+ * to the host target — matching docker.
+ */
+async function tryReseedRepoDelta(args: SeedFromGitCloneArgs): Promise<RepoSeedConflicts | null> {
+  const log = args.onLog ?? (() => {});
+  const wd = quoteShellArgv([args.workspaceDir]);
+
+  // 1. The commit the snapshot's /workspace/.git is parked at.
+  const tipRes = await args.backend.exec(
+    args.handle,
+    bashScript(`git -C ${wd} rev-parse HEAD 2>/dev/null || true`),
+  );
+  const checkpointTip = tipRes.stdout.trim();
+  if (!SHA_RE.test(checkpointTip)) return null; // not a git repo / detached weirdness
+
+  // 2. The host fork base (same ref the fresh seed forks from).
+  const baseRef = args.useBranch ?? args.fromBranch ?? 'HEAD';
+  const targetRes = await execa('git', ['-C', args.hostRepo, 'rev-parse', baseRef], {
+    reject: false,
+  });
+  const target = targetRes.stdout.trim();
+  if (targetRes.exitCode !== 0 || !SHA_RE.test(target)) return null;
+
+  // 3. Delta is only valid when the host still has checkpointTip AND it's an
+  //    ancestor of the target (otherwise the box diverged → full-clone reset).
+  const hasTip = await execa(
+    'git',
+    ['-C', args.hostRepo, 'cat-file', '-e', `${checkpointTip}^{commit}`],
+    { reject: false },
+  );
+  if (hasTip.exitCode !== 0) return null;
+  const ancestor = await execa(
+    'git',
+    ['-C', args.hostRepo, 'merge-base', '--is-ancestor', checkpointTip, target],
+    { reject: false },
+  );
+  if (ancestor.exitCode !== 0) return null;
+
+  const stage = await mkdtemp(join(tmpdir(), 'agentbox-delta-'));
+  const bundlePath = join(stage, 'delta.bundle');
+  const untrackedTarPath = join(stage, 'untracked.tar.gz');
+  // --use-branch reuses the committed tip; no host uncommitted carry-over.
+  const stashSha = args.useBranch ? null : await safeStashCreate(args.hostRepo);
+  const untrackedSize = args.useBranch
+    ? 0
+    : await maybeBuildUntrackedTar(args.hostRepo, untrackedTarPath);
+  let stashRefCreated = false;
+  try {
+    if (stashSha) {
+      const ref = await execa(
+        'git',
+        ['-C', args.hostRepo, 'update-ref', STASH_CARRYOVER_REF, stashSha],
+        { reject: false },
+      );
+      stashRefCreated = ref.exitCode === 0;
+    }
+    const needTarget = target !== checkpointTip;
+    if (needTarget) {
+      await execa('git', ['-C', args.hostRepo, 'update-ref', DELTA_TARGET_REF, target], {
+        reject: false,
+      });
+    }
+    // Bundle the refs the box lacks, excluding everything it already has
+    // (`^checkpointTip` — the box holds this, so the bundle's prerequisite is
+    // satisfiable even though its .git is shallow).
+    const bundleRefs: string[] = [];
+    if (needTarget) bundleRefs.push(DELTA_TARGET_REF);
+    if (stashRefCreated) bundleRefs.push(STASH_CARRYOVER_REF);
+    let haveBundle = false;
+    if (bundleRefs.length > 0) {
+      const b = await execa(
+        'git',
+        ['-C', args.hostRepo, 'bundle', 'create', bundlePath, ...bundleRefs, `^${checkpointTip}`],
+        { reject: false },
+      );
+      if (b.exitCode !== 0) return null; // unexpected → fall back to full clone
+      haveBundle = true;
+      await args.backend.uploadFile(args.handle, bundlePath, REMOTE_DELTA_BUNDLE);
+    }
+    if (untrackedSize > 0) {
+      await args.backend.uploadFile(args.handle, untrackedTarPath, REMOTE_UNTRACKED_TAR);
+    }
+    log(
+      needTarget
+        ? `checkpoint restore: ${args.workspaceDir}: delta bundle (${checkpointTip.slice(0, 8)}..${target.slice(0, 8)})`
+        : `checkpoint restore: ${args.workspaceDir}: no new host commits; re-branch + carry-over only`,
+    );
+
+    const remoteUrl = await readOriginUrl(args.hostRepo);
+    const setOrigin = remoteUrl
+      ? `git -C ${wd} remote set-url origin ${quoteShellArgv([remoteUrl])}`
+      : ': # no host origin to copy';
+    const fetchRefspecs: string[] = [];
+    if (needTarget) fetchRefspecs.push(`+${DELTA_TARGET_REF}:${DELTA_TARGET_REF}`);
+    if (stashRefCreated)
+      fetchRefspecs.push(`+${STASH_CARRYOVER_REF}:refs/remotes/origin/agentbox-carryover/stash`);
+    const fetchStep =
+      haveBundle && fetchRefspecs.length > 0
+        ? `git -C ${wd} fetch --no-tags ${quoteShellArgv([REMOTE_DELTA_BUNDLE])} ${fetchRefspecs.map((s) => quoteShellArgv([s])).join(' ')}`
+        : ': # no delta bundle to fetch';
+    // Box ends at the host target SHA (drop the checkpoint's own commits), on a
+    // fresh per-box branch; gitignored warm artifacts are untouched by checkout/reset.
+    const checkoutStep = args.useBranch
+      ? `git -C ${wd} checkout -f ${quoteShellArgv([args.branch])}`
+      : `git -C ${wd} checkout -f -B ${quoteShellArgv([args.branch])} ${quoteShellArgv([target])}`;
+    const carryOverSteps = buildCarryOverSteps({
+      workspaceDir: args.workspaceDir,
+      hasStash: Boolean(stashSha),
+      hasUntracked: untrackedSize > 0,
+      detectConflicts: true,
+    });
+    const SUDO = `if command -v sudo >/dev/null 2>&1; then SUDO='sudo -n'; else SUDO=''; fi`;
+    const script = [
+      `set -euo pipefail`,
+      `cd /tmp`,
+      SUDO,
+      fetchStep,
+      checkoutStep,
+      `git -C ${wd} reset --hard ${quoteShellArgv([target])}`,
+      setOrigin,
+      ...carryOverSteps,
+      `git -C ${wd} update-ref -d ${quoteShellArgv([DELTA_TARGET_REF])} || true`,
+      `rm -f ${quoteShellArgv([REMOTE_DELTA_BUNDLE])}`,
+    ].join('\n');
+    const r = await args.backend.exec(args.handle, bashScript(script));
+    if (r.exitCode !== 0) {
+      // The box's .git is intact (we only fetched + checked out); a clean
+      // fall-back to the full-clone overlay can still recover.
+      log(`checkpoint restore: ${args.workspaceDir}: delta apply failed, falling back: ${r.stderr || r.stdout}`);
+      return null;
+    }
+    return parseSeedConflicts(r.stdout);
+  } finally {
+    if (stashRefCreated) {
+      await execa('git', ['-C', args.hostRepo, 'update-ref', '-d', STASH_CARRYOVER_REF], {
+        reject: false,
+      });
+    }
+    await execa('git', ['-C', args.hostRepo, 'update-ref', '-d', DELTA_TARGET_REF], {
+      reject: false,
+    });
     await rm(stage, { recursive: true, force: true });
   }
 }

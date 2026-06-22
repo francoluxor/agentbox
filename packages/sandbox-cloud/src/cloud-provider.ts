@@ -646,24 +646,33 @@ export function createCloudProvider(
       }
 
       try {
-        if (snapshotName) {
-          // Snapshot already carries /workspace (captured by the source box's
-          // `agentbox checkpoint create`). Re-seeding would clobber the
-          // user's setup state. Match Docker's `applyCheckpointRef` behavior.
-          log('skipping workspace seed — snapshot already contains /workspace');
-        } else {
-          await seedCloudWorkspace({
-            backend,
-            handle,
-            workspacePath: req.workspacePath,
-            branch,
-            workspaceDir: CLOUD_WORKSPACE_DIR,
-            bundleDepth: req.bundleDepth,
-            fromBranch: req.fromBranch,
-            useBranch: req.useBranch,
-            onLog: log,
-          });
-        }
+        // The snapshot carries /workspace from the SOURCE box — including its
+        // (now stale) per-box branch and none of this box's uncommitted work.
+        // Booting from it verbatim would leave every checkpoint-derived box on
+        // the same frozen branch with the wrong files. So we re-seed in OVERLAY
+        // mode: keep the snapshot's gitignored warm artifacts (node_modules,
+        // build caches — the checkpoint's value), but swap `.git` for a fresh
+        // host clone, move onto this box's fresh `agentbox/<box>` branch at the
+        // host base ref, and apply the host's uncommitted/untracked carry-over.
+        // Mirrors docker's `regenerateRestoredWorktrees` + `resyncWorkspaceFromHost`.
+        const seedResult = await seedCloudWorkspace({
+          backend,
+          handle,
+          workspacePath: req.workspacePath,
+          branch,
+          workspaceDir: CLOUD_WORKSPACE_DIR,
+          bundleDepth: req.bundleDepth,
+          fromBranch: req.fromBranch,
+          useBranch: req.useBranch,
+          overlay: Boolean(snapshotName),
+          onLog: log,
+        });
+        // Checkpoint-restore conflicts (overlay): surface to the CLI so it
+        // injects the same "conflicting host changes SKIPPED … agentbox-ctl
+        // reload" prompt into the agent that docker does. Undefined on a fresh
+        // create (no overlay) or when nothing conflicted.
+        const resync =
+          seedResult.resync && seedResult.resync.hadConflicts ? seedResult.resync : undefined;
 
         // Refresh the host-side credential backups from the docker shared
         // volumes BEFORE seeding — only the docker create path keeps them
@@ -1019,7 +1028,7 @@ export function createCloudProvider(
           createdAt: new Date().toISOString(),
         };
         await recordBox(record);
-        return { record, imageBuilt: false };
+        return { record, imageBuilt: false, resync };
       } catch (err) {
         // Best-effort teardown of the half-provisioned sandbox so a failed
         // create doesn't leave the user paying for an inert box.

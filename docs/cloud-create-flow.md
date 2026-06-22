@@ -368,7 +368,7 @@ for different purposes and reached through different mechanisms. They are
 | **Stored as** | Daytona snapshot `agentbox-box-prebuilt-<ts>` (or whatever `--name` you pass) | Daytona snapshot `agentbox-ckpt-<projectHash>_<mn>-<name>` + host manifest |
 | **Consumed via config** | `box.image: <name>` (project or user config) | `box.defaultCheckpointDaytona: <name>` (or per-box `--checkpoint <name>`) |
 | **Daytona SDK call** | `client.create({ image: "<name>", … })` | `client.create({ snapshot: "<name>", … })` |
-| **What still runs on create** | Workspace seed (git bundle + clone), agent-volume seed if first time | **Workspace seed is SKIPPED** (`cloud-provider.ts:218`); agent volumes still mounted |
+| **What still runs on create** | Workspace seed (git bundle + clone), agent-volume seed if first time | **Workspace re-seeds in OVERLAY mode** (`seedCloudWorkspace({ overlay: true })`): keeps the snapshot's gitignored warm artifacts but swaps `.git`, moves onto a fresh `agentbox/<box>` branch at the host base ref, and applies the host's uncommitted/untracked carry-over; agent volumes still mounted |
 
 ### How they compose
 
@@ -384,7 +384,7 @@ Dockerfile.box  --(prepare --provider daytona)-->  base snapshot      (one-off, 
                        checkpoint create --set-default  -->  project setup snapshot   (per-project)
                                                 │
                                                 ▼ box.defaultCheckpointDaytona
-                       agentbox create  --(provision, /workspace already there)-->  warm box
+                       agentbox create  --(provision, /workspace warm; overlay-reseed .git)-->  warm box
 ```
 
 - Without the **base snapshot**: every first-box-per-project pays the ~7-min
@@ -393,8 +393,28 @@ Dockerfile.box  --(prepare --provider daytona)-->  base snapshot      (one-off, 
 - Without the **project setup snapshot**: every box re-runs whatever the
   setup wizard did (`pnpm install`, `prisma generate`, populating a dev DB,
   etc.).
-- With both: cold create ≈ seconds, and `/workspace` is already at the state
-  you snapshotted.
+- With both: cold create ≈ seconds, and `/workspace`'s warm artifacts are
+  already at the state you snapshotted.
+- **A box from a project snapshot is NOT frozen on the source box's branch.**
+  The snapshot's `/workspace/.git` is the source box's per-box branch; booting
+  it verbatim would put every checkpoint-derived box on that same stale branch
+  with the wrong files. So cloud create re-seeds in **overlay** mode
+  (`seedCloudWorkspace({ overlay: true })`): it keeps the gitignored warm tree
+  (node_modules, build caches) and moves the box onto a fresh
+  `agentbox/<new-box>` branch at the host's current base ref (`git checkout -f -B`
+  + `git reset --hard`, dropping the checkpoint's own tracked commits — matching
+  docker), then replays the host's stash + untracked carry-over.
+  - **Transport is incremental:** since the box can't bind-mount the host `.git`
+    (docker's trick), it ships only the commits the checkpoint is MISSING
+    (`checkpointTip..hostTarget`) as a **git bundle** fetched into the existing
+    `.git`. If the box diverged / the tip is unknown / the bundle can't build, it
+    **falls back** to a full shallow-clone `.git` swap.
+  - **Conflicts are box-wins + reported:** a host uncommitted/untracked change
+    that collides with the box's restored tree is **skipped** (the box version
+    kept) and recorded; the create returns a `ResyncResult` on `CreatedBox.resync`
+    so the CLI injects the same *"conflicting host changes SKIPPED … `agentbox-ctl
+    reload`"* prompt into claude/codex/opencode that docker does. The cloud
+    equivalent of docker's `regenerateRestoredWorktrees` + `resyncWorkspaceFromHost`.
 
 ### Naming convention that keeps them disjoint
 
