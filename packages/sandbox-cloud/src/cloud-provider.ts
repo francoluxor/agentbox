@@ -1014,6 +1014,7 @@ export function createCloudProvider(
             bridgeToken,
             snapshotRef: resolvedCheckpointRef,
             lastState: 'running',
+            sessionTimeoutMs: timeoutMs,
           },
           createdAt: new Date().toISOString(),
         };
