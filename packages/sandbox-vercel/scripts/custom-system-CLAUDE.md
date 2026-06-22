@@ -6,10 +6,11 @@ microVM on Amazon Linux 2023) provisioned just for this box. Your user is
 whole microVM is yours — the user's host filesystem is not visible from here
 and nothing is bind-mounted.
 
-**No containers.** Vercel Sandbox blocks the namespace syscalls a container
-runtime needs (no `CAP_SYS_ADMIN`, seccomp-filtered `clone`/`unshare`), so
-`docker` / `podman` cannot run here — not even rootless. Don't try to start a
-container engine; run build/test/dev processes directly on the microVM instead.
+**Docker is available.** The box bakes the docker engine and `dockerd` is
+started automatically, so `docker` works out of the box — no sudo needed (the
+socket is opened to your user). Build images, run containers, and use
+`image:` services in `agentbox.yaml` directly. Because this box is persistent,
+pulled images and the docker install carry over across pause/resume.
 
 This box is **persistent**: stopping it captures a snapshot and resuming
 restarts from that snapshot, so the filesystem survives a pause. You can also

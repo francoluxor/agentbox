@@ -136,6 +136,7 @@ const vercelFiles = [
   ['packages/sandbox-vercel/scripts/provision.sh', 'scripts/provision.sh', true],
   ['packages/ctl/dist/bin.cjs', 'ctl.cjs', true],
   ['packages/sandbox-docker/scripts/agentbox-vnc-start', 'agentbox-vnc-start', true],
+  ['packages/sandbox-docker/scripts/agentbox-dockerd-start', 'agentbox-dockerd-start', true],
   ['packages/sandbox-docker/scripts/agentbox-checkpoint-cleanup', 'agentbox-checkpoint-cleanup', true],
   ['packages/sandbox-docker/scripts/agentbox-open', 'agentbox-open', true],
   ['packages/sandbox-docker/scripts/gh-shim', 'gh-shim', true],
