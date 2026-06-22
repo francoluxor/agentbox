@@ -690,7 +690,6 @@ export const claudeCommand = new Command('claude')
       await runPrepare(providerName, {
         force: true,
         cwd: opts.workspace,
-        suppressTip: true,
         suppressStatus: true,
       });
     }

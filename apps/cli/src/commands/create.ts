@@ -331,7 +331,6 @@ export const createCommand = new Command('create')
       await runPrepare(providerName, {
         force: true,
         cwd: opts.workspace,
-        suppressTip: true,
         suppressStatus: true,
       });
     }
