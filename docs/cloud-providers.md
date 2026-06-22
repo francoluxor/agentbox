@@ -51,6 +51,23 @@ just implements the SDK primitives (`provision`, `exec`, `uploadFile`,
 
 This split is why "add a new cloud" is small: only the SDK shim differs.
 
+### 1.0.1 `AGENTBOX_BOX_HOST` on cloud boxes
+
+The `{{AGENTBOX_BOX_HOST}}` placeholder (used by `agentbox-ctl render` and carry
+`replaceEnvs`) is normally derived as `<box-name>.localhost` — correct for the
+portless providers (docker via `host.docker.internal`, hetzner via the in-VPS
+mirror). On the **public-URL clouds** (Vercel/Daytona/E2B) `<name>.localhost` is
+unreachable, so the cloud create/start flow resolves the box's web preview URL
+*before* launching the in-box `agentbox-ctl` daemon and passes the **bare host**
+(e.g. `<sub>.vercel.run`) to `launchCloudCtlDaemon` as `AGENTBOX_BOX_HOST`
+(`deriveCloudBoxHost` in `cloud-provider.ts`: loopback preview → `<name>.localhost`;
+public preview → `new URL(url).host`). It's both exported into the daemon's env
+(so every supervisor task/service child — e.g. a first-boot `render` task — sees
+it) and persisted to `/etc/agentbox/box.env` (so `agentbox shell` login shells and
+manual `agentbox-ctl render` resolve it too). The placeholder engine prefers this
+explicit value over the derived fallback, so `https://{{AGENTBOX_BOX_HOST}}`
+matches what `agentbox url` returns.
+
 ### 1.1 Per-provider base-image pins
 
 Each provider's `agentbox prepare --provider X` writes the resulting

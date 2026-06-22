@@ -166,6 +166,28 @@ function parseLoopbackPort(url: string): number | undefined {
 }
 
 /**
+ * The bare host (no scheme) that `AGENTBOX_BOX_HOST` should advertise inside the
+ * box. Portless backends return a loopback `http://127.0.0.1:<port>` web preview
+ * (the host-side `ssh -L` forward) — meaningless inside the box, where the
+ * portless mirror serves `<box-name>.localhost`, so we use that. Public-URL
+ * backends (Vercel/Daytona/E2B) return a real preview whose host (e.g.
+ * `<sub>.vercel.run`) is the reachable host. Returns `undefined` when no preview
+ * resolved, letting the in-box engine derive `<box-name>.localhost` itself.
+ */
+export function deriveCloudBoxHost(
+  boxName: string,
+  webPreviewUrl: string | undefined,
+): string | undefined {
+  if (!webPreviewUrl) return undefined;
+  if (parseLoopbackPort(webPreviewUrl) !== undefined) return `${boxName}.localhost`;
+  try {
+    return new URL(webPreviewUrl).host;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Register a single host Portless alias `<alias>.localhost -> <previewUrl>`
  * when `previewUrl` resolves to a loopback `http://127.0.0.1:<port>` (Hetzner's
  * `ssh -L` forward). For backends that return a public URL (Daytona's signed
@@ -432,6 +454,7 @@ export function createCloudProvider(
       relayToken: box.relayToken ?? '',
       bridgeToken: box.cloud?.bridgeToken,
       webProxyPort: backend.webProxyPort,
+      boxHost: deriveCloudBoxHost(box.name, webPreview?.url),
     });
     // Re-launch the VNC stack — Xvnc + websockify die with the sandbox.
     // Best-effort: a failure here shouldn't block start; `agentbox screen`
@@ -774,6 +797,25 @@ export function createCloudProvider(
           }
         }
 
+        // The box's "web" port: the in-box WebProxy port the provider exposes.
+        // Defaults to 80; Vercel uses 8080 (it can't expose privileged ports).
+        const wp = backend.webProxyPort ?? CLOUD_WEB_PROXY_PORT;
+
+        // Resolve the web preview URL BEFORE launching the daemon so the box's
+        // reachable host (AGENTBOX_BOX_HOST) is wired into the supervisor's env —
+        // a first-boot `agentbox-ctl render` task must see the real host, not the
+        // `<name>.localhost` fallback. Best-effort: most boxes won't have a
+        // service on the WebProxy port yet, but `sb.domain(port)` resolves the
+        // routing URL regardless of whether anything listens. Reused below for
+        // portless bootstrap and previewUrls persistence. `agentbox url`
+        // re-resolves on demand.
+        let webPreview: { url: string; token?: string } | undefined;
+        try {
+          webPreview = await backend.previewUrl(handle, wp);
+        } catch {
+          webPreview = undefined;
+        }
+
         log('launching agentbox-ctl daemon');
         await launchCloudCtlDaemon({
           backend,
@@ -784,6 +826,7 @@ export function createCloudProvider(
           relayToken,
           bridgeToken,
           webProxyPort: backend.webProxyPort,
+          boxHost: deriveCloudBoxHost(name, webPreview?.url),
         });
 
         // Mint the per-box VNC password and start the in-sandbox VNC stack
@@ -801,20 +844,6 @@ export function createCloudProvider(
               `VNC daemon launch failed (continuing): ${err instanceof Error ? err.message : String(err)}`,
             );
           }
-        }
-
-        // The box's "web" port: the in-box WebProxy port the provider exposes.
-        // Defaults to 80; Vercel uses 8080 (it can't expose privileged ports).
-        const wp = backend.webProxyPort ?? CLOUD_WEB_PROXY_PORT;
-
-        // The web preview URL is best-effort at create — most boxes won't
-        // have a service on the WebProxy port until the supervisor schedules
-        // the `expose:` service. `agentbox url` re-resolves on demand.
-        let webPreview: { url: string; token?: string } | undefined;
-        try {
-          webPreview = await backend.previewUrl(handle, wp);
-        } catch {
-          webPreview = undefined;
         }
 
         // Portless host alias + in-VPS mirror. Default-on for backends whose

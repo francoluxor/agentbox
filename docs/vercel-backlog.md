@@ -506,3 +506,16 @@ agentbox/<box>` shows the commit, then try `agentbox-ctl git pull` and a `gh pr`
       `git push` with no relay errors out via the shim (not real git).
     - Note: docker/hetzner are unaffected (their base PATH puts `/usr/local/bin`
       first); this is Vercel-base-specific.
+20. [x] **`AGENTBOX_BOX_HOST` resolves to the real preview host.** Done — the
+    `{{AGENTBOX_BOX_HOST}}` placeholder used to derive `<box-name>.localhost`, which
+    is unreachable on Vercel (no portless). The shared cloud create/start flow now
+    resolves the web preview URL *before* `launchCloudCtlDaemon` and passes the bare
+    host (`sb.domain(8080)` → `<sub>.vercel.run`) as `AGENTBOX_BOX_HOST`
+    (`deriveCloudBoxHost`: loopback preview → `<name>.localhost`; public preview →
+    `URL.host`). Exported into the daemon env (so first-boot `agentbox-ctl render`
+    tasks see it) and written to `/etc/agentbox/box.env` for login-shell parity. The
+    placeholder engine already prefers an explicit value over the derive, so
+    `https://{{AGENTBOX_BOX_HOST}}` now matches `agentbox url`. Generic across the
+    public-URL clouds (vercel/daytona/e2b); docker/hetzner keep `<name>.localhost`.
+    Unit-tested (`deriveCloudBoxHost`, `launchCloudCtlDaemon` script). See
+    `docs/cloud-providers.md` §1.0.1.
