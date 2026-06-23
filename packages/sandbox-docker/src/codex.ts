@@ -114,6 +114,22 @@ export async function ensureCodexVolume(
   const hostCodex = join(homedir(), '.codex');
   const willSync = opts.syncFromHost && (await pathExists(hostCodex));
   if (willSync) {
+    // Skills handling depends on whether the host uses the shared ~/.agents dir.
+    // WITH ~/.agents: ~/.codex/skills/<x> are symlinks into ~/.agents/skills,
+    //   which the box mounts from its own volume (agents.ts) — codex reads
+    //   ~/.agents/skills directly, so the per-codex copies are redundant.
+    //   Exclude `skills` (also dodges an rsync "could not make way for new
+    //   symlink" failure when the shared volume holds them as real dirs from an
+    //   earlier deref) and `find`-purge those stale non-system dirs, keeping
+    //   codex's runtime-managed `.system`.
+    // WITHOUT ~/.agents: the user keeps real skills directly under
+    //   ~/.codex/skills — sync them as-is (no exclude, no purge) so they reach
+    //   the box (the box has no ~/.agents volume to fall back on).
+    const hasAgents = await pathExists(join(homedir(), '.agents'));
+    const skillsExclude = hasAgents ? ' --exclude=skills' : '';
+    const skillsPurge = hasAgents
+      ? ' && { [ -d /dst/skills ] && find /dst/skills -mindepth 1 -maxdepth 1 ! -name .system -exec rm -rf {} + || true; }'
+      : '';
     await execa('docker', [
       'run',
       '--rm',
@@ -137,22 +153,14 @@ export async function ensureCodexVolume(
       // --delete only adds/updates. The globs are no-ops with `-f` when absent,
       // and never touch box-owned `sessions/` (the teleported rollouts) or
       // `hooks.json`.
-      //
-      // --exclude=skills: ~/.codex/skills/<x> are symlinks into ~/.agents/skills,
-      // which the box mounts from its own volume (agents.ts / ensureAgentsVolume),
-      // so codex reads ~/.agents/skills directly — the per-codex copies are
-      // redundant. Excluding them also avoids an rsync "could not make way for new
-      // symlink" failure when the shared volume already holds them as real dirs
-      // from an earlier deref. The trailing `find` purges those stale non-system
-      // skill dirs from the volume while keeping codex's runtime-managed `.system`.
       'rsync -a --exclude=sessions --exclude=log --exclude=history.jsonl --exclude=hooks.json' +
-        ' --exclude=skills' +
+        skillsExclude +
         ' --exclude=state_*.sqlite* --exclude=logs_*.sqlite* --exclude=session_index.jsonl' +
         ' --exclude=external_agent_session_imports.json --exclude=shell_snapshots' +
         ' /src/ /dst/' +
         ' && rm -rf /dst/state_*.sqlite* /dst/logs_*.sqlite* /dst/session_index.jsonl' +
         ' /dst/external_agent_session_imports.json /dst/shell_snapshots' +
-        ' && { [ -d /dst/skills ] && find /dst/skills -mindepth 1 -maxdepth 1 ! -name .system -exec rm -rf {} + || true; }' +
+        skillsPurge +
         ' && chown -R 1000:1000 /dst',
     ]);
     await sanitizeVolumeCodexConfig(spec.volume, opts.image);

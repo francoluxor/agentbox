@@ -26,10 +26,10 @@ Fork the current Claude Code session into a fresh AgentBox box.
 
      If it prints a path, that's the current plan; if it prints nothing, there is no active plan — skip `--plan`.
 
-3. **Fork.** If you are in plan mode, exit it, then run, via the Bash tool, exactly one command (add `--plan "<path>"` only if step 2 found a plan):
+3. **Fork.** If you are in plan mode, exit it, then run, via the Bash tool, exactly one command (add `--plan "<path>"` only if step 2 found a plan). Do NOT pass `--session`: `agentbox fork` autodetects the current Claude session itself (and safely falls back to the newest session for this workspace), which is correct even when this skill runs in a subagent where `$CLAUDE_CODE_SESSION_ID` would be the subagent's id, not the conversation you want to fork:
 
    ```
-   agentbox fork --session "${CLAUDE_CODE_SESSION_ID:-$CLAUDE_SESSION_ID}" [--provider $ARGUMENTS] [--plan "<plan path>"]
+   agentbox fork [--provider $ARGUMENTS] [--plan "<plan path>"]
    ```
 
 4. **Report.** In one line, give the user the new box name (parse it from the command output) and confirm their host session is unaffected. If you passed `--plan`, mention the box opens in plan mode ready to resume. Do not summarize the conversation — the fork already carries it.
