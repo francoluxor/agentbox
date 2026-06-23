@@ -1,5 +1,4 @@
 import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { parse, stringify } from 'smol-toml';
 
 /**
@@ -44,10 +43,6 @@ function isRecord(v: unknown): v is Record<string, unknown> {
  *  this folder?" prompt on first attach. Same value the docker + cloud paths
  *  mount the project at. */
 export const BOX_WORKSPACE = '/workspace';
-
-/** The box's `~/.codex` — host `<home>/.codex` paths in config.toml are
- *  rewritten to this so in-`~/.codex` marketplace sources resolve in the box. */
-const BOX_CODEX_DIR = '/home/vscode/.codex';
 
 /** Minimal config.toml that pre-trusts `/workspace`, for a host with no
  *  `~/.codex/config.toml` to sanitize (so the box still skips the trust prompt). */
@@ -97,15 +92,6 @@ export function sanitizeCodexConfigForBox(
 
   // marketplaces: drop local-source marketplaces under a host-only path, then
   // drop the plugins that reference them (`"<plugin>@<marketplace>"`).
-  // A local marketplace whose source lives **under the host `~/.codex`** ships
-  // into the box inside the codex volume (e.g. codex's bundled `openai-bundled`
-  // marketplace at `~/.codex/.tmp/bundled-marketplaces`, which backs the Browser
-  // plugin). Keep those, rewriting the host path to the box path so codex finds
-  // the content. Local marketplaces under any OTHER host-only path don't ship
-  // (e.g. the `openai-primary-runtime` runtime under `~/.cache`, ~1.3GB, backing
-  // Documents/Sheets/Slides; or a user's custom local marketplace) — drop them,
-  // and the dependent plugins below.
-  const hostCodex = join(hostHome, '.codex');
   const droppedMarkets = new Set<string>();
   if (isRecord(cfg['marketplaces'])) {
     const markets = cfg['marketplaces'];
@@ -115,15 +101,9 @@ export function sanitizeCodexConfigForBox(
         def['source_type'] === 'local' &&
         isHostOnlyPath(def['source'], hostHome)
       ) {
-        const src = def['source'];
-        if (typeof src === 'string' && (src === hostCodex || src.startsWith(hostCodex + '/'))) {
-          def['source'] = BOX_CODEX_DIR + src.slice(hostCodex.length);
-          changed = true;
-        } else {
-          delete markets[name];
-          droppedMarkets.add(name);
-          changed = true;
-        }
+        delete markets[name];
+        droppedMarkets.add(name);
+        changed = true;
       }
     }
   }
