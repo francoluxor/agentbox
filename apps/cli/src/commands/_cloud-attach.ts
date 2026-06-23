@@ -6,6 +6,7 @@ import { spinner } from '@clack/prompts';
 import { DEFAULT_RELAY_PORT } from '@agentbox/sandbox-docker';
 import type { BoxRecord, Provider } from '@agentbox/core';
 import type { AttachOpenIn } from '@agentbox/config';
+import { agentResumeArgs } from '../agent-sessions.js';
 import { providerForBox } from '../provider/registry.js';
 import { runWrappedAttach } from '../wrapped-pty/index.js';
 import { pasteHostClipboardImage, uploadImageFileToBox } from '../lib/paste-image.js';
@@ -167,12 +168,22 @@ export async function cloudAgentAttach(args: CloudAgentAttachArgs): Promise<void
     box = await provider.start(box);
     s.stop('box running');
   }
-  const command = buildCloudAttachInnerCommand(args.binary, args.extraArgs);
+  // Attaching to a box that just came back up (a stop / cloud idle-timeout
+  // resume): if the user passed no args of their own and the box has a resumable
+  // claude/codex session, launch resuming it (claude --resume <id> / codex resume
+  // --last) so the attach reopens the conversation instead of starting fresh. The
+  // box is running now (provider.start above), so the probe can reach it. Opencode
+  // has no resume support — skipped.
+  let extraArgs = args.extraArgs;
+  if ((!extraArgs || extraArgs.length === 0) && (args.mode === 'claude' || args.mode === 'codex')) {
+    const resume = await agentResumeArgs(provider, box, args.mode);
+    if (resume) extraArgs = resume;
+  }
+  const command = buildCloudAttachInnerCommand(args.binary, extraArgs);
   // Daytona-only: force inline attach. `spec.cleanup` would otherwise run as
   // soon as the host process returns from the spawn (before the new pane has
   // released the per-call SSH tunnel), breaking the detached attach.
-  const safeOpenIn: AttachOpenIn | undefined =
-    box.provider === 'daytona' ? 'same' : args.openIn;
+  const safeOpenIn: AttachOpenIn | undefined = box.provider === 'daytona' ? 'same' : args.openIn;
 
   // New-terminal attaches (tab/window/split) re-invoke `agentbox <agent> attach`
   // in the fresh pane, and that re-invocation carries NO `extraArgs` — so for a
@@ -181,7 +192,7 @@ export async function cloudAgentAttach(args: CloudAgentAttachArgs): Promise<void
   // session detached here with the full command; the re-invoked attach then
   // finds it via `tmux has-session` and just attaches. (Inline attach runs the
   // full command itself, so it doesn't need this.)
-  if (safeOpenIn && safeOpenIn !== 'same' && args.extraArgs && args.extraArgs.length > 0) {
+  if (safeOpenIn && safeOpenIn !== 'same' && extraArgs && extraArgs.length > 0) {
     await startDetachedSession(provider, box, args.sessionName, command);
   }
 
@@ -191,8 +202,7 @@ export async function cloudAgentAttach(args: CloudAgentAttachArgs): Promise<void
   });
   // claude only, and only when this host can capture a clipboard image (macOS,
   // or a Linux desktop with xclip/wl-paste). Otherwise Ctrl+V forwards verbatim.
-  const canPaste =
-    args.mode === 'claude' && (await clipboardCaptureAvailable());
+  const canPaste = args.mode === 'claude' && (await clipboardCaptureAvailable());
 
   // Re-establish the attach after the wrapper decides the box dropped (a vercel
   // checkpoint reboot, or a connection blip). Keep trying `provider.start` —
@@ -263,9 +273,7 @@ export async function cloudAgentAttach(args: CloudAgentAttachArgs): Promise<void
           // best-effort
         }
       },
-      onPasteImage: canPaste
-        ? () => pasteHostClipboardImage(provider, box)
-        : undefined,
+      onPasteImage: canPaste ? () => pasteHostClipboardImage(provider, box) : undefined,
       onPasteImageFile: canPaste ? (p) => uploadImageFileToBox(provider, box, p) : undefined,
     });
     process.exit(code);

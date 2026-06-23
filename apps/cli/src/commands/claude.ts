@@ -41,6 +41,7 @@ import { assertAgentCredsAvailable, MissingAgentCredsError } from '../lib/queue/
 import { buildPromptArgs } from '../lib/queue/build-prompt-args.js';
 import { maybeResyncWorkspace } from '../lib/resync-start.js';
 import { buildResyncWarning } from '../lib/resync-warning.js';
+import { agentResumeArgs } from '../agent-sessions.js';
 import { applyClaudeSkipPermissions } from '../lib/skip-permissions.js';
 import { parseMaxOption } from '../lib/queue/parse-max-option.js';
 import { submitQueueJob } from '../lib/queue/submit.js';
@@ -1038,6 +1039,11 @@ interface ClaudeStartOptions {
   attach?: boolean; // commander: --no-attach => false; default true.
   continue?: boolean; // -c / --continue: teleport newest session for cwd.
   resume?: string; // --resume <id>: teleport specific session.
+  // Set by the `attach` subcommand: when the box was down and is being brought
+  // back up, resume the in-box session (`--continue`) instead of starting fresh,
+  // so attaching after a stop / cloud idle-timeout looks seamless. NOT set by the
+  // bare `claude` / `claude start` command, which stays fresh.
+  attachResume?: boolean;
 }
 
 // Shared by `claude start` and `claude attach`: if a session is already
@@ -1181,6 +1187,15 @@ async function startOrAttachClaude(
   });
 
   let effectiveArgs = applyClaudeSkipPermissions(claudeArgs, cfg.effective);
+  // Attach path on a box that just came back up: resume the box's recorded
+  // session (exact id, captured by the in-box hooks) rather than starting fresh.
+  // Only when the user gave no args of their own and isn't teleporting a host
+  // session, and only if the box actually has a resumable session.
+  if (opts.attachResume && claudeArgs.length === 0 && !resumePrepared) {
+    const provider = await providerForBox(box);
+    const resume = await agentResumeArgs(provider, box, 'claude');
+    if (resume) effectiveArgs = [...effectiveArgs, ...resume];
+  }
   if (resumePrepared) {
     s.message('uploading claude session into box');
     try {
@@ -1271,7 +1286,7 @@ const claudeAttachCommand = new Command('attach')
       // A plain reattach must never touch host config. Force syncConfig off so
       // the no-session path starts a fresh session without the host->volume
       // rsync (which would overwrite the in-box _claude.json / prompt history).
-      await startOrAttachClaude(box, [], { ...opts, syncConfig: false });
+      await startOrAttachClaude(box, [], { ...opts, syncConfig: false, attachResume: true });
     } catch (err) {
       if (err instanceof ClaudeSessionError) {
         log.error(err.message);

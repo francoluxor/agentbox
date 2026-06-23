@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { RelayClient } from './relay-client.js';
+import { markCodexActive } from './session-pointer.js';
 import type { Supervisor } from './supervisor.js';
 import { probeAgentSession } from './tmux.js';
 import {
@@ -45,6 +46,7 @@ export class StatusReporter {
   private claudeUpdatedAt: string | null = null;
   private claudePlan: ClaudePlanPayload | undefined;
   private claudeQuestion: ClaudeQuestionPayload | undefined;
+  private codexMarked = false;
   private codexState: AgentActivityState = 'unknown';
   private codexUpdatedAt: string | null = null;
   private opencodeState: AgentActivityState = 'unknown';
@@ -142,6 +144,14 @@ export class StatusReporter {
   setCodexState(state: AgentActivityState): void {
     this.codexState = state;
     this.codexUpdatedAt = new Date().toISOString();
+    // Codex exposes no resumable session id (and its hooks are unreliable — the
+    // scraper is the primary signal), so we can't capture an exact id like
+    // Claude. Drop a per-box presence marker the first time codex shows any
+    // activity so a restart knows codex ran here and can `codex resume --last`.
+    if (!this.codexMarked) {
+      this.codexMarked = true;
+      markCodexActive();
+    }
     this.schedulePush();
   }
 
