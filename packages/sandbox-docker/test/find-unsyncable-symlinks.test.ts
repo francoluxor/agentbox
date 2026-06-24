@@ -70,4 +70,29 @@ describe('findUnsyncableSymlinks', () => {
     const out = await findUnsyncableSymlinks(claudeRoot, [claudeRoot, agentsRoot]);
     expect(out).toEqual(['skills/agentbox/SKILL.md']);
   });
+
+  // Two symlinks resolving to the SAME shared dir must each report the nested
+  // unsyncable link under their own transfer prefix — a global visited set keyed
+  // by the resolved path would skip the second, leaving rsync to abort on it.
+  it('reports a shared nested link under every virtual prefix that reaches it', async () => {
+    await mkdir(join(agentsRoot, 'skills', 'shared'), { recursive: true });
+    await writeFile(join(dir, 'repo-skill.md'), 'x');
+    await symlink(join(dir, 'repo-skill.md'), join(agentsRoot, 'skills', 'shared', 'SKILL.md'));
+    await mkdir(join(claudeRoot, 'skills'), { recursive: true });
+    await symlink(join(agentsRoot, 'skills', 'shared'), join(claudeRoot, 'skills', 'foo'));
+    await symlink(join(agentsRoot, 'skills', 'shared'), join(claudeRoot, 'skills', 'bar'));
+
+    const out = await findUnsyncableSymlinks(claudeRoot, [claudeRoot, agentsRoot]);
+    expect(out.sort()).toEqual(['skills/bar/SKILL.md', 'skills/foo/SKILL.md']);
+  });
+
+  // A symlink pointing back at an ancestor must not loop forever.
+  it('terminates on a symlink cycle into an ancestor', async () => {
+    await mkdir(join(claudeRoot, 'a', 'b'), { recursive: true });
+    // ~/.claude/a/b/loop -> ~/.claude/a (an ancestor, reachable)
+    await symlink(join(claudeRoot, 'a'), join(claudeRoot, 'a', 'b', 'loop'));
+
+    const out = await findUnsyncableSymlinks(claudeRoot, [claudeRoot, agentsRoot]);
+    expect(out).toEqual([]);
+  });
 });

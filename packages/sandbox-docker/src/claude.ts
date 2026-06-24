@@ -151,8 +151,11 @@ function isUnder(parent: string, child: string): boolean {
  * and descends into it, then aborts on the nested absolute link. So when a
  * symlink resolves into a reachable tree we recurse into the resolved target,
  * reporting nested findings under the symlink's path as rsync transfers it
- * (the link name in `root`, not the resolved `~/.agents` path). `seen` guards
- * against symlink cycles.
+ * (the link name in `root`, not the resolved `~/.agents` path). An ancestry
+ * guard (`onPath`) blocks symlink cycles without suppressing the same resolved
+ * dir reached under a *different* virtual prefix — e.g. two skills symlinked to
+ * one shared target must each report their nested unsyncable link, or rsync
+ * still aborts on the prefix we skipped.
  */
 export async function findUnsyncableSymlinks(
   root: string,
@@ -170,40 +173,47 @@ export async function findUnsyncableSymlinks(
     }),
   );
   const unsyncable: string[] = [];
-  const seen = new Set<string>();
+  // Resolved dirs currently on the recursion path. Guards against symlink
+  // cycles (a link pointing at an ancestor) while still allowing the same dir
+  // to be re-walked under a different virtual prefix once this branch unwinds.
+  const onPath = new Set<string>();
   // `realDir` is the filesystem directory to read; `virtualDir` is its path as
   // rsync sees it under `root` (they diverge once we follow a symlinked dir).
   async function walk(realDir: string, virtualDir: string): Promise<void> {
-    if (seen.has(realDir)) return;
-    seen.add(realDir);
-    let entries;
+    if (onPath.has(realDir)) return;
+    onPath.add(realDir);
     try {
-      entries = await readdir(realDir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const ent of entries) {
-      const realFull = join(realDir, ent.name);
-      const virtualFull = virtualDir ? join(virtualDir, ent.name) : ent.name;
-      if (ent.isSymbolicLink()) {
-        let real: string;
-        try {
-          real = await realpath(realFull);
-        } catch {
-          unsyncable.push(virtualFull); // broken on the host
-          continue;
-        }
-        if (!reachable.some((r) => isUnder(r, real))) {
-          unsyncable.push(virtualFull); // target not mounted in the box
-          continue;
-        }
-        // Reachable target: rsync will dereference + descend, so check inside
-        // it too for nested unsyncable links, keyed to the symlink's path.
-        const st = await stat(real).catch(() => null);
-        if (st?.isDirectory()) await walk(real, virtualFull);
-      } else if (ent.isDirectory()) {
-        await walk(realFull, virtualFull);
+      let entries;
+      try {
+        entries = await readdir(realDir, { withFileTypes: true });
+      } catch {
+        return;
       }
+      for (const ent of entries) {
+        const realFull = join(realDir, ent.name);
+        const virtualFull = virtualDir ? join(virtualDir, ent.name) : ent.name;
+        if (ent.isSymbolicLink()) {
+          let real: string;
+          try {
+            real = await realpath(realFull);
+          } catch {
+            unsyncable.push(virtualFull); // broken on the host
+            continue;
+          }
+          if (!reachable.some((r) => isUnder(r, real))) {
+            unsyncable.push(virtualFull); // target not mounted in the box
+            continue;
+          }
+          // Reachable target: rsync will dereference + descend, so check inside
+          // it too for nested unsyncable links, keyed to the symlink's path.
+          const st = await stat(real).catch(() => null);
+          if (st?.isDirectory()) await walk(real, virtualFull);
+        } else if (ent.isDirectory()) {
+          await walk(realFull, virtualFull);
+        }
+      }
+    } finally {
+      onPath.delete(realDir);
     }
   }
   await walk(root, '');
