@@ -9,6 +9,68 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [0.20.0] - 2026-06-24
+
+### Added
+
+- **Boxes resume your running agent across a restart.** When a box stops (or a
+  cloud box idle-pauses and resumes), `agentbox start` — and attaching to a
+  down box, and cloud idle-wake — now relaunches the agent resuming the *same*
+  conversation (`claude --resume`, `codex resume --last`) instead of opening a
+  fresh session, so background/`-i` work isn't lost. Verified on docker,
+  vercel, and hetzner. Requires a docker image rebuild / cloud re-`prepare`;
+  until then it no-ops.
+- **Headless `agentbox claude login` for non-interactive use.** Sign in without
+  a TTY (CI, an orchestrating agent) via a two-call protocol:
+  `agentbox claude login --headless` prints the approval URL (and a greppable
+  `AGENTBOX_LOGIN_URL=` marker), then `agentbox claude login --code <CODE>`
+  completes it. Headless mode is auto-selected when stdin is not a TTY;
+  interactive login is unchanged.
+- **E2B now runs docker-in-docker by default.** In-box docker is baked into the
+  E2B base template and `dockerd` auto-starts on create/resume — nested
+  containers work on E2B (full root + namespaces), matching the other cloud
+  providers. Re-`prepare --provider e2b` to pick it up.
+- **Configurable E2B session timeout.** New `box.e2bTimeoutMs` config key
+  (default 45m, mirrors `box.vercelTimeoutMs`) records the box's real session
+  lifetime so the keepalive holds the box open precisely while the agent is
+  working.
+
+### Changed
+
+- **Non-interactive runs fail fast on a missing or expired Claude login.** The
+  `-i` queue preflight and TTY-less foreground runs now check credential
+  validity (expiry is consulted on cloud) and exit early with an
+  `agentbox claude login` hint, instead of creating a box whose agent silently
+  parks on its `/login` screen.
+- **Herdr plugin is discoverable from the marketplace.** The `herdr-plugin.toml`
+  manifest moved to the repo root, so the install shorthand is now
+  `herdr plugin install madarco/agentbox`.
+
+### Fixed
+
+- **Multi-line `-i` seed prompts survive on cloud.** A multi-paragraph seed
+  prompt passed to a detached cloud `-i` run was being split into one argument
+  per line, killing the agent at launch; prompts are now encoded so embedded
+  newlines are preserved.
+- **`-i` fan-out reliably opens its Herdr terminal.** Concurrent box launches no
+  longer trip "herdr gave no pane id" — JSON-RPC replies are now matched by
+  request id (ignoring interleaved notifications), and pane ids with letters
+  (`:pA`, `:pB`, …) are accepted.
+- **Cloud `-i` start failures surface instead of reporting done.** A detached
+  cloud session that fails to launch (transient SDK error, agent crash, stale
+  in-box credentials) is now marked failed with an actionable hint, rather than
+  silently writing `status: done` with no agent running.
+- **`agentbox create --provider <cloud> -w ../repo`** now resolves a relative
+  workspace path to absolute, fixing the git seed that failed with "does not
+  appear to be a git repository".
+- **E2B fixes:** the dashboard attach now forwards the provider env so the
+  attach helper gets its inner command (right pane no longer blank); the
+  create→attach pre-start no longer hangs the CLI on a blank screen.
+- **Docker Claude config sync** no longer aborts (rsync exit 23) on nested
+  symlinked skill dirs that point outside the box, and a box whose shared-volume
+  login token was blanked by a failed in-box refresh now re-offers sign-in
+  before launch instead of booting into a login error.
+
 ## [0.19.0] - 2026-06-23
 
 ### Added
