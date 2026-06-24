@@ -345,16 +345,27 @@ function herdrField(
  * lives under `pane` for `pane.split` and under `root_pane` for
  * `tab.create`/`workspace.create` (verified live against Herdr 0.7); a regex
  * over the serialized reply is the last-ditch fallback.
+ *
+ * The suffix after `:p` is **alphanumeric, not decimal** — Herdr counts in a
+ * digits-then-letters alphabet, so its 10th pane is `:pA`, its 11th `:pB`, and
+ * a tab numbered 17 is `:tH` (verified live: a `p9` → `pA` → `pB` sequence and
+ * a `number:17` tab carrying `:tH`, which rules out plain hex). Matching only
+ * `\d+` here silently dropped every id with a letter, so once enough tabs had
+ * been opened (e.g. fanning out several `-i` boxes) `extractHerdrPaneId`
+ * returned undefined, the spawn reported "gave no pane id", `pane.send_text`
+ * never ran, and the new tab kept its bare shell instead of attaching the
+ * agent. `[0-9A-Za-z]` covers the whole alphabet without matching the
+ * `:`/quote delimiters.
  */
-function extractHerdrPaneId(result: Record<string, unknown> | null): string | undefined {
+export function extractHerdrPaneId(result: Record<string, unknown> | null): string | undefined {
   if (!result) return undefined;
   const direct = result['pane_id'];
-  if (typeof direct === 'string' && /:p\d+$/.test(direct)) return direct;
+  if (typeof direct === 'string' && /:p[0-9A-Za-z]+$/.test(direct)) return direct;
   for (const parent of ['pane', 'root_pane'] as const) {
     const id = herdrField(result, parent, 'pane_id');
-    if (id && /:p\d+$/.test(id)) return id;
+    if (id && /:p[0-9A-Za-z]+$/.test(id)) return id;
   }
-  const m = JSON.stringify(result).match(/"([^"]*:p\d+)"/);
+  const m = JSON.stringify(result).match(/"([^"]*:p[0-9A-Za-z]+)"/);
   return m ? m[1] : undefined;
 }
 
