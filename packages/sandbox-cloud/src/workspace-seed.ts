@@ -1,7 +1,7 @@
 import { execa } from 'execa';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { CloudBackend, CloudHandle, ResyncResult } from '@agentbox/core';
 import { detectGitRepos } from '@agentbox/sandbox-core';
 import { bashScript, quoteShellArgv } from './shell.js';
@@ -381,7 +381,11 @@ async function seedFromGitClone(args: SeedFromGitCloneArgs): Promise<RepoSeedCon
     // --use-branch reuses the named branch directly; otherwise --from-branch
     // (or nothing) picks the fork base. Either way it pins the clone's HEAD.
     const cloneBranch = args.useBranch ?? args.fromBranch;
+    const lfsRef = cloneBranch ?? 'HEAD';
     await runShallowClone(args.hostRepo, cloneDir, initialDepth, stashRefCreated, cloneBranch);
+    // Pack the checkout ref's LFS objects into the clone's .git/lfs BEFORE the
+    // tar so the in-box checkout smudges real content (no box network/creds).
+    await seedCloneLfsObjects(args.hostRepo, cloneDir, lfsRef, log);
     await tarCloneDir(cloneDir, tarPath);
     if (adaptive && initialDepth !== null) {
       const size = await safeFileSize(tarPath);
@@ -393,6 +397,8 @@ async function seedFromGitClone(args: SeedFromGitCloneArgs): Promise<RepoSeedCon
         await rm(cloneDir, { recursive: true, force: true });
         await rm(tarPath, { force: true });
         await runShallowClone(args.hostRepo, cloneDir, LARGE_BUNDLE_DEPTH, stashRefCreated, cloneBranch);
+        // Fresh cloneDir from the rebuild — re-seed its LFS objects too.
+        await seedCloneLfsObjects(args.hostRepo, cloneDir, lfsRef, log);
         await tarCloneDir(cloneDir, tarPath);
       }
     }
@@ -502,6 +508,7 @@ async function seedFromGitClone(args: SeedFromGitCloneArgs): Promise<RepoSeedCon
 
 const DELTA_TARGET_REF = 'refs/agentbox-delta/target';
 const REMOTE_DELTA_BUNDLE = '/tmp/agentbox-delta.bundle';
+const REMOTE_DELTA_LFS = '/tmp/agentbox-delta-lfs.tar.gz';
 const SHA_RE = /^[0-9a-f]{40}$/;
 
 /**
@@ -552,6 +559,7 @@ async function tryReseedRepoDelta(args: SeedFromGitCloneArgs): Promise<RepoSeedC
   const stage = await mkdtemp(join(tmpdir(), 'agentbox-delta-'));
   const bundlePath = join(stage, 'delta.bundle');
   const untrackedTarPath = join(stage, 'untracked.tar.gz');
+  const deltaLfsTarPath = join(stage, 'delta-lfs.tar.gz');
   // --use-branch reuses the committed tip; no host uncommitted carry-over.
   const stashSha =
     args.useBranch || args.skipCarryOver ? null : await safeStashCreate(args.hostRepo);
@@ -595,6 +603,21 @@ async function tryReseedRepoDelta(args: SeedFromGitCloneArgs): Promise<RepoSeedC
     if (untrackedSize > 0) {
       await args.backend.uploadFile(args.handle, untrackedTarPath, REMOTE_UNTRACKED_TAR);
     }
+    // Ship the LFS objects the delta introduces (oids in target but not in the
+    // checkpoint tip the box already holds), so the post-restore checkout
+    // smudges new LFS files to real content. Bounded + best-effort.
+    const deltaLfsSize = await maybeBuildDeltaLfsTar(
+      args.hostRepo,
+      target,
+      checkpointTip,
+      deltaLfsTarPath,
+    );
+    if (deltaLfsSize > 0) {
+      await args.backend.uploadFile(args.handle, deltaLfsTarPath, REMOTE_DELTA_LFS);
+      log(
+        `checkpoint restore: ${args.workspaceDir}: ${String(deltaLfsSize)} B of new git-lfs objects`,
+      );
+    }
     log(
       needTarget
         ? `checkpoint restore: ${args.workspaceDir}: delta bundle (${checkpointTip.slice(0, 8)}..${target.slice(0, 8)})`
@@ -624,18 +647,26 @@ async function tryReseedRepoDelta(args: SeedFromGitCloneArgs): Promise<RepoSeedC
       hasUntracked: untrackedSize > 0,
       detectConflicts: true,
     });
+    // Extract the delta's new LFS objects into the box's object store BEFORE the
+    // checkout/reset smudges them. `.git/lfs/objects/aa/bb/<oid>` layout is
+    // preserved by the tar so they land content-addressed.
+    const lfsStep =
+      deltaLfsSize > 0
+        ? `tar -C ${quoteShellArgv([`${args.workspaceDir}/.git`])} -xzf ${quoteShellArgv([REMOTE_DELTA_LFS])}`
+        : ': # no delta lfs objects';
     const SUDO = `if command -v sudo >/dev/null 2>&1; then SUDO='sudo -n'; else SUDO=''; fi`;
     const script = [
       `set -euo pipefail`,
       `cd /tmp`,
       SUDO,
       fetchStep,
+      lfsStep,
       checkoutStep,
       `git -C ${wd} reset --hard ${quoteShellArgv([target])}`,
       setOrigin,
       ...carryOverSteps,
       `git -C ${wd} update-ref -d ${quoteShellArgv([DELTA_TARGET_REF])} || true`,
-      `rm -f ${quoteShellArgv([REMOTE_DELTA_BUNDLE])}`,
+      `rm -f ${quoteShellArgv([REMOTE_DELTA_BUNDLE])} ${quoteShellArgv([REMOTE_DELTA_LFS])}`,
     ].join('\n');
     const r = await args.backend.exec(args.handle, bashScript(script));
     if (r.exitCode !== 0) {
@@ -704,6 +735,130 @@ async function tarCloneDir(cloneDir: string, outPath: string): Promise<void> {
   await execa('tar', ['-C', cloneDir, '-czf', outPath, '.'], {
     env: { ...process.env, COPYFILE_DISABLE: '1' },
   });
+}
+
+const LFS_OID_RE = /^[0-9a-f]{64}$/;
+
+/** Content-addressed path of an LFS object inside a `.git/` dir: `lfs/objects/aa/bb/<oid>`. */
+export function lfsObjectRelPath(oid: string): string {
+  return join('lfs', 'objects', oid.slice(0, 2), oid.slice(2, 4), oid);
+}
+
+/**
+ * The set of LFS object oids reachable from `ref` in `hostRepo`. Empty when the
+ * repo doesn't use LFS, `ref` is unknown, or git-lfs isn't installed on the host
+ * (all best-effort — never throws). `git lfs ls-files --long` prints
+ * "<oid> <* or -> <path>" per tracked blob.
+ */
+async function lfsOidsForRef(hostRepo: string, ref: string): Promise<string[]> {
+  const listed = await execa('git', ['-C', hostRepo, 'lfs', 'ls-files', '--long', ref], {
+    reject: false,
+  });
+  if (listed.exitCode !== 0) return [];
+  const oids = listed.stdout
+    .split('\n')
+    .map((l) => l.trim().split(/\s+/)[0] ?? '')
+    .filter((o) => LFS_OID_RE.test(o));
+  return [...new Set(oids)];
+}
+
+/**
+ * Pack the LFS objects reachable from `ref` into the shallow clone's
+ * `.git/lfs/objects/` BEFORE it's tarred, so the in-box `git checkout` smudges
+ * real content instead of leaving pointer files. Docker gets this for free via
+ * its bind-mounted shared `.git/lfs`; cloud has no bind mount, so we copy the
+ * content-addressed blobs into the clone where they ride the existing workspace
+ * tar (no box network / credentials needed at checkout).
+ *
+ * Bounded + best-effort, mirroring the docker provider's `prefetchHostLfs`:
+ *   - probe `git lfs ls-files` → a non-LFS repo does nothing, no log noise.
+ *   - `git lfs fetch origin <ref>` (host holds the creds) warms the host cache.
+ *   - copy ONLY the ref's oids (not the whole `.git/lfs` cache, which can be
+ *     GBs) into the clone. A missing oid (fetch failed / offline) is left as a
+ *     pointer — the box still seeds, just without that object's content.
+ */
+async function seedCloneLfsObjects(
+  hostRepo: string,
+  cloneDir: string,
+  ref: string,
+  log: (line: string) => void,
+): Promise<void> {
+  // Cheap probe so the overwhelmingly common non-LFS repo does nothing and logs
+  // nothing. Empty stdout or non-zero exit (no git-lfs binary / not LFS) → skip.
+  const tracked = await execa('git', ['-C', hostRepo, 'lfs', 'ls-files', '-n', ref], {
+    reject: false,
+  });
+  if (tracked.exitCode !== 0 || tracked.stdout.trim().length === 0) return;
+
+  // Warm the host object cache for the checkout ref (uses the host's creds).
+  const fetched = await execa('git', ['-C', hostRepo, 'lfs', 'fetch', 'origin', ref], {
+    reject: false,
+  });
+  if (fetched.exitCode !== 0) {
+    const msg = (fetched.stderr || fetched.stdout || `exit ${String(fetched.exitCode ?? '?')}`)
+      .trim()
+      .split('\n')[0];
+    log(`git-lfs prefetch for ${ref} skipped (best-effort, continuing): ${msg}`);
+  }
+
+  const oids = await lfsOidsForRef(hostRepo, ref);
+  let copied = 0;
+  for (const oid of oids) {
+    const rel = lfsObjectRelPath(oid);
+    const dst = join(cloneDir, '.git', rel);
+    try {
+      await mkdir(dirname(dst), { recursive: true });
+      await copyFile(join(hostRepo, '.git', rel), dst);
+      copied++;
+    } catch {
+      // Object isn't in the host cache (fetch missed / offline) — leave the
+      // pointer; the box surfaces it as a pointer rather than failing the seed.
+    }
+  }
+  if (copied > 0) log(`seeded ${String(copied)} git-lfs object(s) for ${ref} into clone`);
+}
+
+/**
+ * Tar the LFS objects that the checkpoint restore's delta introduces — the oids
+ * reachable from `target` but not from `checkpointTip` (which the box already
+ * has from when it was first seeded). Preserves the `lfs/objects/aa/bb/<oid>`
+ * layout so an in-box `tar -x` into `<workspaceDir>/.git` lands them in the
+ * box's object store. Returns the tar size (0 when there's nothing to ship, so
+ * the caller can skip the upload + extract). Best-effort; never throws.
+ */
+async function maybeBuildDeltaLfsTar(
+  hostRepo: string,
+  target: string,
+  checkpointTip: string,
+  outPath: string,
+): Promise<number> {
+  const targetOids = await lfsOidsForRef(hostRepo, target);
+  if (targetOids.length === 0) return 0;
+  const have = new Set(await lfsOidsForRef(hostRepo, checkpointTip));
+  const deltaOids = targetOids.filter((o) => !have.has(o));
+  if (deltaOids.length === 0) return 0;
+
+  // Warm the host cache for the target ref, then keep only the oids whose blob
+  // actually exists on disk (a missed fetch just ships fewer objects).
+  await execa('git', ['-C', hostRepo, 'lfs', 'fetch', 'origin', target], { reject: false });
+  const gitDir = join(hostRepo, '.git');
+  const relPaths: string[] = [];
+  for (const oid of deltaOids) {
+    const rel = lfsObjectRelPath(oid);
+    try {
+      await stat(join(gitDir, rel));
+      relPaths.push(rel);
+    } catch {
+      // not present — skip
+    }
+  }
+  if (relPaths.length === 0) return 0;
+  const tar = await execa('tar', ['-C', gitDir, '-czf', outPath, ...relPaths], {
+    env: { ...process.env, COPYFILE_DISABLE: '1' },
+    reject: false,
+  });
+  if (tar.exitCode !== 0) return 0;
+  return safeFileSize(outPath);
 }
 
 async function safeFileSize(path: string): Promise<number> {

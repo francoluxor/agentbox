@@ -69,6 +69,7 @@ apt-get install -y --no-install-recommends \
   python3-venv \
   build-essential \
   git \
+  git-lfs \
   tmux \
   vim \
   libcap2-bin \
@@ -133,6 +134,14 @@ done_ "corepack cache dir (vscode-owned, prevents first-use ENOENT)"
 step "git system-wide safe.directory"
 git config --system --add safe.directory '*'
 done_ "git system-wide safe.directory"
+
+step "git-lfs system filter"
+# Register filter.lfs.* in /etc/gitconfig so an in-box checkout of an LFS repo
+# smudges instead of writing pointer files. Unlike docker, cloud boxes have no
+# bind-mounted ~/.gitconfig, so --system is the only place the filter lives.
+# --skip-repo keeps install from touching a checkout at bake time.
+git lfs install --system --skip-repo
+done_ "git-lfs system filter"
 
 step "docker + iptables for in-VPS DinD"
 apt-get install -y --no-install-recommends \

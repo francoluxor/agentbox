@@ -54,6 +54,7 @@ apt-get update -y -q
 apt-get install -y -q --no-install-recommends \
   ca-certificates \
   git \
+  git-lfs \
   tar \
   gzip \
   curl \
@@ -131,6 +132,15 @@ step "git system-wide safe.directory"
 git config --system --add safe.directory '*' 2>/dev/null || true
 sudo -u vscode -H git config --global --add safe.directory '*' 2>/dev/null || true
 done_ "git system-wide safe.directory"
+
+step "git-lfs system filter"
+# Register filter.lfs.* system-wide (and for vscode) so an in-box checkout of an
+# LFS repo smudges instead of writing pointer files. Cloud boxes have no
+# bind-mounted ~/.gitconfig, so --system is the only place the filter lives.
+# --skip-repo never touches a checkout at bake time.
+git lfs install --system --skip-repo 2>/dev/null || true
+sudo -u vscode -H git lfs install --skip-repo 2>/dev/null || true
+done_ "git-lfs system filter"
 
 step "agentbox-ctl install"
 install -m 0755 /tmp/agentbox-ctl /usr/local/bin/agentbox-ctl

@@ -117,6 +117,38 @@ workspace, **per repo** (root + any 1st-level nested repos):
 If the host workspace **isn't** a git repo, `seedFromTar` just `tar -czf .`
 the whole dir, uploads, extracts. No clone, no branch.
 
+### git-LFS objects
+
+A plain `git clone` populates only commits + pointer files, **never**
+`.git/lfs/objects`. Cloud boxes also have no host credentials and (hetzner)
+locked egress, so an in-box smudge of a missing object would hit the upstream
+LFS endpoint unauthenticated and fail — leaving broken pointers (or aborting
+the seed under `set -e`). Docker sidesteps this via its bind-mounted, shared
+`.git/lfs`; cloud has no bind mount, so the objects are seeded explicitly:
+
+- Between the shallow clone (step 3) and the tar (step 5),
+  `seedCloneLfsObjects` (`workspace-seed.ts`) probes `git lfs ls-files`,
+  best-effort `git lfs fetch origin <ref>` (host holds the creds) to warm the
+  host cache, then **copies only the checkout ref's object blobs** —
+  content-addressed `.git/lfs/objects/aa/bb/<oid>` — into the clone. They ride
+  the existing `workspace.tar.gz`, so the in-box `git checkout` smudges real
+  content with zero box network/creds. Bounded to the working set (not the
+  whole `.git/lfs` cache, which can be GBs) and fully best-effort: a missing
+  oid is left as a pointer, never failing the seed.
+- The checkpoint-restore **delta** path (`tryReseedRepoDelta`) ships only the
+  oids the delta introduces (`target \ checkpointTip`) as a small
+  `agentbox-delta-lfs.tar.gz`, extracted into the box's `.git` before the
+  reset.
+- Each cloud base image installs `git-lfs` + `git lfs install --system` (the
+  provider install scripts; daytona inherits it from `Dockerfile.box`) so the
+  filter is registered — without it the checkout silently skips smudge, since
+  cloud boxes have no bind-mounted `~/.gitconfig`.
+
+Out of scope (today): push-back of box-created LFS objects and lazy on-demand
+`git lfs pull` of objects beyond the seeded working set — both need a relay
+LFS transport. For docker, push-back already works as an emergent property of
+the shared `.git/lfs` + host-side `git push`.
+
 ## First time vs. next time
 
 | | First time | Subsequent boxes |

@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { buildCarryOverSteps, parseSeedConflicts } from '../src/workspace-seed.js';
+import { buildCarryOverSteps, lfsObjectRelPath, parseSeedConflicts } from '../src/workspace-seed.js';
+
+describe('lfsObjectRelPath', () => {
+  it('maps an oid to git-lfs content-addressed storage (aa/bb/<oid>)', () => {
+    const oid = 'dfbd78a3ce7887c4d9033fd78e690be2c1096a7dfc2194e3cd7030ccd51aa267';
+    // This layout is load-bearing: the host-side copy and the in-box tar extract
+    // must agree so the in-box smudge finds the object with no network.
+    expect(lfsObjectRelPath(oid)).toBe(`lfs/objects/df/bd/${oid}`);
+  });
+});
 
 describe('parseSeedConflicts', () => {
   it('extracts + dedupes merge-conflict and overlay-skip markers', () => {

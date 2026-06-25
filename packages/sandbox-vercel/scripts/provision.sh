@@ -144,6 +144,26 @@ git config --system --add safe.directory '*' 2>/dev/null || true
 sudo -u vscode -H git config --global --add safe.directory '*' 2>/dev/null || true
 done_ "git system-wide safe.directory"
 
+step "git-lfs (binary + system filter)"
+# Not in the atomic base dnf transaction on purpose: AL2023 may not carry
+# git-lfs in its default repos, and a missing package would abort the whole
+# (atomic) base install. Best-effort here — try dnf, then git-lfs's official
+# packagecloud rpm repo as a fallback. If both miss, LFS repos degrade to
+# pointer files rather than breaking the bake.
+if ! command -v git-lfs >/dev/null 2>&1; then
+  dnf install -y -q git-lfs 2>/dev/null || {
+    curl -fsSL https://packagecloud.io/install/repositories/github/git-lfs/script.rpm.sh | bash 2>&1 | tail -3 || true
+    dnf install -y -q git-lfs 2>&1 | tail -3 || true
+  }
+fi
+# Register filter.lfs.* in the (Vercel-relocated /opt/git/etc) system gitconfig
+# AND for vscode, so an in-box checkout of an LFS repo smudges instead of writing
+# pointers. Cloud boxes have no bind-mounted ~/.gitconfig, so this is the only
+# place the filter lives. --skip-repo never touches a checkout at bake time.
+git lfs install --system --skip-repo 2>/dev/null || true
+sudo -u vscode -H git lfs install --skip-repo 2>/dev/null || true
+done_ "git-lfs (binary + system filter)"
+
 step "agentbox-ctl install"
 install -m 0755 /tmp/agentbox-ctl /usr/local/bin/agentbox-ctl
 done_ "agentbox-ctl install"

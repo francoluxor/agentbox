@@ -177,6 +177,10 @@ export async function prepareDaytona(opts: PrepareOptions): Promise<PrepareResul
   }
 
   try {
+    // git-lfs (binary + `git lfs install --system`) is inherited for free from
+    // Dockerfile.box, so an in-box checkout of an LFS repo smudges real content.
+    // No daytona-specific overlay step is needed; the host-side object seeding
+    // lives in sandbox-cloud's workspace-seed (seedCloneLfsObjects).
     let image: Image = Image.fromDockerfile(ctx.dockerfile);
 
     // Overlay the daytona-specific /etc/claude-code/CLAUDE.md on top of the
