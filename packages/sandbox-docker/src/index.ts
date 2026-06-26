@@ -60,6 +60,8 @@ export {
   type VolumeClaudeCredentials,
 } from './claude-credentials.js';
 export {
+  BOX_SYSTEM_PROMPT_PATH,
+  buildCodexAgentsOverrideScript,
   buildCodexAttachArgv,
   buildCodexLoginRunArgv,
   buildCodexMounts,
@@ -72,6 +74,7 @@ export {
   pullCodexConfig,
   resolveCodexVolume,
   runInteractiveCodexLogin,
+  seedCodexAgentsOverride,
   seedCodexHooks,
   SHARED_CODEX_VOLUME,
   startCodexSession,

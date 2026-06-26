@@ -59,6 +59,7 @@ import {
   seedOpencodeModelState,
 } from './agent-credentials.js';
 import { seedDynamicConfig } from './dynamic-sync.js';
+import { ensureCodexAgentsOverride } from './codex-agents-override.js';
 import { seedClaudeJsonAtCreate } from './claude-json-overlay.js';
 import { seedGitIdentity } from './git-identity.js';
 import {
@@ -722,6 +723,13 @@ export function createCloudProvider(
         // wrong owner. Without this, Codex can't create its `state_*.sqlite`
         // index at startup (we stopped seeding it). Cheap + idempotent.
         await ensureAgentHomeDirsOwned(backend, handle, { onLog: log });
+
+        // Fold the box "system prompt" (/etc/claude-code/CLAUDE.md) into
+        // ~/.codex/AGENTS.override.md so the in-box Codex agent reads the same
+        // box facts Claude gets. Runs after the agent home dirs are in place so
+        // any user-global AGENTS.md is preserved beneath the facts. Mirrors the
+        // docker provider's seedCodexAgentsOverride.
+        await ensureCodexAgentsOverride(backend, handle, { onLog: log });
 
         // Seed the host's selected OpenCode model into the box's (ephemeral)
         // state dir on every create. Runs unconditionally — Hetzner has no

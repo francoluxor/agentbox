@@ -16,6 +16,7 @@ import {
   buildCodexMounts,
   ensureCodexVolume,
   resolveCodexVolume,
+  seedCodexAgentsOverride,
   seedCodexHooks,
   type CodexMountResult,
 } from './codex.js';
@@ -674,6 +675,12 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     // each create so an image upgrade propagates; never touches the host.
     const codexHooks = await seedCodexHooks(codexSpec.volume, ensureRef);
     if (codexHooks.seeded) log(`seeded Codex activity hooks into ${codexSpec.volume}`);
+    // Box-only: fold the box "system prompt" (/etc/claude-code/CLAUDE.md) into
+    // ~/.codex/AGENTS.override.md so the in-box Codex agent reads the same box
+    // facts Claude gets. Runs after the rsync above so a user's synced AGENTS.md
+    // gets preserved beneath the facts.
+    const codexOverride = await seedCodexAgentsOverride(codexSpec.volume, ensureRef);
+    if (codexOverride.seeded) log(`seeded Codex AGENTS.override.md into ${codexSpec.volume}`);
     codexMounts = buildCodexMounts(codexSpec, process.env);
     codexConfigVolume = codexSpec.volume;
   }

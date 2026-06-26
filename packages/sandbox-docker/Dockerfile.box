@@ -435,13 +435,17 @@ RUN printf '%s\n' \
         'set -g escape-time 0' \
         > /etc/tmux.conf
 
-# System-wide Claude Code hint. NOTE: /etc/claude-code/CLAUDE.md is not a
+# System-wide agent hint. NOTE: /etc/claude-code/CLAUDE.md is not a
 # documented Claude Code load path today (only /etc/claude-code/managed-settings.json
 # is, and that's settings-only) — kept here so it's discoverable via
 # `cat /etc/claude-code/CLAUDE.md` and forward-compatible if Claude Code
-# adds it to its memory chain. Until then, in-box agents learn the same
-# facts via /etc/agentbox/box.env + AGENTBOX_* env vars. Content lives in
-# scripts/custom-system-CLAUDE.md (edit there, not inline) for maintainability.
+# adds it to its memory chain. Codex DOES consume it: seedCodexAgentsOverride()
+# (packages/sandbox-docker/src/codex.ts) folds this file into the codex-config
+# volume's ~/.codex/AGENTS.override.md at create time (a runtime seed, not an
+# image bake — the ~/.codex volume would shadow a baked link). Until Claude loads
+# it, Claude agents learn the same facts via /etc/agentbox/box.env + AGENTBOX_*
+# env vars. Content lives in scripts/custom-system-CLAUDE.md (edit there, not
+# inline) for maintainability.
 RUN mkdir -p /etc/claude-code
 COPY packages/sandbox-docker/scripts/custom-system-CLAUDE.md /etc/claude-code/CLAUDE.md
 RUN chmod 0644 /etc/claude-code/CLAUDE.md

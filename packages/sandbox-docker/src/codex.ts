@@ -23,6 +23,70 @@ const CONTAINER_CODEX_DIR = '/home/vscode/.codex';
  * into the codex-config volume as `~/.codex/hooks.json`.
  */
 const IN_BOX_CODEX_HOOKS_PATH = '/usr/local/share/agentbox/codex-hooks.json';
+/**
+ * Image-baked box "system prompt": operational facts about the sandbox (it's a
+ * container, `/workspace` is a per-box worktree, push/PR/cp go through the host
+ * relay, identity in `/etc/agentbox/box.env`). Installed at this path on every
+ * provider (Dockerfile.box COPY for docker/daytona; the cloud install scripts
+ * copy it here too). {@link buildCodexAgentsOverrideScript} folds it into
+ * `~/.codex/AGENTS.override.md` so the in-box Codex agent reads the same facts
+ * Claude gets — Codex has no `/etc`-level memory slot of its own.
+ */
+export const BOX_SYSTEM_PROMPT_PATH = '/etc/claude-code/CLAUDE.md';
+/** Marks our generated override so we never fold our own output back in. */
+const CODEX_OVERRIDE_SENTINEL =
+  '<!-- agentbox:box-facts (generated; edit AGENTS.md instead) -->';
+
+/**
+ * Build the `sh` snippet that (re)generates `<codexHome>/AGENTS.override.md` =
+ * sentinel + box facts ({@link BOX_SYSTEM_PROMPT_PATH}) + the user's own global
+ * Codex instructions. Codex loads the first non-empty of
+ * `AGENTS.override.md` then `AGENTS.md` from CODEX_HOME (first-match-wins, no
+ * concat, no `@import`), so to be additive we must own the override and fold the
+ * user's content in below the facts.
+ *
+ * Idempotent: a sentinel on line 1 distinguishes our file from a user-authored
+ * one, so re-runs don't fold our own output back in (no feedback loop). The
+ * user's global — `AGENTS.md`, or a hand-authored `AGENTS.override.md` — is
+ * folded in beneath the box facts. Because the host `~/.codex` is re-synced
+ * before each seed (docker) the user's source is restored every create, so the
+ * fold is stable across runs; the sentinel-only file is regenerated from that
+ * fresh source. Box facts are read fresh too, so an image upgrade propagates on
+ * the next create. No-op when the box-facts file is absent.
+ *
+ * Caller owns the file afterwards (docker chowns to uid 1000; the cloud path
+ * runs the script as `vscode`, so ownership is already correct). `codexHome` is
+ * `/dst` for the docker volume-seed container and `$HOME/.codex` in-box.
+ */
+export function buildCodexAgentsOverrideScript(codexHome: string): string {
+  // `codexHome` is a build-time constant from our own callers, never user input.
+  return [
+    'set -e',
+    `BOX=${BOX_SYSTEM_PROMPT_PATH}`,
+    '[ -f "$BOX" ] || exit 0',
+    `DIR=${codexHome}`,
+    'OVR="$DIR/AGENTS.override.md"',
+    'AGT="$DIR/AGENTS.md"',
+    `SENTINEL='${CODEX_OVERRIDE_SENTINEL}'`,
+    'UC=""',
+    'if [ -f "$OVR" ] && ! head -n1 "$OVR" | grep -qF "$SENTINEL"; then',
+    '  UC=$(cat "$OVR")',
+    'elif [ -f "$AGT" ]; then',
+    '  UC=$(cat "$AGT")',
+    'fi',
+    'mkdir -p "$DIR"',
+    'TMP="$OVR.agentbox.tmp"',
+    '{',
+    "  printf '%s\\n' \"$SENTINEL\"",
+    '  cat "$BOX"',
+    '  if [ -n "$UC" ]; then',
+    "    printf '\\n\\n'",
+    "    printf '%s\\n' \"$UC\"",
+    '  fi',
+    '} > "$TMP"',
+    'mv "$TMP" "$OVR"',
+  ].join('\n');
+}
 
 export interface CodexConfigSpec {
   /** Resolved Docker volume name mounted at /home/vscode/.codex. */
@@ -231,6 +295,39 @@ export async function seedCodexHooks(
       '-c',
       `{ [ -f ${IN_BOX_CODEX_HOOKS_PATH} ] && cp -a ${IN_BOX_CODEX_HOOKS_PATH} /dst/hooks.json && ` +
         `chown 1000:1000 /dst/hooks.json && echo SEEDED; } || true`,
+    ]);
+    return { seeded: stdout.includes('SEEDED') };
+  } catch {
+    return { seeded: false };
+  }
+}
+
+/**
+ * Regenerate `~/.codex/AGENTS.override.md` in the codex-config volume so the
+ * in-box Codex agent picks up the box "system prompt" ({@link
+ * BOX_SYSTEM_PROMPT_PATH}). Runs in a throwaway container with the volume at
+ * `/dst`; reads the box-facts file from the image's own fs and any user global
+ * from the volume. Must run AFTER {@link ensureCodexVolume} (the host rsync) so
+ * the user's synced `AGENTS.md`/override is in place to fold in. Best-effort —
+ * never fail box creation. See {@link buildCodexAgentsOverrideScript}.
+ */
+export async function seedCodexAgentsOverride(
+  volume: string,
+  image: string,
+): Promise<{ seeded: boolean }> {
+  try {
+    const { stdout } = await execa('docker', [
+      'run',
+      '--rm',
+      '--user',
+      '0',
+      '-v',
+      `${volume}:/dst`,
+      image,
+      'sh',
+      '-c',
+      buildCodexAgentsOverrideScript('/dst') +
+        '\nchown 1000:1000 "$OVR" 2>/dev/null || true\n[ -f "$OVR" ] && echo SEEDED || true',
     ]);
     return { seeded: stdout.includes('SEEDED') };
   } catch {
