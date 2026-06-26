@@ -51,6 +51,7 @@ import {
   TERM_FALLBACK_SNIPPET,
 } from '@agentbox/sandbox-docker';
 import {
+  ensureAgentHomeDirsOwned,
   ensureAgentVolumesForCloud,
   extractCloudAgentCredentials,
   refreshAgentCredentialsBackup,
@@ -714,6 +715,13 @@ export function createCloudProvider(
             onLog: log,
           });
         }
+
+        // Normalize ownership of the agent static-config home dirs to vscode.
+        // Runs unconditionally (not gated on a credentials volume): the agent
+        // runs as vscode and a base template can bake `~/.codex` etc. with the
+        // wrong owner. Without this, Codex can't create its `state_*.sqlite`
+        // index at startup (we stopped seeding it). Cheap + idempotent.
+        await ensureAgentHomeDirsOwned(backend, handle, { onLog: log });
 
         // Seed the host's selected OpenCode model into the box's (ephemeral)
         // state dir on every create. Runs unconditionally — Hetzner has no

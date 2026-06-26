@@ -32,6 +32,9 @@ import { bashScript, quoteShellArg } from './shell.js';
 const REMOTE_UP_TAR = '/tmp/agentbox-cp-up.tar.gz';
 const REMOTE_DOWN_TAR = '/tmp/agentbox-cp-down.tar.gz';
 
+/** In-box home for the agent user; cloud boxes always run as `vscode`. */
+const BOX_HOME = '/home/vscode';
+
 export interface CloudCpResult {
   /** Final landed path on the receiving side. */
   finalPath: string;
@@ -87,6 +90,23 @@ export async function uploadToCloudBox(
       finalName !== srcBasename
         ? `$SUDO cp -f ${quoteShellArg(initialPath)} ${quoteShellArg(finalPath)} && $SUDO rm -f ${quoteShellArg(initialPath)}`
         : ': # no rename';
+    // Parent-chain chown: `mkdir -p` ran as root (via $SUDO), so any new dirs
+    // between $HOME and the landed path are root-owned. When the dest is under
+    // the box home, walk back up to $HOME (exclusive) and chown each so the
+    // agent (vscode) can write siblings — e.g. session-teleport lands a rollout
+    // under `~/.codex/sessions/YYYY/MM/DD/` and Codex must then create its
+    // `state_*.sqlite` index in that subtree. System paths (/etc/*) and
+    // /workspace keep their existing ownership. The whole script runs via
+    // `bashScript()` (`bash -c '<body>'`), which protects `$(...)`/`while` from
+    // Vercel's outer `sudo -u vscode -H bash -lc` wrapping.
+    const underHome = finalPath === BOX_HOME || finalPath.startsWith(BOX_HOME + '/');
+    const parentWalk = underHome
+      ? `parent=$(dirname ${quoteShellArg(finalPath)}); ` +
+        `while [ "$parent" != ${quoteShellArg(BOX_HOME)} ] && [ "$parent" != "/" ]; do ` +
+        `$SUDO chown "$(id -un):$(id -gn)" "$parent" || true; ` +
+        `parent=$(dirname "$parent"); ` +
+        `done`
+      : `: # dest outside ${BOX_HOME}; leave parent ownership untouched`;
     const script = [
       `set -euo pipefail`,
       `if command -v sudo >/dev/null 2>&1; then SUDO='sudo -n'; else SUDO=''; fi`,
@@ -97,9 +117,10 @@ export async function uploadToCloudBox(
       // sandbox's regular disk. Same flags as the credential-seed extract.
       `$SUDO tar -xzf ${quoteShellArg(REMOTE_UP_TAR)} -C ${quoteShellArg(boxParent)} --no-same-permissions --no-same-owner -m`,
       renameStep,
-      // chown only the landed path — anything we mkdir'd through stays at
-      // its existing ownership. Tolerate failure (chown bad on read-only mounts).
+      // chown the landed subtree, then the parent chain back up to $HOME.
+      // Tolerate failure (chown bad on read-only / FUSE mounts).
       `$SUDO chown -R "$(id -un):$(id -gn)" ${quoteShellArg(finalPath)} || true`,
+      parentWalk,
       `rm -f ${quoteShellArg(REMOTE_UP_TAR)}`,
     ].join('\n');
     const r = await backend.exec(handle, bashScript(script));

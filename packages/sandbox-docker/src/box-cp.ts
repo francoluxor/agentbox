@@ -15,6 +15,9 @@ import { basename, dirname, posix, resolve } from 'node:path';
 import { execa } from 'execa';
 import type { BoxRecord } from '@agentbox/core';
 
+/** In-box home for the agent user; boxes always run as `vscode` (uid 1000). */
+const BOX_HOME = '/home/vscode';
+
 function posixDirname(p: string): string {
   return posix.dirname(p) || '/';
 }
@@ -165,6 +168,42 @@ export async function uploadToBox(
       finalPath,
       warn: `chown ${finalPath} to vscode (uid 1000) failed; ownership inside the box may be root.`,
     };
+  }
+
+  // Parent-chain chown: `mkdir -p` ran as root, so any new dirs between $HOME
+  // and the landed path are root-owned. When the dest is under the box home,
+  // walk back up to $HOME (exclusive) and chown each so the agent (vscode) can
+  // write siblings — e.g. session-teleport lands a rollout under
+  // `~/.codex/sessions/YYYY/MM/DD/` and Codex must then create its
+  // `state_*.sqlite` index in that subtree. Non-fatal (matches the warn-only
+  // policy of the chown above).
+  if (finalPath === BOX_HOME || finalPath.startsWith(BOX_HOME + '/')) {
+    const walk = await execa(
+      'docker',
+      [
+        'exec',
+        '--user',
+        'root',
+        box.container,
+        'sh',
+        '-c',
+        `parent=$(dirname "$1"); ` +
+          `while [ "$parent" != "$2" ] && [ "$parent" != "/" ]; do ` +
+          `chown 1000:1000 "$parent" || true; ` +
+          `parent=$(dirname "$parent"); ` +
+          `done`,
+        'sh',
+        finalPath,
+        BOX_HOME,
+      ],
+      { reject: false },
+    );
+    if (walk.exitCode !== 0) {
+      return {
+        finalPath,
+        warn: `chown of parent dirs under ${BOX_HOME} failed; some may remain root-owned.`,
+      };
+    }
   }
   return { finalPath };
 }

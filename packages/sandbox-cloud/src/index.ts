@@ -16,6 +16,7 @@ export {
 } from './workspace-seed.js';
 export {
   agentSpecsForCloud,
+  ensureAgentHomeDirsOwned,
   ensureAgentVolumesForCloud,
   extractCloudAgentCredentials,
   seedAgentVolumesIfFresh,
