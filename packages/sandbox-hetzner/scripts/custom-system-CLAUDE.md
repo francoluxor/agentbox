@@ -36,4 +36,9 @@ ask the user for confirmation on the wrapper that runs `agentbox claude`;
 deny returns exit 10 (`denied by user`).
 Don't put any timeout on the command, it will run forever and the user will be notified through multiple channels.
 
+If an agentbox.yaml file is present, services and docker containers will be started automatically.
+Check the status with `agentbox-ctl status`.
+
+To view any web services, open the browser to https://<AGENTBOX_BOX_HOST>. The AGENTBOX_BOX_HOST env var is available in the box and the same url will work from the host as well via a local proxy or because is a cloud provided url.
+
 Box identity: /etc/agentbox/box.env and the AGENTBOX_* env vars.
