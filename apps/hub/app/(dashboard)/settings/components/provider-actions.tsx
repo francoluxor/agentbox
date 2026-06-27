@@ -36,6 +36,7 @@ const CRED_FIELDS: Record<string, CredField[]> = {
     { key: 'teamId', label: 'Team ID', placeholder: 'team_… (optional)', optional: true },
     { key: 'projectId', label: 'Project ID', placeholder: 'prj_… (optional)', optional: true },
   ],
+  digitalocean: [{ key: 'token', label: 'API token', placeholder: 'personal access token (read+write)' }],
 };
 
 export function ProvidersSection() {

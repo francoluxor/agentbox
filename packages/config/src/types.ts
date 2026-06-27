@@ -67,6 +67,7 @@ export interface UserConfig {
     defaultCheckpointHetzner?: string;
     defaultCheckpointVercel?: string;
     defaultCheckpointE2b?: string;
+    defaultCheckpointDigitalocean?: string;
     /**
      * Generic VM-size fallback for cloud providers. Provider-interpreted:
      * Hetzner = server type string (e.g. `cx33`); Daytona = `cpu-memory-disk`
@@ -80,6 +81,7 @@ export interface UserConfig {
     sizeHetzner?: string;
     sizeVercel?: string;
     sizeE2b?: string;
+    sizeDigitalocean?: string;
     withPlaywright?: boolean;
     /**
      * How the base image/snapshot installs Claude Code at bake time. Bake-time
@@ -106,6 +108,7 @@ export interface UserConfig {
     imageHetzner?: string;
     imageVercel?: string;
     imageE2b?: string;
+    imageDigitalocean?: string;
     imageRegistry?: string;
     dockerCacheShared?: boolean;
     memory?: number;
@@ -224,12 +227,14 @@ export interface EffectiveConfig {
     defaultCheckpointHetzner: string;
     defaultCheckpointVercel: string;
     defaultCheckpointE2b: string;
+    defaultCheckpointDigitalocean: string;
     size: string;
     sizeDocker: string;
     sizeDaytona: string;
     sizeHetzner: string;
     sizeVercel: string;
     sizeE2b: string;
+    sizeDigitalocean: string;
     withPlaywright: boolean;
     claudeInstall: ClaudeInstallMethod;
     withEnv: boolean;
@@ -246,6 +251,7 @@ export interface EffectiveConfig {
     imageHetzner: string;
     imageVercel: string;
     imageE2b: string;
+    imageDigitalocean: string;
     imageRegistry: string;
     dockerCacheShared: boolean;
     memory: number;
@@ -375,12 +381,14 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     defaultCheckpointHetzner: '',
     defaultCheckpointVercel: '',
     defaultCheckpointE2b: '',
+    defaultCheckpointDigitalocean: '',
     size: '',
     sizeDocker: '',
     sizeDaytona: '',
     sizeHetzner: '',
     sizeVercel: '',
     sizeE2b: '',
+    sizeDigitalocean: '',
     withPlaywright: false,
     claudeInstall: 'native',
     withEnv: false,
@@ -397,6 +405,7 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     imageHetzner: '',
     imageVercel: '',
     imageE2b: '',
+    imageDigitalocean: '',
     // Mirrors BOX_IMAGE_REGISTRY in @agentbox/sandbox-docker. Empty disables the
     // registry pull (always build the docker base image locally).
     imageRegistry: 'ghcr.io/madarco/agentbox/box',

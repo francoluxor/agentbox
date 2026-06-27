@@ -83,6 +83,7 @@ const IMPORTERS: Record<ProviderKind, () => Promise<{ providerModule: ProviderMo
   hetzner: () => import('@agentbox/sandbox-hetzner'),
   vercel: () => import('@agentbox/sandbox-vercel'),
   e2b: () => import('@agentbox/sandbox-e2b'),
+  digitalocean: () => import('@agentbox/sandbox-digitalocean'),
 };
 
 // Per-provider serialization of prepare-enqueue: `prepareProvider` reads the
@@ -328,6 +329,7 @@ const PROVIDER_CRED_KEYS: Record<ProviderKind, readonly string[]> = {
   daytona: ['DAYTONA_API_KEY', 'DAYTONA_JWT_TOKEN'],
   hetzner: ['HCLOUD_TOKEN'],
   vercel: ['VERCEL_TOKEN', 'VERCEL_OIDC_TOKEN', 'VERCEL_AUTH_SOURCE'],
+  digitalocean: ['DIGITALOCEAN_TOKEN'],
 };
 
 /** Set of KEY names present in `~/.agentbox/secrets.env` (values ignored). */

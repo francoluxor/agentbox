@@ -31,6 +31,7 @@ const IMPORTERS: Record<ProviderKind, () => Promise<{ providerModule: ProviderMo
   hetzner: () => import('@agentbox/sandbox-hetzner'),
   vercel: () => import('@agentbox/sandbox-vercel'),
   e2b: () => import('@agentbox/sandbox-e2b'),
+  digitalocean: () => import('@agentbox/sandbox-digitalocean'),
 };
 
 /**
