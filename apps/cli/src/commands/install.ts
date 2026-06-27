@@ -30,8 +30,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, join, resolve } from 'node:path';
+import { isSourceCheckout, resolveHostSkillsDir } from '../lib/source-checkout.js';
 import {
   formatCompact,
   runProviderChecks,
@@ -214,45 +214,12 @@ function installTargets(): InstallTarget[] {
   ];
 }
 
-/**
- * Locate the bundled `share/host-skills/` directory. This module is bundled
- * into the CLI at `<root>/dist/index.js`; `share/` ships as a sibling of
- * `dist/` in both the dev tree and the published package. The src-tree
- * candidate covers running unbundled (e.g. tsx).
- */
-function resolveHostSkillsDir(): string {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    resolve(here, '..', 'share', 'host-skills'),
-    resolve(here, '..', '..', 'share', 'host-skills'),
-  ];
-  for (const c of candidates) {
-    if (existsSync(c)) return c;
-  }
-  throw new Error(`could not locate bundled host skills; tried:\n  ${candidates.join('\n  ')}`);
-}
-
 function isSymlink(target: string): boolean {
   try {
     return lstatSync(target).isSymbolicLink();
   } catch {
     return false;
   }
-}
-
-/**
- * True when the bundled skills resolve inside a source checkout rather than an
- * installed package. Every distribution path — `npm i -g`, pnpm global, the
- * npx cache — lives under a `node_modules` segment; a dev clone
- * (`<repo>/apps/cli/share/host-skills`) does not. We key on the source
- * *location*, not `detectExecutionMethod`, because a global install invoked
- * directly carries no `npm_config_user_agent` and would misreport as `direct`.
- * In a checkout we symlink skills so source edits are picked up live (mirroring
- * the `pnpm register` bin symlink); a published install must copy, since its
- * source dir is transient and a symlink would dangle on upgrade.
- */
-function isSourceCheckout(srcDir: string): boolean {
-  return !srcDir.split(sep).includes('node_modules');
 }
 
 function writableReason(target: string, force: boolean): 'new' | 'managed' | 'forced' | 'skip' {

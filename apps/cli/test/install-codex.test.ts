@@ -3,8 +3,10 @@ import { parse as parseToml } from 'smol-toml';
 import {
   codexConfigPath,
   codexPluginEnableTable,
+  marketplaceSource,
   upsertCodexPluginEnable,
 } from '../src/commands/install-codex.js';
+import { resolveDevRepoRoot } from '../src/lib/source-checkout.js';
 
 const ID = 'agentbox@agentbox';
 const enabledOf = (text: string) =>
@@ -104,5 +106,21 @@ describe('codexConfigPath', () => {
 describe('codexPluginEnableTable', () => {
   it('is a valid standalone TOML table that enables the plugin', () => {
     expect(enabledOf(codexPluginEnableTable())).toBe(true);
+  });
+});
+
+describe('marketplaceSource', () => {
+  // Tests run from the source checkout, so the default resolves to the local repo.
+  it('points at the local repo root in a source checkout (dev)', () => {
+    const { source, devRoot } = marketplaceSource();
+    expect(devRoot).toBe(resolveDevRepoRoot());
+    expect(devRoot).not.toBeNull();
+    expect(source).toBe(devRoot);
+  });
+
+  it('falls back to the GitHub slug with --no-dev', () => {
+    const { source, devRoot } = marketplaceSource({ noDev: true });
+    expect(devRoot).toBeNull();
+    expect(source).toBe('madarco/agentbox');
   });
 });
