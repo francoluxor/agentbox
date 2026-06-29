@@ -48,18 +48,37 @@ function deadBoxProvider(): Provider {
   return { name: 'daytona', exec } as unknown as Provider;
 }
 
-describe('restoreAgentSessions launchFresh', () => {
+describe('restoreAgentSessions restoreOnly', () => {
   afterEach(() => cloudAgentStartDetached.mockClear());
 
-  it('starts the lastAgent fresh when nothing is resumable', async () => {
-    await restoreAgentSessions(box, deadBoxProvider(), { launchFresh: 'opencode' });
+  it('starts the named agent fresh when nothing is resumable', async () => {
+    await restoreAgentSessions(box, deadBoxProvider(), { restoreOnly: 'opencode' });
     expect(cloudAgentStartDetached).toHaveBeenCalledTimes(1);
     const arg = cloudAgentStartDetached.mock.calls[0]![0];
     expect(arg.binary).toBe('opencode');
     expect(arg.sessionName).toBe('opencode');
   });
 
-  it('does nothing without launchFresh when nothing is resumable', async () => {
+  it('restores ONLY the named agent, not other resumable ones', async () => {
+    // Both claude and codex have resumable pointers, but restoreOnly:'claude'
+    // must bring back claude only — never codex.
+    const provider = (() => {
+      const exec = vi.fn(async (_b, argv: string[]): Promise<ExecResult> => {
+        const s = argv.join(' ');
+        if (s.includes('has-session')) return { exitCode: 1, stdout: '', stderr: '' };
+        if (s.includes('claude-session'))
+          return { exitCode: 0, stdout: '11111111-2222-4333-8444-555555555555\n', stderr: '' };
+        if (s.includes('codex-active')) return { exitCode: 0, stdout: 'y', stderr: '' };
+        return { exitCode: 0, stdout: '', stderr: '' };
+      });
+      return { name: 'daytona', exec } as unknown as Provider;
+    })();
+    await restoreAgentSessions(box, provider, { restoreOnly: 'claude' });
+    expect(cloudAgentStartDetached).toHaveBeenCalledTimes(1);
+    expect(cloudAgentStartDetached.mock.calls[0]![0].binary).toBe('claude');
+  });
+
+  it('does nothing without restoreOnly when nothing is resumable', async () => {
     await restoreAgentSessions(box, deadBoxProvider(), {});
     expect(cloudAgentStartDetached).not.toHaveBeenCalled();
   });

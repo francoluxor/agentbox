@@ -78,15 +78,16 @@ export async function agentResumeArgs(
 export interface RestoreOptions {
   onLog?: (line: string) => void;
   /**
-   * When set, and the named agent's tmux session is NOT already live and there's
-   * nothing to resume (no in-box pointer — e.g. an adopted box, or one whose
-   * pointer was cleared on stop), start that agent in a FRESH detached session.
-   * Used by `agentbox recover` so the box's `lastAgent` comes back even with no
-   * resumable session. `start`/`unpause` omit it (they only resume what was
-   * actually running). OpenCode — which has no session resume — only ever
-   * launches via this path.
+   * Restrict the restore to a SINGLE agent: bring back exactly this one —
+   * resume its session if there's a live one or a resumable in-box pointer,
+   * otherwise start it FRESH. Used by `agentbox recover`, which knows the box's
+   * `lastAgent` and wants that agent back, not whatever other (possibly stale)
+   * pointers happen to exist in the box. When unset, resume EVERY resumable
+   * agent that was running — the `start`/`unpause` "box never went down"
+   * semantics. OpenCode has no session resume, so it only ever comes back via
+   * the fresh path here.
    */
-  launchFresh?: 'claude' | 'codex' | 'opencode';
+  restoreOnly?: 'claude' | 'codex' | 'opencode';
 }
 
 /** Start a fresh (no-resume) detached agent session. */
@@ -142,19 +143,12 @@ export async function restoreAgentSessions(
       : kind === 'codex'
         ? (cfg?.effective.codex.sessionName ?? 'codex')
         : (cfg?.effective.opencode.sessionName ?? 'opencode');
-  // Pass 1: resume whichever resumable agents (claude/codex) were running.
-  // Track the kinds already live or relaunched so the fresh-launch pass below
-  // doesn't double-start one.
-  const handled = new Set<'claude' | 'codex' | 'opencode'>();
-  const kinds: ResumableAgent[] = ['claude', 'codex'];
-  for (const kind of kinds) {
-    const sessionName = sessionNameFor(kind);
-    if (await tmuxAlive(provider, box, sessionName)) {
-      handled.add(kind);
-      continue;
-    }
+
+  // Resume one resumable agent (claude/codex) from its in-box pointer. Returns
+  // true if it (re)launched, false if there was nothing to resume / it failed.
+  const tryResume = async (kind: ResumableAgent, sessionName: string): Promise<boolean> => {
     const resume = await agentResumeArgs(provider, box, kind);
-    if (!resume) continue;
+    if (!resume) return false;
     const args =
       kind === 'claude'
         ? cfg
@@ -173,24 +167,35 @@ export async function restoreAgentSessions(
       } else {
         await cloudAgentStartDetached({ box, binary: kind, sessionName, extraArgs: args });
       }
-      handled.add(kind);
       opts.onLog?.(`resumed ${kind} session`);
+      return true;
     } catch (err) {
       opts.onLog?.(`could not resume ${kind} session: ${(err as Error).message}`);
+      return false;
     }
+  };
+
+  // recover: bring back exactly the named agent — resume if there's a live or
+  // resumable session, else start it fresh. Don't touch other agents whose
+  // (possibly stale) pointers happen to exist.
+  const only = opts.restoreOnly;
+  if (only) {
+    const sessionName = sessionNameFor(only);
+    if (await tmuxAlive(provider, box, sessionName)) return;
+    if ((only === 'claude' || only === 'codex') && (await tryResume(only, sessionName))) return;
+    try {
+      await startFreshSession(box, only, sessionName, cfg, isDocker);
+      opts.onLog?.(`started ${only} session`);
+    } catch (err) {
+      opts.onLog?.(`could not start ${only} session: ${(err as Error).message}`);
+    }
+    return;
   }
-  // Pass 2 (recover only): the box's last agent had no live/resumable session,
-  // so start it fresh.
-  const fresh = opts.launchFresh;
-  if (fresh && !handled.has(fresh)) {
-    const sessionName = sessionNameFor(fresh);
-    if (!(await tmuxAlive(provider, box, sessionName))) {
-      try {
-        await startFreshSession(box, fresh, sessionName, cfg, isDocker);
-        opts.onLog?.(`started ${fresh} session`);
-      } catch (err) {
-        opts.onLog?.(`could not start ${fresh} session: ${(err as Error).message}`);
-      }
-    }
+
+  // start/unpause: resume every resumable agent that was actually running.
+  for (const kind of ['claude', 'codex'] as ResumableAgent[]) {
+    const sessionName = sessionNameFor(kind);
+    if (await tmuxAlive(provider, box, sessionName)) continue;
+    await tryResume(kind, sessionName);
   }
 }

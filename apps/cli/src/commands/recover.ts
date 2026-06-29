@@ -108,11 +108,12 @@ async function recoverKnownBox(box: BoxRecord, opts: { attach: boolean }): Promi
   const provider = await providerForBox(box);
   const record = await provider.reconnect(box);
   log.success(`reconnected ${record.name}`);
-  // Relaunch whichever agent was running, resuming its session; or start
-  // `lastAgent` fresh when there's nothing to resume (adopted box / cleared
-  // pointer). OpenCode only ever launches via the fresh path.
+  // Bring back exactly the box's last agent: resume its session if there's one
+  // to resume, else start it fresh (adopted box / cleared pointer; the only
+  // path for OpenCode). When `lastAgent` is unknown (a box created before the
+  // field existed), fall back to resuming whatever was actually running.
   await restoreAgentSessions(record, provider, {
-    launchFresh: record.lastAgent,
+    restoreOnly: record.lastAgent,
     onLog: (line) => log.info(line),
   });
   if (opts.attach) {
