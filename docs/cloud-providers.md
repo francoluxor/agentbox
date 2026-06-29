@@ -68,6 +68,14 @@ manual `agentbox-ctl render` resolve it too). The placeholder engine prefers thi
 explicit value over the derived fallback, so `https://{{AGENTBOX_BOX_HOST}}`
 matches what `agentbox url` returns.
 
+The relay/bridge **tokens** are deliberately kept out of the world-readable
+`box.env`. The per-box relay URL + token go to a `0600 /run/agentbox/relay.env`
+(tmpfs, never snapshotted) written by the in-box ctl daemon, which `agentbox-ctl`
+reads on demand (`resolveRelayEnv`); the bridge token stays in the daemon's
+process env only. This is what lets the in-box agent and the host-driven
+`agentbox git push` reach the relay on cloud boxes, which (unlike docker) have no
+global env to inherit the token from. See [`host-relay.md`](./host-relay.md).
+
 ### 1.1 Per-provider base-image pins
 
 Each provider's `agentbox prepare --provider X` writes the resulting

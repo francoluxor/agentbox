@@ -1,5 +1,6 @@
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import { relayEnvFilePath, resolveRelayEnv } from './relay-env.js';
 
 /**
  * Shared HTTP RPC poster for in-box ctl commands (git, checkpoint, cp,
@@ -42,11 +43,10 @@ export function postRpc<TParams>(
   opts: PostRpcOptions = {},
 ): Promise<PostRpcOutcome<RelayRpcResult>> {
   const prefix = opts.errorPrefix ?? 'agentbox-ctl rpc';
-  const urlStr = process.env.AGENTBOX_RELAY_URL;
-  const token = process.env.AGENTBOX_RELAY_TOKEN;
+  const { url: urlStr, token } = resolveRelayEnv();
   if (!urlStr || !token) {
     process.stderr.write(
-      `${prefix}: AGENTBOX_RELAY_URL / AGENTBOX_RELAY_TOKEN not set; no relay configured for this box.\n`,
+      `${prefix}: AGENTBOX_RELAY_URL / AGENTBOX_RELAY_TOKEN not set (and ${relayEnvFilePath()} absent); no relay configured for this box.\n`,
     );
     return Promise.resolve({ status: 0, parsed: null, raw: '', internalExitCode: 65 });
   }

@@ -76,6 +76,35 @@ const SNAPSHOT_DEADLINE_MS = 20 * 60_000;
 const HETZNER_DEFAULT_SERVER_TYPE = 'cx23';
 const HETZNER_DEFAULT_LOCATION = 'nbg1';
 
+/**
+ * Secrets that must never land in the world-readable (0644) cloud-init
+ * `/etc/agentbox/box.env`. The relay token reaches in-box ctl via the daemon's
+ * 0600 `relay.env`; the bridge token stays in the daemon's process env.
+ */
+const CLOUD_INIT_BOX_ENV_EXCLUDE = new Set<string>([
+  'AGENTBOX_RELAY_URL',
+  'AGENTBOX_RELAY_TOKEN',
+  'AGENTBOX_BRIDGE_TOKEN',
+]);
+
+/**
+ * Build the cloud-init `box.env` passthrough: the `AGENTBOX_*` identity/portless
+ * vars, with the relay/bridge secrets in `CLOUD_INIT_BOX_ENV_EXCLUDE` stripped
+ * (cloud-init writes box.env 0644 — those secrets travel via the daemon's 0600
+ * `relay.env` / process env instead). Exported for unit testing.
+ */
+export function cloudInitBoxEnv(
+  env: Record<string, string | undefined> = {},
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (v !== undefined && k.startsWith('AGENTBOX_') && !CLOUD_INIT_BOX_ENV_EXCLUDE.has(k)) {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 /** Module-level tunnel manager — one ControlMaster per box for this process. */
 const tunnels = new SshTunnelManager();
 
@@ -288,11 +317,11 @@ export const hetznerBackend: CloudBackend = {
       firewallId = firewall.id;
 
       // 5. Cloud-init for the box: vscode user, pubkey, /etc/hosts alias,
-      // optional box.env passthrough from req.env.
-      const boxEnv: Record<string, string> = {};
-      for (const [k, v] of Object.entries(req.env ?? {})) {
-        if (k.startsWith('AGENTBOX_')) boxEnv[k] = v;
-      }
+      // optional box.env passthrough from req.env. The relay/bridge tokens are
+      // deliberately excluded — cloud-init writes box.env world-readable (0644),
+      // and these secrets reach the in-box ctl via the daemon's 0600 relay.env
+      // (relay token) and its process env (bridge token) instead.
+      const boxEnv = cloudInitBoxEnv(req.env);
       const cloudInit = generateBoxCloudInit({
         sshPubkey: key.publicKey,
         boxName: req.name,
