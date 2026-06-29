@@ -65,8 +65,15 @@ export async function detectEgressIp(opts: DetectEgressIpOptions = {}): Promise<
   );
 }
 
-/** Default TTL for the cached egress lookup (ms). */
-const EGRESS_CACHE_TTL_MS = 60_000;
+/**
+ * Default TTL for the cached egress lookup (ms). Deliberately SHORT: the cache
+ * only exists to dedup a *burst* of failure-path probes (the poller's backoff
+ * re-hitting the tunnel, or `recover --all` walking many boxes within a couple
+ * seconds), not to remember the IP across time. A long TTL would mask a *real*
+ * IP change that happens right after a probe — the very thing we're detecting —
+ * so we keep the staleness window to a few seconds and re-probe after.
+ */
+const EGRESS_CACHE_TTL_MS = 5_000;
 
 let egressCache: { ip: string; at: number } | null = null;
 
@@ -76,8 +83,9 @@ let egressCache: { ip: string; at: number } | null = null;
  * single host IP-change can otherwise trigger a probe storm — the cloud poller
  * backs off and re-hits the tunnel open repeatedly, and a multi-box `recover
  * --all` would re-probe per box. The egress IP is host-global, so one cached
- * value serves every box. Throws (same as `detectEgressIp`) when all probes
- * fail and there's no fresh cache entry.
+ * value serves every box. The short TTL (see above) bounds how long a stale
+ * value can hide a fresh IP change. Throws (same as `detectEgressIp`) when all
+ * probes fail and there's no fresh cache entry.
  */
 export async function egressIpCached(
   opts: DetectEgressIpOptions & { ttlMs?: number; now?: () => number } = {},
