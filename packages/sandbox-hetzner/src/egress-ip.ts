@@ -65,6 +65,36 @@ export async function detectEgressIp(opts: DetectEgressIpOptions = {}): Promise<
   );
 }
 
+/** Default TTL for the cached egress lookup (ms). */
+const EGRESS_CACHE_TTL_MS = 60_000;
+
+let egressCache: { ip: string; at: number } | null = null;
+
+/**
+ * `detectEgressIp` with a short TTL cache. Only ever called on a connection-
+ * failure path (the firewall-mismatch hint + `recover`'s auto-sync), where a
+ * single host IP-change can otherwise trigger a probe storm — the cloud poller
+ * backs off and re-hits the tunnel open repeatedly, and a multi-box `recover
+ * --all` would re-probe per box. The egress IP is host-global, so one cached
+ * value serves every box. Throws (same as `detectEgressIp`) when all probes
+ * fail and there's no fresh cache entry.
+ */
+export async function egressIpCached(
+  opts: DetectEgressIpOptions & { ttlMs?: number; now?: () => number } = {},
+): Promise<string> {
+  const ttl = opts.ttlMs ?? EGRESS_CACHE_TTL_MS;
+  const now = opts.now ?? Date.now;
+  if (egressCache && now() - egressCache.at < ttl) return egressCache.ip;
+  const ip = await detectEgressIp(opts);
+  egressCache = { ip, at: now() };
+  return ip;
+}
+
+/** Test seam: drop the cached egress so each case starts cold. */
+export function __resetEgressCache(): void {
+  egressCache = null;
+}
+
 async function probe(url: string, fetchImpl: typeof fetch): Promise<string | null> {
   const res = await fetchImpl(url, { method: 'GET' });
   if (!res.ok) return null;

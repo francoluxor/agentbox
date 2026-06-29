@@ -2,11 +2,12 @@ import { spawn } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { spinner } from '@clack/prompts';
+import { log, spinner } from '@clack/prompts';
 import { DEFAULT_RELAY_PORT } from '@agentbox/sandbox-docker';
 import type { BoxRecord, Provider } from '@agentbox/core';
 import type { AttachOpenIn } from '@agentbox/config';
 import { agentResumeArgs } from '../agent-sessions.js';
+import { withFirewallRepair } from '../lib/firewall-repair.js';
 import { providerForBox } from '../provider/registry.js';
 import { runWrappedAttach } from '../wrapped-pty/index.js';
 import { pasteHostClipboardImage, uploadImageFileToBox } from '../lib/paste-image.js';
@@ -213,10 +214,17 @@ export async function cloudAgentAttach(args: CloudAgentAttachArgs): Promise<void
     await startDetachedSession(provider, box, args.sessionName, command);
   }
 
-  let spec = await provider.buildAttach(box, 'agent', {
-    sessionName: args.sessionName,
-    command,
-  });
+  // Initial connect: opening the attach (Hetzner: the SSH tunnel) can fail
+  // because the host's egress IP changed and the box firewall now blocks us.
+  // This is an ESTABLISH path, so self-heal the firewall (only when the egress
+  // actually changed) and retry once. The mid-session `reconnect` closure below
+  // deliberately does NOT do this — a checkpoint/pause drop isn't an IP change.
+  let spec = await withFirewallRepair(
+    provider,
+    box,
+    { enabled: true, onLog: (line) => log.success(line) },
+    () => buildAttach(box, 'agent', { sessionName: args.sessionName, command }),
+  );
   // claude only, and only when this host can capture a clipboard image (macOS,
   // or a Linux desktop with xclip/wl-paste). Otherwise Ctrl+V forwards verbatim.
   const canPaste = args.mode === 'claude' && (await clipboardCaptureAvailable());
@@ -231,6 +239,12 @@ export async function cloudAgentAttach(args: CloudAgentAttachArgs): Promise<void
   // a reboot this lands in a freshly-created tmux session (the snapshot is
   // filesystem-only); a blip on a still-running box re-attaches the same live
   // session. Returns null to give up (cancelled or timed out).
+  //
+  // NOTE: deliberately NO firewall repair here. This is a MID-SESSION drop — a
+  // checkpoint stops the box (the PTY drops) and we wait for it to come back;
+  // the host IP didn't change, so re-syncing the firewall would be wrong.
+  // Firewall self-heal belongs only to establish paths (the initial buildAttach
+  // above, and `agentbox recover`).
   const reconnect = async (
     signal: AbortSignal,
   ): Promise<{ command: string; argv: string[]; env?: Record<string, string> } | null> => {
