@@ -94,11 +94,21 @@ export const dockerProvider: Provider = {
   },
 
   async reconnect(box: BoxRecord): Promise<BoxRecord> {
-    // The container survives a host reboot (the docker daemon restarts it), so
-    // there's no host-side transport to rebuild. `startBox` is idempotent — a
-    // `docker start` on a running container is a no-op — and it already
-    // relaunches the ctl/dockerd/vnc daemons and re-registers the portless
-    // alias, which is exactly the reconnect work for docker.
+    // Reconnect re-establishes host-side wiring without a needless power-cycle.
+    // A PAUSED container can't `docker start` ("cannot start a paused
+    // container") — unpause resumes its still-frozen ctl/dockerd/vnc, and the
+    // portless alias is untouched by pause, so that's all it needs. A running or
+    // stopped container goes through `startBox`, which is idempotent (a
+    // `docker start` on a live container is a no-op) and relaunches the daemons
+    // + re-registers portless — the work a host reboot / relay restart needs.
+    const insp = await inspectBox(box.id);
+    if (insp.state === 'missing' || insp.state === 'destroyed') {
+      throw new Error(`box ${box.name} has no container; was it destroyed?`);
+    }
+    if (insp.state === 'paused') {
+      const record = await unpauseBox(box.id);
+      return { ...record, provider: 'docker' };
+    }
     const { record } = await startBox(box.id);
     return { ...record, provider: 'docker' };
   },
