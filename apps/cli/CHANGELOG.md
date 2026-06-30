@@ -9,6 +9,79 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [0.21.0] - 2026-06-30
+
+### Added
+
+- **`agentbox recover [box]` — reconnect to a running box without power-cycling
+  it.** Rebuilds the host-side state (relay registry, Hetzner SSH tunnel, host
+  Portless aliases, the detached agent session) that is lost on a host reboot,
+  relay restart, or new CLI process, then relaunches and attaches the agent the
+  box was running — all without restarting the sandbox. `recover --provider
+  <cloud> --adopt [ref]` rebuilds local state for a sandbox missing from this
+  host entirely. Works across all five providers.
+- **`agentbox git push <box> --host-only` — land a box's branch in your host's
+  local repo without publishing it anywhere.** The destination branch defaults
+  to the box's branch; `--as <branch>` renames it and `--force` allows a
+  non-fast-forward overwrite. Nothing leaves the host. Covers docker and all
+  four cloud providers.
+- **`agentbox cp` now copies multiple files/dirs in one call.** List several
+  sources before a destination directory (`agentbox cp a b c <box>:/dest/`);
+  from inside a box this means one host-approval prompt instead of several.
+  Excludes and the size guard are now honored on every provider.
+- **`agentbox install codex` — install and enable the Codex plugin for you.**
+  Wires up the marketplace add, plugin add, and enable (previously a manual
+  three-step chore); also runs inside the `agentbox install` wizard when Codex
+  is detected. From a source checkout it points Codex at the local repo and
+  live-symlinks skills so edits go live on restart.
+- **Codex now sees the box's system prompt.** The same sandbox facts baked for
+  Claude (DinD, per-box worktree, push/PR/cp via the host relay, box identity)
+  now reach the in-box Codex agent via `~/.codex/AGENTS.override.md`, folded in
+  beneath your own `AGENTS.md`.
+- **`agentbox shell <box> --ssh-config`** writes an `~/.ssh/config` alias on
+  demand so external apps (the Codex app, Claude desktop, VS Code Remote-SSH)
+  can reach a box over plain SSH, and prints the identity path plus a Codex
+  deep link. Hetzner only (the provider with a persistent per-box key).
+- **Interactive SSH/login shells now open in `/workspace`** (the project)
+  instead of the home directory, across all providers.
+
+### Changed
+
+- **Hetzner boxes self-heal their firewall when your egress IP changes.** Moving
+  your laptop between networks used to make every box op fail with an opaque SSH
+  timeout until you ran `firewall sync` by hand; now a connection failure
+  auto-detects the IP change and re-syncs the per-box firewall (only when it
+  actually changed). `--no-firewall-sync` opts out on shared/untrusted networks.
+- **Faster, smaller Codex box setup.** Codex config staging now skips ~1 GB+ of
+  host-only artifacts (macOS binaries, plugin runtimes, regenerable caches) that
+  were never usable in a Linux box — a fresh box's `~/.codex` dropped from ~1.5
+  GB to ~59 MB. Config, auth, skills, prompts, and plugins still sync.
+
+### Fixed
+
+- **`agentbox-ctl git push` from a cloud box no longer fails with "no relay
+  configured".** Cloud boxes have no global env, so the in-box agent had lost
+  its relay token; it's now restored via a `0600 /run/agentbox/relay.env`.
+- **`agentbox git push <box> --force` is no longer silently dropped** on a
+  normal remote push (it was only honored on the `--host-only` land path).
+- **In-box services and `https://<box>.localhost` work from inside cloud boxes.**
+  The in-box Portless CA is now trusted, so the box's own VNC Chromium and
+  Playwright stop rejecting the self-signed cert. (Needs a re-`prepare` /
+  docker image rebuild.)
+- **Hetzner `prepare` no longer bakes a snapshot with no `claude`.** The native
+  installer (which can hit an intermittent Cloudflare 403 on datacenter IPs) is
+  retried with backoff and aborts the bake on persistent failure instead of
+  shipping an agent-less box that crash-loops on attach.
+- **Background `--no-attach` cloud starts now actually start the agent session**,
+  and resume the recorded session rather than going idle.
+- **`recover` / lifecycle fixes:** unpauses a paused docker box instead of
+  erroring; restores only the box's last agent rather than resurrecting
+  unrelated sessions; and the in-box ctl-daemon launch is now idempotent (no
+  more idle-daemon pile-up on repeated start/recover).
+- **Codex setup robustness:** agent home dirs are `vscode`-owned so Codex can
+  create its `state_*.sqlite`; the `AGENTS.override.md` seed only reports success
+  when it actually wrote; and staged dev skills symlink more reliably.
+
 ## [0.20.1] - 2026-06-25
 
 ### Added
