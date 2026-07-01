@@ -206,37 +206,9 @@ export interface BridgeActionResultBody {
   stderr: string;
 }
 
-export interface GitRpcParams {
-  /** Container path identifying which worktree to run against. Defaults to /workspace. */
-  path?: string;
-  /** Remote name; defaults to 'origin'. */
-  remote?: string;
-  /** Extra argv tail appended after the standard args (e.g. ['--set-upstream', 'origin', 'branch']). */
-  args?: string[];
-  /**
-   * git.push only: land the box's branch in the host's *local* repo instead of
-   * pushing to the remote. Nothing is published online; the relay skips the
-   * host-initiated-token / confirm-prompt gate (that gate guards remote pushes).
-   */
-  hostOnly?: boolean;
-  /**
-   * git.push --host-only only: destination branch name in the host repo.
-   * Defaults to the box's current branch name when omitted.
-   */
-  as?: string;
-  /** git.push --host-only only: allow a non-fast-forward overwrite of the destination branch. */
-  force?: boolean;
-  /**
-   * One-time token minted by the host CLI via `/admin/host-initiated/mint`
-   * before invoking this RPC through `agentbox-ctl`. The relay validates the
-   * token against its in-memory store, scoped to `(boxId, method)`; on
-   * match, the token is consumed and the confirm prompt is skipped. Boxes
-   * cannot mint these (the admin endpoint is loopback-only), so a malicious
-   * agent cannot forge "host-initiated" calls. Invalid/expired tokens fall
-   * through to the normal prompt path.
-   */
-  hostInitiated?: string;
-}
+// GitRpcParams's canonical wire-type home is `@agentbox/core`'s sync/git-refs.ts
+// (shared with the in-box ctl); re-exported here so `./types.js` importers stay unchanged.
+export type { GitRpcParams } from '@agentbox/core';
 
 export interface GitRpcResult {
   exitCode: number;
