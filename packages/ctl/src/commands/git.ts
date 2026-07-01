@@ -93,9 +93,12 @@ function captureGit(args: string[], cwd: string): Promise<string> {
 /**
  * Control-plane push: instead of the relay pushing host-side, the box leases a
  * repo-scoped GitHub-App token from the control plane and pushes directly.
- * Used when AGENTBOX_GIT_LEASE=1 (set by the in-box daemon when the relay is a
- * hosted control plane). The token lives in the remote URL config for the push
- * only and is scrubbed (origin restored) in `finally` — never in the push argv.
+ * Used when AGENTBOX_GIT_LEASE=1. The host writes that flag into
+ * /etc/agentbox/box.env at create/resume when a control-plane URL is configured
+ * (the daemon's own env isn't inherited by the login shell that runs `git
+ * push`, so the flag must live in box.env). The token lives in the remote URL
+ * config for the push only and is scrubbed (origin restored) in `finally` —
+ * never in the push argv.
  */
 async function leaseAndPush(opts: CommonOptions, extra: string[]): Promise<number> {
   const prefix = 'agentbox-ctl git';
