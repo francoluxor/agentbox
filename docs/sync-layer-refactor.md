@@ -35,6 +35,26 @@ Two-tier layout (dependency-graph-driven): **pure contracts** in `packages/core/
   importers. `SyncContext` added. **Validated on a real docker box**: a gitignored
   secrets.toml/.env.gitignored (git-ignored in-box → not from the git seed) landed in
   /workspace owned vscode:vscode via the refactored path.
+- **Phase 4a — carry concern (`planCarryEntry`).** `sandbox-core/src/sync/concerns/files.ts`:
+  pure `planCarryEntry(entry)` computes the shared host→box carry decisions
+  (`~/`→`/home/vscode`, file-vs-dir, exclude, uid/mode defaults, rename-needed,
+  parent-chain-needed). Docker `copyOneEntry` + cloud `uploadOneEntry` now consume it and
+  keep their *apply* mechanisms byte-identical (docker streamTarPipe + `docker exec
+  --user 0:0`; cloud staged-tar + one combined bash command — never split, per the Vercel
+  hang note). Unified the two providers' drifted parent-chain predicate on docker's
+  (skip-the-no-op) form — identical in effect, strictly safer for Vercel. Net −29 lines.
+  New `carry-plan.test.ts` (10); cloud `carry.test.ts` (8) unchanged + green.
+- **Phase 4b — dynamic concern (close cloud→docker leak).** Moved the claude path trio
+  (`encodeClaudeProjectsKey`/`BOX_CLAUDE_PROJECT_DIR`/`resolveClaudeMemoryDir`) into
+  `sync/agents/claude/paths.ts` and the workflows+memory manifest logic
+  (`buildHostSyncManifest`/`computeSyncDelta`/`stageDynamicSyncTarball` + types + `BOX_*`
+  consts) into `sync/concerns/dynamic.ts`. `sandbox-docker`'s `host-stage.ts` +
+  `dynamic-sync.ts` are now thin re-export shims (existing importers untouched); cloud
+  `dynamic-sync.ts` imports from `@agentbox/sandbox-core` — **leak gone**. Docker create
+  never consumed the manifest fns (it seeds workflows/memory via the `~/.claude` volume
+  rsync), so this is cloud-runtime + test only. Docker `dynamic-sync.test.ts` (12) still
+  green through the shims (cross-package guard). `seedDynamicConfig`'s cloud exec/upload
+  orchestration unchanged (its transport unification belongs with Phase 7).
 
 ## Refinements to the plan's phasing (decided during execution)
 1. **Transports co-develop with their first concern (Phase 3), not in a vacuum.** Docker
@@ -49,54 +69,32 @@ Two-tier layout (dependency-graph-driven): **pure contracts** in `packages/core/
 ## Remaining (behavior-moving; each must keep existing provider tests green and be
 ## smoke-tested {local,vercel,hetzner}×{claude,codex} before pushing)
 
-- **Phase 3 — transports + env concern (the vertical-slice PoC).**
-  - `packages/core/src/sync/transport.ts`: consider adding `applyTarball(hostTarPath,
-    boxDestDir, opts)` as the unified host→box primitive (`pushTree`/`pushFile` build on it;
-    env/carry stage a filtered tarball then apply). Ground it in the two impls below.
-  - `packages/sandbox-docker/src/sync-transport.ts` `DockerSyncTransport`: wrap
-    `box-cp.ts` `uploadToBox`/`downloadFromBox`, `host-export.ts` tar-pipe/`pullToHost`,
-    `docker exec cat` (readText), the `ensure*Volume` `docker run … rsync` (seedVolumeFromHost),
-    volume create (ensureVolume). `caps={persistentVolumes:true,helperContainer:true,ephemeralFs:false}`.
-  - `packages/sandbox-cloud/src/sync-transport.ts` `CloudSyncTransport`: wrap `CloudBackend`
-    (`exec`/`uploadFile`/`downloadFile`), the FUSE `cp`-not-`tar` + vercel/e2b root carve-out.
-    `caps.helperContainer=false`, `caps.ephemeralFs = typeof backend.ensureVolume!=='function'`.
-  - `packages/sandbox-core/src/sync/context.ts` `SyncContext` (boxName/id, provider,
-    hostWorkspace, projectRoot, boxWorkspace, hostHome, onLog).
-  - `packages/sandbox-core/src/sync/concerns/env.ts`: `pushEnvFiles`/`pullEnvFiles`/
-    `scanHostEnvFiles` (owns `DEFAULT_ENV_PATTERNS`, `buildHostEnvFindArgs`). Collapses
-    docker `host-export.ts:copyHostEnvFilesToBox` + cloud `env-files.ts:uploadEnvFiles`; both
-    become thin wrappers injecting their transport.
-  - Tests: env-concern golden test via `RecordingSyncTransport`; keep `scan-host-env-files.test.ts`.
-- **Phase 4 — carry + dynamic + skills concerns.** Concrete findings from the first pass:
-  - **carry is the most provider-divergent concern — do NOT force a single transport
-    unification.** docker `copyOneEntry` (`host-export.ts:729`) uses `streamTarPipe` (stdin,
-    no temp file) + several separate `docker exec --user 0:0` calls (mkdir/extract/rename/
-    chmod/chown/parent-chain). cloud `uploadOneEntry` (`carry.ts:86`) stages a temp tar,
-    `uploadFile`s it, then runs ONE combined bash command, with a `wantsRoot` carve-out for
-    vercel/e2b — and an explicit note that splitting/nesting that command reintroduces a
-    Vercel `$(...)`/`while` hang. Safe approach: extract the shared *decision* logic
-    (`~/`→`/home/vscode` expansion, file-vs-dir, exclude, uid/mode defaults, rename-needed,
-    parent-chain-needed, the audit loop + missing-entry handling) into a pure
-    `planCarryEntry(entry)` in `sync/concerns/files.ts`; keep each provider's *apply*
-    mechanism as-is (it stays byte-identical + avoids the vercel hang). Modest dedup, zero
-    risk. `renderCarryEntries` stays in `sandbox-core/carry-render.ts`.
-  - **dynamic — killing the cloud→docker leak needs a claude-specific dependency chain
-    moved first.** `docker/dynamic-sync.ts` is provider-neutral EXCEPT it imports
-    `BOX_CLAUDE_PROJECT_DIR` (const), `resolveClaudeMemoryDir`, `encodeClaudeProjectsKey`
-    from `host-stage.ts` (also used by `stageClaudeStaticForUpload`). Move that trio +
-    the manifest logic (`buildHostSyncManifest`/`computeSyncDelta`/`stageDynamicSyncTarball`
-    + types + `BOX_*` consts) into `sync/agents/claude/` (they're claude-specific) or
-    `sync/manifest/`; re-export from `host-stage.ts` for its other consumers; then cloud
-    `seedDynamicConfig` + a `concerns/dynamic.ts` import from sandbox-core (leak gone).
-    NOTE: verify whether the docker create path has its own dynamic seed or if the manifest
-    logic is cloud-only-consumed (it may be — docker seeds workflows/memory via the
-    `~/.claude` volume rsync instead).
-  - **transport fix already landed:** `DockerSyncTransport.applyTarball` now always pins
-    `--user <uid>:<uid>` (incl. `0:0` for root) — the carry `uid:0` path needs it; env
+- **Phase 4c — skills concern (the remaining Phase 4 sub-concern; behavior-moving).**
+  Scoping findings from the pass that did carry + dynamic:
+  - **`~/.agents` shared-volume seed.** docker `agents.ts:ensureAgentsVolume` is a
+    docker-specific rsync-helper-container seed (`docker run --rm --user 0 … rsync -a
+    --copy-unsafe-links <symlink-excludes> /src/ /dst/ && chown -R 1000:1000`) with symlink
+    handling (`findUnsyncableSymlinks`) + a chown-only fallback when the host has no
+    `~/.agents`. It's called once from docker `create.ts:722`. The transport already exposes
+    `seedVolumeFromHost(volume, VolumeHostSource[])` (`sync-transport.ts:144`) — the seam to
+    move this behind — but the symlink-exclude + no-host-dir chown fallback are real behavior
+    that must ride along (VolumeHostSource has `exclude`/`update` but no symlink-deref knob yet).
+  - **cloud static staging.** `host-stage.ts:stageAgentsStaticForUpload` is consumed by
+    hetzner `prepare.ts:298` + daytona `prepare.ts:74` + the cloud index — moving/renaming
+    must keep those three importers green.
+  - **per-tool box→host pull.** `pullClaudeExtras` (`claude.ts:1521`), `pullCodexConfig`
+    (`codex.ts:734`), `pullOpencodeConfig` (`opencode.ts:551`) are large docker-volume-specific
+    fns, each called from a CLI `download-<tool>` command (dry-run + apply). Unifying dispatch
+    via a `spec.pull` field means moving them into `sync/agents/<tool>/` first (a
+    sandbox-core registry can't reference sandbox-docker), which is the bulk of the work.
+  - **Recommended split:** land as its own gated commit AFTER a real-box smoke matrix, since
+    it moves the volume-seed + pull behavior. Data-first: add a `pull` descriptor to
+    `AgentSyncSpec` + a `concerns/skills.ts` that dispatches through the transport's
+    `seedVolumeFromHost` (docker) / stage-into-snapshot (cloud), then repoint the three
+    `download-*` commands at the registry.
+  - **transport fix already landed (Phase 3):** `DockerSyncTransport.applyTarball` always
+    pins `--user <uid>:<uid>` (incl. `0:0` for root) — the carry `uid:0` path needs it; env
     (`uid:1000`) is unchanged.
-  - **skills:** `~/.agents` shared-volume seed (docker `ensureAgentsVolume` via
-    `seedVolumeFromHost`) + cloud `stageAgentsStaticForUpload`; per-tool box→host pull via
-    `spec.pull` (`pullClaudeExtras`/`pullCodexConfig`/`pullOpencodeConfig`).
 - **Phase 5 — credentials concern.** `concerns/credentials.ts`
   (`seedCredentials`/`extractCredentials`/`refreshHostBackups`). Encode expiry gate
   (`hostClaudeBackupExpired`) + seed-once marker (`.agentbox-seeded-at`) + force rule +
