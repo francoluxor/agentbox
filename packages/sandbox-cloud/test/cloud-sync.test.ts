@@ -158,8 +158,8 @@ describe('makeCloudSync — remaining ops', () => {
     expect(res.copied).toBe(1);
   });
 
-  it('resyncWorkspace rejects until 7.5 implements it', async () => {
+  it('resyncWorkspace short-circuits when there are no worktrees', async () => {
     const sync = makeCloudSync(backend, handle);
-    await expect(sync.resyncWorkspace(ctx(), [])).rejects.toThrow(/not implemented yet/);
+    await expect(sync.resyncWorkspace(ctx(), [])).resolves.toEqual({ repos: [], hadConflicts: false });
   });
 });

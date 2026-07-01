@@ -23,12 +23,14 @@ import type {
   CarryApplyResult,
   CloudBackend,
   CloudHandle,
+  GitWorktreeRecord,
   ProviderSync,
   ResolvedCarryEntry,
   ResyncResult,
   SyncContext,
 } from '@agentbox/core';
 import { renderCarryEntries } from '@agentbox/sandbox-core';
+import { resyncCloudWorkspace } from '../workspace-resync.js';
 import {
   type CloudAgentKind,
   ensureAgentHomeDirsOwned,
@@ -58,13 +60,20 @@ export function makeCloudSync(
   opts: CloudSyncOptions = {},
 ): ProviderSync {
   return {
-    // Cloud live-box resync is net-new behaviour (Phase 7.5). Until then this
-    // method is unreachable: cloud `create()` seeds/overlays the workspace via
-    // `seedCloudWorkspace` (not the facade), and `createCloudProvider` does not
-    // yet expose `Provider.resyncWorkspace`, so the CLI's session-start resync
-    // skips cloud boxes entirely.
-    resyncWorkspace(): Promise<ResyncResult> {
-      return Promise.reject(new Error('cloud live-box resync is not implemented yet (Phase 7.5)'));
+    // Cloud live-box resync: pre-fetch the host commits into the box, then run
+    // the shared resync concern (merge + overlay, box wins; never reset --hard).
+    // See workspace-resync.ts. The provider's resyncWorkspace(box) re-derives the
+    // worktrees (detectGitRepos) + gates on hostSeeded before calling here.
+    async resyncWorkspace(
+      ctx: SyncContext,
+      worktrees: GitWorktreeRecord[],
+    ): Promise<ResyncResult> {
+      if (worktrees.length === 0) return { repos: [], hadConflicts: false };
+      const repos = await resyncCloudWorkspace(backend, handle, worktrees, ctx.onLog);
+      const hadConflicts = repos.some(
+        (r) => r.mergeConflicts.length > 0 || r.overlaySkipped.length > 0,
+      );
+      return { repos, hadConflicts };
     },
 
     async seedAgentConfig(ctx: SyncContext): Promise<void> {

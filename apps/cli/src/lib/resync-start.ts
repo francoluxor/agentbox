@@ -25,6 +25,11 @@ export async function maybeResyncWorkspace(args: {
   const onLog = (line: string): void => args.spinner?.message(line);
   args.spinner?.message('resyncing workspace with host');
   const result = await provider.resyncWorkspace(args.box, onLog);
-  await resyncCarryFiles({ box: args.box, projectRoot: args.projectRoot, onLog });
+  // Carry-file resync is docker-specific (re-copies via docker exec); cloud boxes
+  // get workspace resync only. Gate so a cloud box with approved carry entries
+  // doesn't hit docker's copyCarryPathsToBox.
+  if ((args.box.provider ?? 'docker') === 'docker') {
+    await resyncCarryFiles({ box: args.box, projectRoot: args.projectRoot, onLog });
+  }
   return buildResyncWarning(result);
 }

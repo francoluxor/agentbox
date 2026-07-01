@@ -26,13 +26,16 @@ import type {
   CreatedBox,
   ExecOptions,
   ExecResult,
+  GitWorktreeRecord,
   InspectedBox,
   Provider,
   ProviderCheckpoint,
   ProviderSync,
+  ResyncResult,
 } from '@agentbox/core';
 import {
   allocateProjectIndex,
+  detectGitRepos,
   makeSyncContext,
   readCliStamp,
   readState,
@@ -948,6 +951,11 @@ export function createCloudProvider(
             snapshotRef: resolvedCheckpointRef,
             lastState: 'running',
             sessionTimeoutMs: timeoutMs,
+            // Only host-seeded boxes share a fork base with the host, so only
+            // they can be resynced back to the host tip on session start (7.5).
+            // inBoxClone / plane boxes clone from a leased URL — left unset.
+            hostSeeded: inBoxClone ? undefined : true,
+            workspaceBranch: branch,
           },
           createdAt: new Date().toISOString(),
         };
@@ -1247,6 +1255,40 @@ export function createCloudProvider(
 
     sync(box: BoxRecord): ProviderSync {
       return makeCloudSync(backend, handleFor(box));
+    },
+
+    // Session-start live-box resync (Phase 7.5): merge the host's current state
+    // back into the box, box-wins on conflict. Gated on `hostSeeded` so
+    // inBoxClone / plane boxes (no host fork base) are left untouched. The box
+    // layout is re-derived host-side (`detectGitRepos`) rather than recorded.
+    async resyncWorkspace(box: BoxRecord, onLog?: (line: string) => void): Promise<ResyncResult> {
+      if (box.cloud?.hostSeeded !== true) return { repos: [], hadConflicts: false };
+      const repos = await detectGitRepos(box.workspacePath);
+      if (repos.length === 0) return { repos: [], hadConflicts: false };
+      const branch = box.cloud.workspaceBranch ?? `agentbox/${box.name}`;
+      const worktrees: GitWorktreeRecord[] = repos.map((r) => {
+        const containerPath = r.relPathFromWorkspace
+          ? `${CLOUD_WORKSPACE_DIR}/${r.relPathFromWorkspace}`
+          : CLOUD_WORKSPACE_DIR;
+        return {
+          kind: r.kind,
+          hostMainRepo: r.hostMainRepo,
+          containerPath,
+          // Cloud boxes clone in place, so the worktree lives at its mount path.
+          gitWorktreePath: containerPath,
+          branch,
+          relPathFromWorkspace: r.relPathFromWorkspace,
+        };
+      });
+      const ctx = makeSyncContext({
+        boxName: box.name,
+        boxId: box.id,
+        provider: 'cloud',
+        hostWorkspace: box.workspacePath,
+        boxWorkspace: CLOUD_WORKSPACE_DIR,
+        onLog,
+      });
+      return makeCloudSync(backend, handleFor(box)).resyncWorkspace(ctx, worktrees);
     },
 
     // Extract the box's agent login(s) back to the host (~/.agentbox) so the

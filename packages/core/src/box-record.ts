@@ -121,6 +121,20 @@ export interface CloudBoxFields {
    * default). Absent on backends without a session timeout / pre-feature records.
    */
   sessionTimeoutMs?: number;
+  /**
+   * True when this box's `/workspace` was seeded from the host checkout (the
+   * laptop `create` path), i.e. it has a real fork base shared with the host.
+   * Left unset for `inBoxClone` / plane boxes (they clone in-box from a leased
+   * URL with no host fork base). Gates the session-start live-box resync — only
+   * host-seeded boxes can merge the host's current state back in (Phase 7.5).
+   */
+  hostSeeded?: boolean;
+  /**
+   * The box's per-box branch (`agentbox/<name>`, or `--use-branch <b>`). The
+   * merge target branch for the live-box resync; re-derived layout aside, this
+   * is the one piece resync can't recover from the box alone.
+   */
+  workspaceBranch?: string;
 }
 
 export interface GitWorktreeRecord {
