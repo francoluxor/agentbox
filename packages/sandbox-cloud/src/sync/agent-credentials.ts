@@ -24,13 +24,6 @@
  */
 
 import {
-  stageClaudeStaticForUpload,
-  stageClaudeCredentialsForUpload,
-  stageCodexStaticForUpload,
-  stageCodexCredentialsForUpload,
-  stageOpencodeStaticForUpload,
-  stageOpencodeCredentialsForUpload,
-  stageOpencodeStateForUpload,
   DEFAULT_BOX_IMAGE,
   SHARED_CLAUDE_VOLUME,
   SHARED_CODEX_VOLUME,
@@ -38,12 +31,19 @@ import {
   extractCodexCredentials,
   extractOpencodeCredentials,
   syncClaudeCredentials,
-  type StageResult,
 } from '@agentbox/sandbox-docker';
 import {
+  stageClaudeStaticForUpload,
+  stageClaudeCredentialsForUpload,
+  stageCodexStaticForUpload,
+  stageCodexCredentialsForUpload,
+  stageOpencodeStaticForUpload,
+  stageOpencodeCredentialsForUpload,
+  stageOpencodeStateForUpload,
   extractCredentials,
   hostClaudeBackupExpired,
   SEED_MARKER,
+  type StageResult,
 } from '@agentbox/sandbox-core';
 import type { CloudBackend, CloudHandle, CloudVolumeMount } from '@agentbox/core';
 import { createCloudSyncTransport } from './sync-transport.js';

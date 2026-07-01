@@ -173,17 +173,30 @@ Two-tier layout (dependency-graph-driven): **pure contracts** in `packages/core/
   - **7.6a (dry-run) — DONE:** `AGENTBOX_SYNC_DRYRUN=1` → `makeDockerSync`/`makeCloudSync` return
     `dryRunProviderSync(label)` (core), a print-only facade: each op logs `[sync dry-run]
     <provider>.<op>(…)` via `ctx.onLog` and returns a benign default WITHOUT executing. Unit-tested.
-  - **7.6b (stage-producer relocation + `staticPaths[].exclude` fill) — DEFERRED (backlog).** On
-    inspection this is NOT the low-risk cleanup the label implies: the 4 `stage*StaticForUpload`
-    producers live in `sandbox-docker/host-stage.ts` (714 lines), deeply entangled with docker
-    helpers (`findBrokenSymlinks`/`filterHostHooks`/`buildBoxClaudeJsonFromHost`/`mkStageDir`/the
-    `*_EXCLUDES` consts) and consumed by the prepare paths of docker + all 3 cloud backends. Moving
-    them to `sync/agents/<tool>/stage.ts` is a large cross-package reorganization of the PREPARE-time
-    staging (orthogonal to the ProviderSync facade spine) that warrants prepare-path validation
-    across backends. And `registry.staticPaths[].exclude` has **no consumer** today, so filling
-    claude/codex would only add duplicate-of-`host-stage` data + a drift-guard burden with no
-    behavioural payoff until a reader exists. Land as its own focused change (ideally alongside a
-    consumer that reads `staticPaths[].exclude`), with docker+vercel+hetzner+daytona `prepare` smoke.
+  - **7.6b (stage-producer relocation + `staticPaths[].exclude` fill) — DONE** (branch
+    `feat/sync-7.6b-static-colocation` off `feat/sync-layer-phase10`). Reframed as a **co-location**
+    task (owner steer "all sync operations in the sync/ folder"): the host-config staging module was
+    the last sync operation sitting in the wrong package. `host-stage.ts` was **pure host-fs and
+    consumed only by cloud** (vercel/hetzner/daytona `prepare` + cloud `agent-credentials.ts`) — docker
+    never called it (it seeds via `ensure*Volume`). So the **whole module moved verbatim** to
+    `sandbox-core/src/sync/host-stage.ts` (kept the name — not split per-tool; the module is one
+    cohesive static+creds+state producer), with its pure helpers `claude-hooks-filter.ts` +
+    `codex-config.ts` (dependency direction forces them into core; `smol-toml` added to sandbox-core).
+    Cloud consumers now import the stagers from `@agentbox/sandbox-core` (docker index drops the
+    re-export, keeps the claude-path trio + Stage types re-exported from core for back-compat). The
+    two helper tests moved to `sandbox-core/test/`. **`staticPaths[].exclude` now has a consumer:** the
+    hardcoded `CLAUDE_RUNTIME_EXCLUDES`/`CODEX_RSYNC_EXCLUDES`/`OPENCODE_DATA_EXCLUDES` consts were
+    deleted; the producers derive their excludes from `resolveAgentSpec(id).staticPaths[0].exclude`
+    (claude/codex filled; opencode reconciled to add `auth.json`+`snapshot`). The emitted `rsync
+    --exclude=` args are byte-identical (order preserved; broken-symlink excludes still appended
+    per-run). `registry.test.ts` locks all three exclude sets — the registry is now authoritative.
+    `CREDENTIALS_BACKUP_FILE` in the staging module now resolves from the registry (the docker-owned
+    backup consts remain for docker's own credential sync — the `[minor cleanup]` backlog item is
+    reduced, not fully retired). **Gate GREEN:** build/typecheck/lint + package tests (core 60 / sandbox-core 130 /
+    docker 270 / cloud 101 / relay 252 / cli 668). **SMOKE OWED before push:** `prepare` +
+    create-inherits across `{vercel,hetzner,daytona}×{claude,codex}` + docker create sanity (docker
+    consumes the moved `claude-hooks-filter`/`codex-config` helpers). Hetzner `prepare` may still be
+    Cloudflare-403-blocked; vercel+daytona cover the provider-neutral path.
   - **R1–R4 (co-location relocation) — DONE + smoke-passed.** The facade named every op; this moved
     the op *bodies* physically under `sync/` so the sync layer is discoverable in one place (owner's
     steer: "all sync operations should happen in the sync/ folder"). Behaviour-preserving pure moves +

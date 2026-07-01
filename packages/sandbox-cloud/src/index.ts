@@ -76,15 +76,17 @@ export {
   stageAgentsStaticForUpload,
   stageOpencodeStaticForUpload,
   stageOpencodeCredentialsForUpload,
+  type StageClaudeOptions,
+  type StageCodexOptions,
+  type StageOpencodeOptions,
+  type StageResult,
+} from '@agentbox/sandbox-core';
+export {
   CREDENTIALS_BACKUP_FILE,
   CODEX_CREDENTIALS_BACKUP_FILE,
   OPENCODE_CREDENTIALS_BACKUP_FILE,
   isRealAgentCredential,
   type CredentialAgentKind,
-  type StageClaudeOptions,
-  type StageCodexOptions,
-  type StageOpencodeOptions,
-  type StageResult,
 } from '@agentbox/sandbox-docker';
 // Portless helpers — same re-export pattern as the stage* helpers above.
 // Lives in sandbox-docker for historical reasons (the file predates the

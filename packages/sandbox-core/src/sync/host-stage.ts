@@ -38,8 +38,16 @@ import {
   setInstallMethodNative,
   trustWorkspace,
 } from './claude-hooks-filter.js';
-import { CREDENTIALS_BACKUP_FILE } from './claude-credentials.js';
+import { resolveAgentSpec } from './registry.js';
 import { sanitizeCodexConfigForBox } from './codex-config.js';
+
+/**
+ * Portable host backup of the claude OAuth creds — the single source of truth is
+ * the registry (`credential.hostBackup`), which resolves to
+ * `~/.agentbox/claude-credentials.json`. The docker provider's
+ * `syncClaudeCredentials` mirrors the macOS Keychain into this same path.
+ */
+const CREDENTIALS_BACKUP_FILE = resolveAgentSpec('claude').credential.hostBackup;
 
 export interface StageResult {
   /** Absolute path to the .tar.gz, or null when there was nothing to stage. */
@@ -157,38 +165,10 @@ export interface StageClaudeOptions {
   hostWorkspace?: string;
 }
 
-const CLAUDE_RUNTIME_EXCLUDES = [
-  'projects',
-  // workflows/ are seeded per-box at create time (incremental, like memory),
-  // not frozen into the prepare-time snapshot — see seedDynamicConfig.
-  'workflows',
-  'sessions',
-  'history.jsonl',
-  'file-history',
-  'shell-snapshots',
-  'backups',
-  'session-env',
-  'paste-cache',
-  'cache',
-  'telemetry',
-  'tasks',
-  'downloads',
-  'chrome',
-  'ide',
-  'debug',
-  'mcp-needs-auth-cache.json',
-  'stats-cache.json',
-];
-
-// Claude per-project path helpers moved to the shared sync layer
-// (`@agentbox/sandbox-core`) so the cloud dynamic-sync path reuses them without
-// importing this package. Re-exported here for existing importers (claude.ts,
-// the docker index, the dynamic-sync test).
-export {
-  encodeClaudeProjectsKey,
-  BOX_CLAUDE_PROJECT_DIR,
-  resolveClaudeMemoryDir,
-} from '@agentbox/sandbox-core';
+// Static-stage rsync excludes are registry data (single source of truth,
+// drift-guarded by the registry test). Bare patterns, mapped to `--exclude=`
+// at the rsync call; per-run broken-symlink excludes are appended there.
+const CLAUDE_STATIC_EXCLUDES = resolveAgentSpec('claude').staticPaths[0]?.exclude ?? [];
 
 /**
  * Build the in-box `_claude.json` from the host's `~/.claude.json` (or a
@@ -313,9 +293,7 @@ export async function stageClaudeStaticForUpload(
     // per-machine session data the in-box claude will regenerate anyway.
     const broken = await findBrokenSymlinks(hostClaude);
     const excludes = [
-      '--exclude=node_modules',
-      '--exclude=.credentials.json',
-      ...CLAUDE_RUNTIME_EXCLUDES.map((p) => `--exclude=${p}`),
+      ...CLAUDE_STATIC_EXCLUDES.map((p) => `--exclude=${p}`),
       ...broken.map((r) => `--exclude=/${r}`),
     ];
     await execa('rsync', [
@@ -409,51 +387,13 @@ export interface StageCodexOptions {
   hostHome?: string;
 }
 
-const CODEX_RSYNC_EXCLUDES = [
-  '--exclude=sessions',
-  '--exclude=log',
-  '--exclude=history.jsonl',
-  '--exclude=hooks.json',
-  // Codex's session-state DBs / indexes — the `state_*.sqlite` `threads` index
-  // is where Codex reads the resume cwd, so seeding the host copy makes a
-  // teleported session resume at its host cwd (the "Choose working directory"
-  // prompt). Globbed on the version suffix (state_5 -> state_6 across schema
-  // bumps) so it keeps matching. Codex rebuilds the index from the box's
-  // rollouts (see `backfill_state`). Also stops the host's cross-project Codex
-  // history from leaking into the box.
-  '--exclude=state_*.sqlite*',
-  '--exclude=logs_*.sqlite*',
-  '--exclude=external_agent_session_imports.json',
-  '--exclude=sqlite',
-  '--exclude=cache',
-  '--exclude=vendor_imports',
-  '--exclude=tmp',
-  // .tmp holds codex plugin sync state — ~100 MB of marketplace cache. Not
-  // the same as `tmp/`; both can exist side by side on a long-running host.
-  '--exclude=.tmp',
-  '--exclude=.codex-global-state.json',
-  '--exclude=.codex-global-state.json.bak',
-  '--exclude=.personality_migration',
-  '--exclude=shell_snapshots',
-  '--exclude=session_index.jsonl',
-  '--exclude=models_cache.json',
-  '--exclude=installation_id',
-  '--exclude=version.json',
-  // Heavy host-only artifacts that are useless inside a Linux box and balloon
-  // the staged tarball (~800 MB on a real host) — without these the codex
-  // static scp/extract during prepare crawls. `packages/standalone` is the
-  // macOS aarch64 standalone release binaries (the in-box codex is npm-installed
-  // anyway); `plugins/.plugin-appserver` is the platform-specific plugin
-  // app-server runtime; `computer-use` is the macOS `Codex Computer Use.app`
-  // bundle. `archived_sessions` is host session history, not config (mirrors the
-  // `sessions` exclude). (`plugins/cache`, the marketplace download cache, is
-  // already dropped by the generic `--exclude=cache` above.) This shrinks the
-  // staged codex tarball from ~800 MB to ~0.5 MB.
-  '--exclude=packages',
-  '--exclude=plugins/.plugin-appserver',
-  '--exclude=computer-use',
-  '--exclude=archived_sessions',
-];
+// Registry data (single source of truth, drift-guarded by the registry test).
+// Bare patterns mapped to `--exclude=` at the rsync call. Highlights: the
+// `state_*.sqlite*` threads index is the resume-cwd source (rebuilt in-box from
+// rollouts, so seeding it would trap a teleported session at the host cwd);
+// `packages`/`plugins/.plugin-appserver`/`computer-use` are heavy macOS-only
+// artifacts that balloon the staged tarball (~800 MB → ~0.5 MB).
+const CODEX_STATIC_EXCLUDES = resolveAgentSpec('codex').staticPaths[0]?.exclude ?? [];
 
 const CODEX_KEYCHAIN_WARNING =
   'codex: ~/.codex/auth.json missing. On macOS the codex CLI defaults to ' +
@@ -506,8 +446,7 @@ export async function stageCodexStaticForUpload(
       '-a',
       '-L',
       ...codexBroken.map((r) => `--exclude=/${r}`),
-      '--exclude=auth.json',
-      ...CODEX_RSYNC_EXCLUDES,
+      ...CODEX_STATIC_EXCLUDES.map((p) => `--exclude=${p}`),
       `${hostCodex}/`,
       `${stageDir}/`,
     ]);
@@ -600,19 +539,10 @@ export interface StageOpencodeOptions {
   hostHome?: string;
 }
 
-const OPENCODE_DATA_EXCLUDES = [
-  '--exclude=storage',
-  '--exclude=log',
-  '--exclude=project',
-  '--exclude=cache',
-  '--exclude=bin',
-  '--exclude=repos',
-  '--exclude=snapshot',
-  '--exclude=config',
-  '--exclude=opencode.db',
-  '--exclude=opencode.db-shm',
-  '--exclude=opencode.db-wal',
-];
+// Registry data (single source of truth, drift-guarded by the registry test).
+// Bare patterns mapped to `--exclude=` at the rsync call. `auth.json` ships
+// separately; the rest is host-only runtime state.
+const OPENCODE_DATA_EXCLUDES = resolveAgentSpec('opencode').staticPaths[0]?.exclude ?? [];
 
 /**
  * Filtered tarball of opencode static config. Layout extracts into
@@ -646,8 +576,7 @@ export async function stageOpencodeStaticForUpload(
         '-a',
         '-L',
         ...dataBroken.map((r) => `--exclude=/${r}`),
-        '--exclude=auth.json',
-        ...OPENCODE_DATA_EXCLUDES,
+        ...OPENCODE_DATA_EXCLUDES.map((p) => `--exclude=${p}`),
         `${hostData}/`,
         `${stageDir}/`,
       ]);

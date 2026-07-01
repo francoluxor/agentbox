@@ -80,3 +80,36 @@ export {
   type HostSyncManifest,
   type StagedTarball,
 } from './concerns/dynamic.js';
+export {
+  stageClaudeStaticForUpload,
+  stageClaudeJsonOnlyForUpload,
+  stageClaudeCredentialsForUpload,
+  stageCodexStaticForUpload,
+  stageCodexCredentialsForUpload,
+  stageAgentsStaticForUpload,
+  stageOpencodeStaticForUpload,
+  stageOpencodeCredentialsForUpload,
+  stageOpencodeStateForUpload,
+  type StageClaudeOptions,
+  type StageCodexOptions,
+  type StageOpencodeOptions,
+  type StageResult,
+} from './host-stage.js';
+export {
+  filterHostHooks,
+  isHostPathHookCommand,
+  setInstallMethodNative,
+  addProjectAlias,
+  trustWorkspace,
+  type HookFilterResult,
+  type SetInstallMethodNativeResult,
+  type AddProjectAliasResult,
+  type TrustWorkspaceResult,
+} from './claude-hooks-filter.js';
+export {
+  sanitizeCodexConfigForBox,
+  isHostOnlyPath,
+  BOX_WORKSPACE,
+  MINIMAL_TRUSTED_CODEX_CONFIG,
+  type SanitizeCodexConfigResult,
+} from './codex-config.js';

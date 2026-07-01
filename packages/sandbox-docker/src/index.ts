@@ -204,16 +204,11 @@ export {
   type RelayStatus,
   type StopRelayResult,
 } from './relay.js';
+// The host-config stage producers now live in the provider-neutral sync layer
+// (`@agentbox/sandbox-core`); cloud consumers import them from there. The claude
+// per-project path helpers + Stage types stay re-exported here (from core) for
+// existing `@agentbox/sandbox-docker` importers.
 export {
-  stageClaudeStaticForUpload,
-  stageClaudeJsonOnlyForUpload,
-  stageClaudeCredentialsForUpload,
-  stageCodexStaticForUpload,
-  stageCodexCredentialsForUpload,
-  stageAgentsStaticForUpload,
-  stageOpencodeStaticForUpload,
-  stageOpencodeCredentialsForUpload,
-  stageOpencodeStateForUpload,
   encodeClaudeProjectsKey,
   resolveClaudeMemoryDir,
   BOX_CLAUDE_PROJECT_DIR,
@@ -221,7 +216,7 @@ export {
   type StageCodexOptions,
   type StageOpencodeOptions,
   type StageResult,
-} from './sync/host-stage.js';
+} from '@agentbox/sandbox-core';
 export {
   BOX_WORKFLOWS_DIR,
   BOX_MEMORY_DIR,

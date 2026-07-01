@@ -11,7 +11,7 @@ import type {
 } from '@agentbox/core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { seedClaudeJsonAtCreate } from '../src/sync/claude-json-overlay.js';
-import { stageClaudeJsonOnlyForUpload } from '@agentbox/sandbox-docker';
+import { stageClaudeJsonOnlyForUpload } from '@agentbox/sandbox-core';
 
 interface ExecCall { cmd: string }
 interface UploadCall { localPath: string; remotePath: string }

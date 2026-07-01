@@ -24,7 +24,39 @@ export const AGENT_SYNC_SPECS: readonly AgentSyncSpec[] = [
     aliases: ['claude-code'],
     sessionName: 'claude',
     dockerVolume: 'agentbox-claude-config',
-    staticPaths: [{ hostHomeRel: ['.claude'], boxDir: CLAUDE_BOX_DIR }],
+    staticPaths: [
+      {
+        hostHomeRel: ['.claude'],
+        boxDir: CLAUDE_BOX_DIR,
+        // Static-stage excludes (single source of truth; consumed by
+        // `host-stage.ts:stageClaudeStaticForUpload`). `node_modules` drops
+        // host-platform binaries; `.credentials.json` ships separately; the
+        // rest is per-machine runtime/history state the in-box claude
+        // regenerates (`workflows` is seeded per-box at create time, not baked).
+        exclude: [
+          'node_modules',
+          '.credentials.json',
+          'projects',
+          'workflows',
+          'sessions',
+          'history.jsonl',
+          'file-history',
+          'shell-snapshots',
+          'backups',
+          'session-env',
+          'paste-cache',
+          'cache',
+          'telemetry',
+          'tasks',
+          'downloads',
+          'chrome',
+          'ide',
+          'debug',
+          'mcp-needs-auth-cache.json',
+          'stats-cache.json',
+        ],
+      },
+    ],
     credential: {
       boxRelPath: '.credentials.json',
       boxAbsPath: `${CLAUDE_BOX_DIR}/.credentials.json`,
@@ -47,7 +79,44 @@ export const AGENT_SYNC_SPECS: readonly AgentSyncSpec[] = [
     aliases: [],
     sessionName: 'codex',
     dockerVolume: 'agentbox-codex-config',
-    staticPaths: [{ hostHomeRel: ['.codex'], boxDir: CODEX_BOX_DIR }],
+    staticPaths: [
+      {
+        hostHomeRel: ['.codex'],
+        boxDir: CODEX_BOX_DIR,
+        // Static-stage excludes (single source of truth; consumed by
+        // `host-stage.ts:stageCodexStaticForUpload`). `auth.json` ships
+        // separately; `state_*.sqlite*` is the resume-cwd index (rebuilt in-box);
+        // `packages`/`plugins/.plugin-appserver`/`computer-use` are heavy
+        // macOS-only artifacts; the rest is host-only session/log/cache state.
+        exclude: [
+          'auth.json',
+          'sessions',
+          'log',
+          'history.jsonl',
+          'hooks.json',
+          'state_*.sqlite*',
+          'logs_*.sqlite*',
+          'external_agent_session_imports.json',
+          'sqlite',
+          'cache',
+          'vendor_imports',
+          'tmp',
+          '.tmp',
+          '.codex-global-state.json',
+          '.codex-global-state.json.bak',
+          '.personality_migration',
+          'shell_snapshots',
+          'session_index.jsonl',
+          'models_cache.json',
+          'installation_id',
+          'version.json',
+          'packages',
+          'plugins/.plugin-appserver',
+          'computer-use',
+          'archived_sessions',
+        ],
+      },
+    ],
     credential: {
       boxRelPath: 'auth.json',
       boxAbsPath: `${CODEX_BOX_DIR}/auth.json`,
@@ -72,13 +141,18 @@ export const AGENT_SYNC_SPECS: readonly AgentSyncSpec[] = [
       {
         hostHomeRel: ['.local', 'share', 'opencode'],
         boxDir: OPENCODE_BOX_DIR,
+        // Static-stage excludes for the data tree (single source of truth;
+        // consumed by `host-stage.ts:stageOpencodeStaticForUpload`). `auth.json`
+        // ships separately; the rest is host-only runtime state.
         exclude: [
+          'auth.json',
           'storage',
           'log',
           'project',
           'cache',
           'bin',
           'repos',
+          'snapshot',
           'config',
           'opencode.db',
           'opencode.db-shm',

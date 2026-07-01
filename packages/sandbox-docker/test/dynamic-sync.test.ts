@@ -6,7 +6,7 @@ import {
   encodeClaudeProjectsKey,
   resolveClaudeMemoryDir,
   BOX_CLAUDE_PROJECT_DIR,
-} from '../src/sync/host-stage.js';
+} from '@agentbox/sandbox-core';
 import {
   BOX_MEMORY_DIR,
   BOX_WORKFLOWS_DIR,

@@ -51,6 +51,76 @@ describe('agent sync registry', () => {
     expect(oc.caps).toEqual({ resume: false, teleport: 'stub', activitySource: 'plugin' });
   });
 
+  it('is the single source of truth for the static-stage excludes', () => {
+    // These arrays are consumed verbatim by `host-stage.ts`'s stage producers
+    // (mapped to `rsync --exclude=<pattern>`). Locking them here keeps the
+    // registry authoritative — the producers no longer hold their own copies.
+    expect(resolveAgentSpec('claude').staticPaths[0]?.exclude).toEqual([
+      'node_modules',
+      '.credentials.json',
+      'projects',
+      'workflows',
+      'sessions',
+      'history.jsonl',
+      'file-history',
+      'shell-snapshots',
+      'backups',
+      'session-env',
+      'paste-cache',
+      'cache',
+      'telemetry',
+      'tasks',
+      'downloads',
+      'chrome',
+      'ide',
+      'debug',
+      'mcp-needs-auth-cache.json',
+      'stats-cache.json',
+    ]);
+    expect(resolveAgentSpec('codex').staticPaths[0]?.exclude).toEqual([
+      'auth.json',
+      'sessions',
+      'log',
+      'history.jsonl',
+      'hooks.json',
+      'state_*.sqlite*',
+      'logs_*.sqlite*',
+      'external_agent_session_imports.json',
+      'sqlite',
+      'cache',
+      'vendor_imports',
+      'tmp',
+      '.tmp',
+      '.codex-global-state.json',
+      '.codex-global-state.json.bak',
+      '.personality_migration',
+      'shell_snapshots',
+      'session_index.jsonl',
+      'models_cache.json',
+      'installation_id',
+      'version.json',
+      'packages',
+      'plugins/.plugin-appserver',
+      'computer-use',
+      'archived_sessions',
+    ]);
+    // opencode data tree — auth.json ships separately, snapshot is host-only.
+    expect(resolveAgentSpec('opencode').staticPaths[0]?.exclude).toEqual([
+      'auth.json',
+      'storage',
+      'log',
+      'project',
+      'cache',
+      'bin',
+      'repos',
+      'snapshot',
+      'config',
+      'opencode.db',
+      'opencode.db-shm',
+      'opencode.db-wal',
+    ]);
+  });
+
   it('every spec resolves to itself by its own id', () => {
     for (const spec of AGENT_SYNC_SPECS) {
       expect(resolveAgentSpec(spec.id)).toBe(spec);

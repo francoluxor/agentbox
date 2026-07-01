@@ -9,7 +9,7 @@ import {
   filterHostHooks,
   setInstallMethodNative,
   trustWorkspace,
-} from '../claude-hooks-filter.js';
+} from '@agentbox/sandbox-core';
 import {
   mergeInstalledPlugins,
   mergeKnownMarketplaces,
@@ -19,7 +19,7 @@ import {
 } from '../claude-pull.js';
 import { ensureVolume, volumeExists } from '../../docker.js';
 import { detectEngine, orbstackVolumePath } from '../host-export.js';
-import { encodeClaudeProjectsKey } from '../host-stage.js';
+import { encodeClaudeProjectsKey } from '@agentbox/sandbox-core';
 // The host-side unsyncable-symlink pre-scan moved to the shared sync layer
 // (also used by the ~/.agents skills seed); re-exported for existing importers
 // (the find-unsyncable-symlinks test) and used internally by the claude stage.
