@@ -201,6 +201,21 @@ Two-tier layout (dependency-graph-driven): **pure contracts** in `packages/core/
     facade seed) + credential inheritance (box inherits host claude/codex logins) + resync. Hetzner uses
     the identical relocated cloud code; its re-prepare stayed externally Cloudflare-403-blocked.
 
+- **Phase 8 — naming reconciliation.** Deleted the two now-delegating inline name shims
+  (`agentBinaryName` in `apps/cli/src/commands/_run-queued-job.ts`, `agentKindFor` in
+  `_cloud-agent-create.ts`) and inlined the `agent-kind.ts` adapter at their call sites
+  (`toSyncKind(job.agent)` for the canonical `recordLastAgent` write + the `attach` argv;
+  `toQueueKind(args.mode)` for the frozen launcher-registry feed). Routed the two `BoxRecord.lastAgent`
+  reads in `recover.ts` through `normalizeLastAgent` (read-time back-compat: a legacy/forked record
+  holding the wire `'claude-code'` now resolves to canonical `'claude'` instead of silently missing the
+  `only === 'claude'` restore branch). No data migration — writes were already canonical; the record
+  type stays `'claude'|'codex'|'opencode'`. New restore-agent-sessions test covers the legacy
+  `lastAgent='claude-code'` → claude-restore path. **Owner steer ("use claude-code everywhere"):** the
+  wire-domain `job.agent === 'claude-code'` dispatch branches and the always-Claude subcommand's
+  `agent: 'claude-code'` / `buildPromptArgs('claude-code', …)` literals were deliberately left as the
+  wire spelling (see Deferred backlog) — so no relay/queue/`build-prompt-args`/`assert-creds` test
+  literals shifted, and relay tests stay green.
+
 ## Refinements to the plan's phasing (decided during execution)
 1. **Transports co-develop with their first concern (Phase 3), not in a vacuum.** Docker
    `copyOneEntry` and cloud `uploadOneEntry` *are* the push primitives; the transport
@@ -263,9 +278,6 @@ Two-tier layout (dependency-graph-driven): **pure contracts** in `packages/core/
   `sync/agents/<tool>/stage.ts` + fill in the claude/codex `staticPaths[].exclude`
   (`CLAUDE_RUNTIME_EXCLUDES`, `CODEX_RSYNC_EXCLUDES`); the deferred cloud credential/dynamic
   *seed* collapses land in `cloudSync`; add the `AGENTBOX_SYNC_DRYRUN` passthrough.
-- **Phase 8 — naming reconciliation.** Route all reads/writes through `agent-kind.ts`; delete
-  the (now-delegating) inline shims. Only phase that may change a snapshot; relay tests stay
-  green; no data migration (read-time normalization only).
 - **Phase 9 — relay delegation + git-refs unification.** Extract the triplicated
   branch/refspec/upstream logic (`server.ts:1420`, `host-actions.ts:1122`, `ctl/git.ts:129`)
   into pure `core/src/sync/git-refs.ts` (shared by relay-host + ctl-box — this is why they're
@@ -334,3 +346,12 @@ be mistaken for an oversight. Each notes *why* and *where it lands*.
 - **[→ later] box-facts behind a seam (Phase 6).** The generated `/etc/claude-code/CLAUDE.md`
   system-prompt fold (docker `codex.ts` + cloud `codex-agents-override.ts`) is the last
   provider-mirrored create-step not behind the sync seam; low urgency, folds with the driver.
+- **[non-canonicalization — owner steer "use claude-code everywhere"] Wire-domain dispatch
+  branches (Phase 8).** The six `job.agent === 'claude-code'` branches in `_run-queued-job.ts`
+  and the always-Claude `claude` subcommand's `agent: 'claude-code'` /
+  `buildPromptArgs('claude-code', …)` literals were left at the frozen wire spelling rather than
+  resolved once via `toSyncKind` and branched on canonical `'claude'`. `job.agent` is the frozen
+  `QueueAgentKind`, so the comparisons are type-safe; keeping them avoids churning the queue worker
+  and — deliberately — avoids shifting the `build-prompt-args` / `cloud-attach` / `assert-creds`
+  test literals. Recorded here so the un-canonicalized branches aren't mistaken later for an
+  oversight; revisit only if the owner reverses the steer.
