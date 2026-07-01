@@ -29,15 +29,17 @@ import type {
   InspectedBox,
   Provider,
   ProviderCheckpoint,
+  ProviderSync,
 } from '@agentbox/core';
 import {
   allocateProjectIndex,
+  makeSyncContext,
   readCliStamp,
   readState,
   recordBox,
   removeBoxRecord,
-  renderCarryEntries,
 } from '@agentbox/sandbox-core';
+import { makeCloudSync } from './sync/cloud-sync.js';
 import {
   buildTmuxConfigShellSnippet,
   ensureRelay,
@@ -50,18 +52,7 @@ import {
   registerBoxWithRelay,
   TERM_FALLBACK_SNIPPET,
 } from '@agentbox/sandbox-docker';
-import {
-  ensureAgentHomeDirsOwned,
-  ensureAgentVolumesForCloud,
-  extractCloudAgentCredentials,
-  refreshAgentCredentialsBackup,
-  seedAgentVolumesIfFresh,
-  seedOpencodeModelState,
-} from './agent-credentials.js';
-import { seedDynamicConfig } from './dynamic-sync.js';
-import { ensureCodexAgentsOverride } from './codex-agents-override.js';
-import { seedClaudeJsonAtCreate } from './claude-json-overlay.js';
-import { seedGitIdentity } from './git-identity.js';
+import { ensureAgentVolumesForCloud } from './agent-credentials.js';
 import {
   cloudSnapshotName,
   currentCloudBaseFingerprint,
@@ -72,8 +63,6 @@ import {
 } from './checkpoint.js';
 import { loadEffectiveConfig } from '@agentbox/config';
 import { isSnapshotGoneError } from './snapshot-error.js';
-import { uploadEnvFiles } from './env-files.js';
-import { uploadCarryPaths } from './carry.js';
 import { readExposedServicePorts } from './expose-ports.js';
 import { downloadFromCloudBox, pullCloudDirContents, uploadToCloudBox } from './cloud-cp.js';
 import { kickCloudBootstrap } from './bootstrap-launch.js';
@@ -695,122 +684,46 @@ export function createCloudProvider(
             seedResult.resync && seedResult.resync.hadConflicts ? seedResult.resync : undefined;
         }
 
-        // Refresh the host-side credential backups from the docker shared
-        // volumes BEFORE seeding — only the docker create path keeps them
-        // current, so cloud creates would otherwise push whatever access
-        // token the docker volume last extracted (often expired by the time
-        // the user attaches). Best-effort: when there's no docker on the host
-        // or no shared volume, the helper is a noop and the seed proceeds
-        // with whatever backup exists.
-        await refreshAgentCredentialsBackup({ onLog: log });
-
-        // Seed agent credentials into the box. Volume backends (daytona)
-        // mount a per-org volume at `~/.agentbox-creds/<agent>/` and the seed
-        // is idempotent via a `.agentbox-seeded-at` marker. Non-volume
-        // backends (e2b, vercel, hetzner) push fresh into the box-baked
-        // `~/.agentbox-creds/<agent>/` dirs every create — tokens are
-        // renewable and the box FS is ephemeral. Either way the symlinks
-        // baked into the snapshot (`~/.claude/.credentials.json` ->
-        // `~/.agentbox-creds/claude/.credentials.json` etc.) route the
-        // agent-expected paths through to the seeded files.
-        if (agentVolumes.agents.length > 0) {
-          await seedAgentVolumesIfFresh(backend, handle, {
-            agents: agentVolumes.agents,
-            hostWorkspace: req.workspacePath,
-            onLog: log,
-          });
-        }
-
-        // Normalize ownership of the agent static-config home dirs to vscode.
-        // Runs unconditionally (not gated on a credentials volume): the agent
-        // runs as vscode and a base template can bake `~/.codex` etc. with the
-        // wrong owner. Without this, Codex can't create its `state_*.sqlite`
-        // index at startup (we stopped seeding it). Cheap + idempotent.
-        await ensureAgentHomeDirsOwned(backend, handle, { onLog: log });
-
-        // Fold the box "system prompt" (/etc/claude-code/CLAUDE.md) into
-        // ~/.codex/AGENTS.override.md so the in-box Codex agent reads the same
-        // box facts Claude gets. Runs after the agent home dirs are in place so
-        // any user-global AGENTS.md is preserved beneath the facts. Mirrors the
-        // docker provider's seedCodexAgentsOverride.
-        await ensureCodexAgentsOverride(backend, handle, { onLog: log });
-
-        // Seed the host's selected OpenCode model into the box's (ephemeral)
-        // state dir on every create. Runs unconditionally — Hetzner has no
-        // credentials volume, so it is absent from `agentVolumes.agents` above
-        // yet still needs the model seeded.
-        await seedOpencodeModelState(backend, handle, { onLog: log });
-
-        // Overlay the in-box ~/.claude/_claude.json from the host's current
-        // ~/.claude.json on every create. Without this, E2B (which doesn't
-        // bake _claude.json at prepare-time) shows the first-run theme picker,
-        // and vercel/hetzner/daytona inherit whatever onboarding state the
-        // host had at prepare-time (stale if the user completed onboarding
-        // after `agentbox prepare`). The payload is one tiny JSON file.
-        await seedClaudeJsonAtCreate(backend, handle, {
+        // Walk the cloud ProviderSync facade (see sync/cloud-sync.ts for the full
+        // per-op picture). Order preserved from the pre-facade sequence:
+        //   seedCredentials  = refresh host backups (best-effort, expiry-gated) +
+        //                      seed the per-agent credentials for the agents that
+        //                      have a volume/dir (`agentVolumes.agents`).
+        //   seedAgentConfig  = normalize agent home-dir ownership → codex
+        //                      AGENTS.override box-facts → OpenCode model →
+        //                      _claude.json overlay → dynamic workflows/memory.
+        //   seedGitIdentity  = git committer identity (cloud has no ~/.gitconfig).
+        // Workspace *seed* (above, via seedCloudWorkspace) + static config (baked
+        // at prepare) stay outside the facade.
+        const syncCtx = makeSyncContext({
+          boxName: name,
+          boxId: id,
+          provider: 'cloud',
           hostWorkspace: req.workspacePath,
+          projectRoot: req.projectRoot,
+          boxWorkspace: CLOUD_WORKSPACE_DIR,
           onLog: log,
         });
-
-        // Seed the host's dynamic Claude config — global ~/.claude/workflows/
-        // and this project's memory/ — incrementally on every create. Runs on
-        // both fresh and checkpoint boots: the box carries a per-file manifest,
-        // so a snapshot boot only re-uploads what changed on the host since.
-        // Static config (plugins/skills/settings) is baked into the snapshot;
-        // these two trees change between runs and ship per-box, like credentials.
-        await seedDynamicConfig(backend, handle, { workspacePath: req.workspacePath, onLog: log });
-
-        // Configure a git committer identity in the box. Docker inherits the
-        // host's via a bind-mounted ~/.gitconfig; cloud boxes have none, so the
-        // agent's `git commit` and `agentbox git pull`'s merge commit would
-        // fail with "Committer identity unknown". Author as the host user when
-        // resolvable, else a generic agentbox identity. Runs on both fresh and
-        // snapshot boots (idempotent `git config --global`) so a snapshot that
-        // didn't capture ~/.gitconfig can't leave the box identity-less.
-        await seedGitIdentity(backend, handle, { hostRepo: req.workspacePath, onLog: log });
+        const sync = makeCloudSync(backend, handle, { agents: agentVolumes.agents });
+        await sync.seedCredentials(syncCtx);
+        await sync.seedAgentConfig(syncCtx);
+        await sync.seedGitIdentity(syncCtx);
 
         // Copy the env/config files the setup wizard collected (`.env`,
-        // `secrets.toml`, `agentbox.yaml`, …) into `/workspace`. The Docker
-        // provider does the same via copyHostEnvFilesToBox; before this hook
-        // these files were silently dropped on the cloud path.
+        // `secrets.toml`, `agentbox.yaml`, …) into `/workspace`.
         if (req.envFilesToImport && req.envFilesToImport.length > 0) {
-          const { copied } = await uploadEnvFiles({
-            backend,
-            handle,
-            workspacePath: req.workspacePath,
-            files: req.envFilesToImport,
-            workspaceDir: CLOUD_WORKSPACE_DIR,
-            onLog: log,
-          });
+          const { copied } = await sync.seedEnvFiles(syncCtx, req.envFilesToImport);
           if (copied > 0) log(`copied ${String(copied)} env/config file(s) into /workspace`);
         }
 
-        // carry: from agentbox.yaml — runs after the env-file copies and
-        // before the supervisor launches, mirroring the docker provider.
-        // The host CLI already resolved + got user approval before threading
-        // entries into req.carry.
+        // carry: from agentbox.yaml — runs after the env-file copies and before
+        // the supervisor launches. The host CLI already resolved + approved req.carry.
         let carrySummary:
           | { count: number; entries: Array<{ src: string; dest: string; bytes: number }> }
           | undefined;
         if (req.carry && req.carry.length > 0) {
           log(`carry: copying ${String(req.carry.length)} host path(s) into the box`);
-          const entries = await renderCarryEntries(
-            req.carry,
-            {
-              name,
-              id,
-              kind: 'cloud',
-              hostWorkspace: req.workspacePath,
-              projectRoot: req.projectRoot,
-            },
-            log,
-          );
-          const result = await uploadCarryPaths({
-            backend,
-            handle,
-            entries,
-            onLog: log,
-          });
+          const result = await sync.applyCarry(syncCtx, req.carry);
           log(`carry: copied ${String(result.copied)}/${String(req.carry.length)} entry/entries`);
           for (const err of result.errors) log(`carry: ${err}`);
           if (result.applied.length > 0) {
@@ -1332,6 +1245,10 @@ export function createCloudProvider(
     // silent no-op.
     checkpoint: makeCloudCheckpoint(backend),
 
+    sync(box: BoxRecord): ProviderSync {
+      return makeCloudSync(backend, handleFor(box));
+    },
+
     // Extract the box's agent login(s) back to the host (~/.agentbox) so the
     // next box inherits the login. Lives on the base cloud provider (not inside
     // `checkpoint.create`) so it works even for providers that override the
@@ -1339,7 +1256,16 @@ export function createCloudProvider(
     // `checkpoint create --set-default`, while the box is guaranteed running.
     async extractAgentCredentials(box: BoxRecord): Promise<string[]> {
       if (!box.cloud?.sandboxId) return [];
-      return extractCloudAgentCredentials(backend, { sandboxId: box.cloud.sandboxId });
+      // Delegate to the co-located facade — the same op as a peer method.
+      // `extractCredentials` ignores the ctx (box→host capture uses backend +
+      // handle), but the ProviderSync signature takes one.
+      const ctx = makeSyncContext({
+        boxName: box.name,
+        boxId: box.id,
+        provider: 'cloud',
+        hostWorkspace: box.workspacePath,
+      });
+      return makeCloudSync(backend, handleFor(box)).extractCredentials(ctx);
     },
 
     // stats is provider-optional; cloud backends without a metrics API just
