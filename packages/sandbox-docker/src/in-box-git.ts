@@ -6,6 +6,11 @@ import type { GitWorktreeRecord } from '@agentbox/core';
 import { execInBox, type DockerExecResult } from './docker.js';
 import type { DetectedGitRepo } from './git-worktree.js';
 import { GitWorktreeError } from './git-worktree.js';
+// The pure box-wins untracked-overlay classifier moved to the provider-neutral
+// git/workspace concern in @agentbox/sandbox-core. Re-exported so the docker
+// test + the resync caller below are untouched.
+import { classifyUntrackedOverlay, NON_REGULAR_TOKEN } from '@agentbox/sandbox-core';
+export { classifyUntrackedOverlay };
 
 /**
  * Root for per-box git-worktree directories inside the container. Each box
@@ -692,29 +697,6 @@ async function gitIn(container: string, ct: string, args: string[]): Promise<Doc
 /** Split a `-z` (NUL-delimited) git output into non-empty entries. */
 function splitNul(s: string): string[] {
   return s.split('\0').filter((p) => p.length > 0);
-}
-
-/**
- * Sentinel token emitted by the box-side probe for a path that exists but is
- * NOT a plain file (dir/symlink) — always a conflict so we never clobber it.
- */
-const NON_REGULAR_TOKEN = '-';
-
-/**
- * Classify a host untracked file against what the box already has at that path.
- * `boxToken` is the box-side probe result: undefined when the path is absent in
- * the box (safe to copy), {@link NON_REGULAR_TOKEN} when it exists but isn't a
- * plain file, otherwise the sha256 of the box file's contents. `hostHash` is the
- * sha256 of the host file. A byte-identical file is a no-op (neither copied nor
- * reported); anything else that already exists is a conflict the box keeps.
- */
-export function classifyUntrackedOverlay(
-  boxToken: string | undefined,
-  hostHash: string,
-): 'copy' | 'identical' | 'conflict' {
-  if (boxToken === undefined) return 'copy';
-  if (boxToken === NON_REGULAR_TOKEN) return 'conflict';
-  return boxToken === hostHash ? 'identical' : 'conflict';
 }
 
 /** Conflicted (unmerged) paths in the box worktree, if any. */
