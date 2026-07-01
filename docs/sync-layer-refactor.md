@@ -100,6 +100,26 @@ Two-tier layout (dependency-graph-driven): **pure contracts** in `packages/core/
   extract now flows through `CloudSyncTransport.readText` on `checkpoint create
   --set-default` (best-effort, box→host only — no create-path blast radius), but Phase 5
   stays on the login→destroy→recreate→inherited matrix per the gate before any push.
+- **Phase 6 — git resync behind `WorkspaceResyncPorts` (docker-preserving).** Moved the
+  box-wins untracked-overlay classifier (`classifyUntrackedOverlay` + `NON_REGULAR_TOKEN`)
+  and the full resync orchestration (`resyncWorkspace`) into `sync/concerns/git.ts` — the
+  concrete `box-wins-content-hash` policy the reconciler contract anticipated. Defined the
+  `WorkspaceResyncPorts` contract in `core/src/sync/workspace.ts` (host-git probes +
+  box-git exec + the stdin-streaming box untracked-probe + tar-apply — the ops the
+  stateless `SyncTransport.exec` can't express). Docker `resyncWorkspaceFromHost` is now a
+  thin wrapper building `makeDockerResyncPorts(container)` whose methods reproduce the
+  pre-refactor host-git/`docker exec` commands **byte-for-byte** (behavior-preserving by
+  construction — the orchestration moved verbatim, only its I/O calls became `ports.*`). New
+  `git-concern.test.ts` (4, mirrors the docker classify cases — double-parity) +
+  `git-resync.test.ts` (4, golden-tests the orchestration against a scripted fake ports: the
+  overlay/classify path, a clean merge, a merge conflict kept box-side, and the
+  unresolvable-ref skip). Docker `classify-untracked-overlay.test.ts` still green through
+  the re-export; cli/cloud/relay consumers of the resync result unchanged. **Cloud left
+  unwired** (the "Phase 2" gap stays open — the seam is ready for it) and **workspace *seed*
+  not moved** (docker worktree add + `mount --bind` replay has no cloud analog — cloud
+  clones — a deliberate non-unification). **SMOKE OWED:** docker session-start resync moved
+  onto the seam (runs on every down→up transition, mutates worktrees) — needs the docker
+  half of the matrix before push, even though it's behavior-preserving.
 
 ## Refinements to the plan's phasing (decided during execution)
 1. **Transports co-develop with their first concern (Phase 3), not in a vacuum.** Docker
@@ -139,10 +159,16 @@ Two-tier layout (dependency-graph-driven): **pure contracts** in `packages/core/
   polymorphic caller — a deliberate non-unification). Highest-risk: the seed collapse needs
   the real-box login→destroy→recreate→inherited smoke both directions on docker + volume +
   ephemeral cloud, with extra assertions.
-- **Phase 6 — git seed + resync + box-facts.** Move workspace seed + resync (verbatim
-  box-wins `classifyUntrackedOverlay`) behind `WorkspaceResyncPorts`; **wire `CloudSyncTransport`
-  into resync to close the cloud "Phase 2" gap**. Leave the `inBoxClone` control-plane branch
-  untouched.
+- **Phase 6 — git resync/seed + box-facts.** The resync half is **done** (in Done above:
+  classify + `resyncWorkspace` behind `WorkspaceResyncPorts`, docker-preserving). **Remaining:**
+  (a) **wire `CloudSyncTransport` into resync to close the cloud "Phase 2" gap"** — implement
+  a cloud `WorkspaceResyncPorts` (box-side ports on `CloudSyncTransport`, host-git ports reused
+  from docker's) + `Provider.resyncWorkspace` for cloud + drop the docker-only gate at
+  `apps/cli/src/lib/resync-start.ts`; net-new behavior on live cloud working dirs — needs the
+  full {vercel,hetzner}×{claude,codex} smoke. (b) workspace *seed* migration (deferred — docker
+  worktree/bind-mount seed has no cloud analog). (c) box-facts (the generated
+  `/etc/claude-code/CLAUDE.md` fold) — the last provider-mirrored create-step not behind a seam.
+  Leave the `inBoxClone` control-plane branch untouched throughout.
 - **Phase 7 — data-driven driver.** `sync/driver.ts` `SEED_PIPELINE` + `seed()`; replace the
   imperative sequences in `create.ts`/`cloud-provider.ts` (order preserved). Move the
   per-tool static-config stage producers to `sync/agents/<tool>/stage.ts` + fill in the
@@ -201,3 +227,21 @@ be mistaken for an oversight. Each notes *why* and *where it lands*.
   consts that mirror the registry's `credential.hostBackup` (drift-guarded by the registry
   test). Could become registry-derived re-exports to shrink the drift surface; low value,
   low risk, no rush.
+- **[owed] Docker session-start resync smoke (Phase 6).** `resyncWorkspaceFromHost` moved
+  onto the `WorkspaceResyncPorts` seam (behavior-preserving by construction — the docker
+  ports reproduce the exact commands). It runs on every docker down→up transition and
+  mutates worktrees, so the docker half of the matrix is owed before push despite the
+  unit-level parity.
+- **[next Phase 6 step] Cloud live-box resync (close the "Phase 2" gap).** Implement a cloud
+  `WorkspaceResyncPorts` (box-side ports on `CloudSyncTransport`; host-git ports identical to
+  docker's — factor those out to share) + `Provider.resyncWorkspace` for cloud + drop the
+  docker-only gate at `apps/cli/src/lib/resync-start.ts`. Net-new behavior on live cloud
+  working directories → needs the full {vercel,hetzner}×{claude,codex} smoke; kept out of the
+  docker-preserving pass on purpose. Must stay behind the non-`inBoxClone` branch.
+- **[non-unification — revisit only on a real consumer] Workspace *seed* (Phase 6).**
+  `seedWorkspace` (docker `git worktree add` + `mount --bind` replay of host stash/untracked)
+  stays docker-specific — cloud clones in-box instead (no worktree/bind-mount analog), so
+  there is no shared shape to extract. Leave until a real cross-provider seed consumer exists.
+- **[→ later] box-facts behind a seam (Phase 6).** The generated `/etc/claude-code/CLAUDE.md`
+  system-prompt fold (docker `codex.ts` + cloud `codex-agents-override.ts`) is the last
+  provider-mirrored create-step not behind the sync seam; low urgency, folds with the driver.

@@ -3,14 +3,17 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execa } from 'execa';
 import type { GitWorktreeRecord } from '@agentbox/core';
-import { execInBox, type DockerExecResult } from './docker.js';
+import { execInBox } from './docker.js';
 import type { DetectedGitRepo } from './git-worktree.js';
 import { GitWorktreeError } from './git-worktree.js';
-// The pure box-wins untracked-overlay classifier moved to the provider-neutral
-// git/workspace concern in @agentbox/sandbox-core. Re-exported so the docker
-// test + the resync caller below are untouched.
-import { classifyUntrackedOverlay, NON_REGULAR_TOKEN } from '@agentbox/sandbox-core';
+// The box-wins classifier + the resync orchestration moved to the provider-
+// neutral git/workspace concern in @agentbox/sandbox-core; the resync runs
+// against a `WorkspaceResyncPorts` this file supplies. `classifyUntrackedOverlay`
+// is re-exported so the docker test is untouched.
+import { classifyUntrackedOverlay, resyncWorkspace } from '@agentbox/sandbox-core';
+import type { RepoResyncResult, WorkspaceResyncPorts } from '@agentbox/core';
 export { classifyUntrackedOverlay };
+export type { RepoResyncResult };
 
 /**
  * Root for per-box git-worktree directories inside the container. Each box
@@ -680,171 +683,63 @@ export interface ResyncWorkspaceOptions {
   onLog?: (line: string) => void;
 }
 
-/** Per-repo outcome of a resync — conflicts where the box's version was kept. */
-export interface RepoResyncResult {
-  containerPath: string;
-  /** Paths where merging host commits conflicted; box version kept (host change shadowed). */
-  mergeConflicts: string[];
-  /** Paths where overlaying host uncommitted/untracked was skipped to keep the box version. */
-  overlaySkipped: string[];
-}
-
-/** vscode-user git inside a box worktree, capturing exit/stdout/stderr. */
-async function gitIn(container: string, ct: string, args: string[]): Promise<DockerExecResult> {
-  return execInBox(container, ['git', '-C', ct, ...args], { user: 'vscode' });
-}
-
 /** Split a `-z` (NUL-delimited) git output into non-empty entries. */
 function splitNul(s: string): string[] {
   return s.split('\0').filter((p) => p.length > 0);
 }
 
-/** Conflicted (unmerged) paths in the box worktree, if any. */
-async function unmergedPaths(container: string, ct: string): Promise<string[]> {
-  const r = await gitIn(container, ct, ['diff', '--name-only', '--diff-filter=U', '-z']);
-  return r.exitCode === 0 ? splitNul(r.stdout) : [];
-}
-
 /**
- * Resync each box worktree with the host's current state: merge the host's
- * checked-out branch into the box's per-box branch, then overlay the host's
- * uncommitted (stash) + untracked changes. The box wins every conflict — the
- * host change is skipped (no markers left), and the affected paths are returned
- * so the caller can warn the agent.
- *
- * Docker-only: the host `.git/` is bind-mounted, so the host's branch ref is
- * already present in the box and the merge needs no fetch (the same property
- * create-time carry-over relies on). Best-effort throughout — a step that fails
- * is logged and skipped rather than aborting the box start.
+ * Docker implementation of the workspace-resync ports (`@agentbox/core`):
+ * host-side git via host `execa('git', …)`, box-side via `docker exec --user
+ * vscode`. Every method reproduces the pre-refactor `resyncWorkspaceFromHost`
+ * command byte-for-byte — the docker `.git/` bind mount means the host branch
+ * ref is already present in the box (no fetch needed).
  */
-export async function resyncWorkspaceFromHost(
-  opts: ResyncWorkspaceOptions,
-): Promise<RepoResyncResult[]> {
-  const log = opts.onLog ?? (() => {});
-  const results: RepoResyncResult[] = [];
-
-  for (const w of opts.worktrees) {
-    const ct = w.containerPath;
-    const hostMain = w.hostMainRepo;
-    const boxBranch = w.branch;
-    const res: RepoResyncResult = { containerPath: ct, mergeConflicts: [], overlaySkipped: [] };
-
-    // --- host state (host-side git; no side effects on the worktree) ---
-    const hostBranchProbe = await execa(
-      'git',
-      ['-C', hostMain, 'symbolic-ref', '--short', '-q', 'HEAD'],
-      { reject: false },
-    );
-    const hostRef =
-      hostBranchProbe.exitCode === 0 && hostBranchProbe.stdout.trim()
-        ? hostBranchProbe.stdout.trim()
-        : (await execa('git', ['-C', hostMain, 'rev-parse', 'HEAD'], { reject: false })).stdout.trim();
-    if (!hostRef) {
-      log(`resync: ${ct}: could not resolve host ref; skipping`);
-      results.push(res);
-      continue;
-    }
-    const stash = await execa('git', ['-C', hostMain, 'stash', 'create'], { reject: false });
-    const hostStashSha = stash.exitCode === 0 ? stash.stdout.trim() || null : null;
-    const untracked = await execa(
-      'git',
-      ['-C', hostMain, 'ls-files', '--others', '--exclude-standard', '-z'],
-      { reject: false },
-    );
-    const hostUntracked = untracked.exitCode === 0 ? splitNul(untracked.stdout) : [];
-
-    // --- merge host commits into the box branch (skip when merging self) ---
-    if (hostRef !== boxBranch) {
-      // Stash the box's own uncommitted tracked changes so the merge can run;
-      // restored on top afterward (box keeps them). Untracked box files stay.
-      const status = await gitIn(opts.container, ct, ['status', '--porcelain']);
-      const boxDirty = status.stdout
-        .split('\n')
-        .some((line) => line.length > 0 && !line.startsWith('??'));
-      let boxStashed = false;
-      if (boxDirty) {
-        const push = await gitIn(opts.container, ct, ['stash', 'push', '-m', 'agentbox-resync']);
-        boxStashed = push.exitCode === 0;
-      }
-
-      const newCommits = await gitIn(opts.container, ct, [
-        'rev-list',
-        '--count',
-        `${boxBranch}..${hostRef}`,
-      ]);
-      const n = newCommits.exitCode === 0 ? newCommits.stdout.trim() : '?';
-      const merge = await gitIn(opts.container, ct, ['merge', '--no-commit', hostRef]);
-      const mergeInProgress =
-        (await gitIn(opts.container, ct, ['rev-parse', '-q', '--verify', 'MERGE_HEAD'])).exitCode === 0;
-      const conflicts = await unmergedPaths(opts.container, ct);
-      if (conflicts.length > 0) {
-        await gitIn(opts.container, ct, ['checkout', '--ours', '--', ...conflicts]);
-        await gitIn(opts.container, ct, ['add', '--', ...conflicts]);
-        res.mergeConflicts.push(...conflicts);
-      }
-      if (mergeInProgress) {
-        await gitIn(opts.container, ct, [
-          '-c',
-          'user.name=agentbox',
-          '-c',
-          'user.email=agentbox@users.noreply.github.com',
-          'commit',
-          '--no-edit',
-        ]);
-        log(
-          `resync: ${ct}: merged ${n} new host commit(s) from ${hostRef}` +
-            (conflicts.length > 0 ? ` (${String(conflicts.length)} conflict(s) kept box version)` : ''),
-        );
-      } else if (merge.exitCode === 0) {
-        log(`resync: ${ct}: ${n === '0' ? 'already up to date' : `fast-forwarded to ${hostRef}`}`);
-      } else {
-        // Hard failure (e.g. an untracked box file would be overwritten). Leave
-        // the box untouched.
-        await gitIn(opts.container, ct, ['merge', '--abort']);
-        log(`resync: ${ct}: merge skipped (${(merge.stderr || merge.stdout).trim().split('\n')[0]})`);
-      }
-
-      if (boxStashed) {
-        const pop = await gitIn(opts.container, ct, ['stash', 'pop']);
-        if (pop.exitCode !== 0) {
-          // Box's uncommitted edits clash with the merged host change. Keep the
-          // box's version (stash side = --theirs), drop the dangling stash.
-          const popConflicts = await unmergedPaths(opts.container, ct);
-          for (const p of popConflicts) {
-            await gitIn(opts.container, ct, ['checkout', '--theirs', '--', p]);
-            await gitIn(opts.container, ct, ['reset', '-q', '--', p]);
-          }
-          await gitIn(opts.container, ct, ['stash', 'drop']);
-        }
-      }
-    }
-
-    // --- overlay host uncommitted (stash) on top, box wins on conflict ---
-    if (hostStashSha) {
-      const apply = await gitIn(opts.container, ct, ['stash', 'apply', hostStashSha]);
-      if (apply.exitCode !== 0) {
-        const conflicts = await unmergedPaths(opts.container, ct);
-        for (const p of conflicts) {
-          // ours = box working tree, theirs = host stash → keep box, unstage.
-          await gitIn(opts.container, ct, ['checkout', '--ours', '--', p]);
-          await gitIn(opts.container, ct, ['reset', '-q', '--', p]);
-        }
-        if (conflicts.length > 0) res.overlaySkipped.push(...conflicts);
-      }
-    }
-
-    // --- overlay host untracked files; box wins only when it actually differs ---
-    if (hostUntracked.length > 0) {
-      // Probe the box for each host path. A path absent in the box is copied; a
-      // path present and byte-identical is a no-op (NOT a conflict — this is the
-      // common case right after create-time seeding copied these same untracked
-      // files in); a path present but differing (or a non-regular file we won't
-      // clobber) is the box's version we keep and report.
-      //
-      // For each existing path we emit `<token>\0<path>\0`: the file's sha256
-      // (fed on stdin so filenames with spaces/newlines are safe), or `-` for a
-      // non-regular file. `ct` is passed as $1 (never interpolated) so a worktree
-      // path with spaces is safe; `bash` for `read -d ''` (NUL), which dash lacks.
+function makeDockerResyncPorts(container: string): WorkspaceResyncPorts {
+  return {
+    async resolveHostRef(hostMain) {
+      const hostBranchProbe = await execa(
+        'git',
+        ['-C', hostMain, 'symbolic-ref', '--short', '-q', 'HEAD'],
+        { reject: false },
+      );
+      const hostRef =
+        hostBranchProbe.exitCode === 0 && hostBranchProbe.stdout.trim()
+          ? hostBranchProbe.stdout.trim()
+          : (await execa('git', ['-C', hostMain, 'rev-parse', 'HEAD'], { reject: false })).stdout.trim();
+      return hostRef || null;
+    },
+    async createHostStash(hostMain) {
+      const stash = await execa('git', ['-C', hostMain, 'stash', 'create'], { reject: false });
+      return stash.exitCode === 0 ? stash.stdout.trim() || null : null;
+    },
+    async listHostUntracked(hostMain) {
+      const untracked = await execa(
+        'git',
+        ['-C', hostMain, 'ls-files', '--others', '--exclude-standard', '-z'],
+        { reject: false },
+      );
+      return untracked.exitCode === 0 ? splitNul(untracked.stdout) : [];
+    },
+    async hashHostFile(hostMain, relPath) {
+      return createHash('sha256').update(await readFile(join(hostMain, relPath))).digest('hex');
+    },
+    async packHostFiles(hostMain, relPaths) {
+      const tarOut = await execa('tar', ['-C', hostMain, '--null', '-T', '-', '-cf', '-'], {
+        input: relPaths.join('\0'),
+        encoding: 'buffer',
+        reject: false,
+      });
+      return tarOut.exitCode === 0 ? (tarOut.stdout as Buffer) : null;
+    },
+    async boxGit(ct, args) {
+      return execInBox(container, ['git', '-C', ct, ...args], { user: 'vscode' });
+    },
+    async probeUntrackedTokens(ct, relPaths) {
+      // For each existing path emit `<token>\0<path>\0`: the file's sha256 (fed
+      // on stdin so filenames with spaces/newlines are safe), or `-` for a
+      // non-regular file. `ct` is $1 (never interpolated) so a worktree path
+      // with spaces is safe; `bash` for `read -d ''` (NUL), which dash lacks.
       const probe = await execa(
         'docker',
         [
@@ -852,7 +747,7 @@ export async function resyncWorkspaceFromHost(
           '-i',
           '--user',
           'vscode',
-          opts.container,
+          container,
           'bash',
           '-c',
           'cd "$1" && while IFS= read -r -d "" f; do ' +
@@ -862,7 +757,7 @@ export async function resyncWorkspaceFromHost(
           'bash',
           ct,
         ],
-        { input: hostUntracked.join('\0'), reject: false },
+        { input: relPaths.join('\0'), reject: false },
       );
       const boxTokens = new Map<string, string>();
       if (probe.exitCode === 0) {
@@ -873,48 +768,28 @@ export async function resyncWorkspaceFromHost(
           if (token !== undefined && path !== undefined) boxTokens.set(path, token);
         }
       }
-      const toCopy: string[] = [];
-      let identical = 0;
-      for (const p of hostUntracked) {
-        const boxToken = boxTokens.get(p);
-        let hostHash = '';
-        if (boxToken !== undefined && boxToken !== NON_REGULAR_TOKEN) {
-          try {
-            hostHash = createHash('sha256').update(await readFile(join(hostMain, p))).digest('hex');
-          } catch {
-            // Host file vanished/unreadable since `ls-files` — can't copy it and
-            // the box already has its own version; keep the box's, don't report.
-            identical++;
-            continue;
-          }
-        }
-        const verdict = classifyUntrackedOverlay(boxToken, hostHash);
-        if (verdict === 'copy') toCopy.push(p);
-        else if (verdict === 'conflict') res.overlaySkipped.push(p);
-        else identical++;
-      }
-      if (identical > 0) {
-        log(`resync: ${ct}: ${String(identical)} untracked host file(s) already identical in box (no-op)`);
-      }
-      if (toCopy.length > 0) {
-        const tarOut = await execa('tar', ['-C', hostMain, '--null', '-T', '-', '-cf', '-'], {
-          input: toCopy.join('\0'),
-          encoding: 'buffer',
-          reject: false,
-        });
-        if (tarOut.exitCode === 0) {
-          await execa(
-            'docker',
-            ['exec', '-i', '--user', 'vscode', opts.container, 'tar', '-C', ct, '-xf', '-'],
-            { input: tarOut.stdout as Buffer, reject: false },
-          );
-          log(`resync: ${ct}: copied ${String(toCopy.length)} untracked host file(s)`);
-        }
-      }
-    }
+      return boxTokens;
+    },
+    async applyTarToBox(ct, tar) {
+      await execa(
+        'docker',
+        ['exec', '-i', '--user', 'vscode', container, 'tar', '-C', ct, '-xf', '-'],
+        { input: tar, reject: false },
+      );
+    },
+  };
+}
 
-    results.push(res);
-  }
-
-  return results;
+/**
+ * Resync each box worktree with the host's current state (merge the host branch
+ * into the box branch, overlay host uncommitted + untracked, box wins on
+ * conflict). Thin docker wrapper: the provider-neutral `resyncWorkspace` concern
+ * (`@agentbox/sandbox-core`) drives the orchestration through the docker resync
+ * ports. Best-effort throughout — a failed step is logged and skipped rather
+ * than aborting the box start.
+ */
+export async function resyncWorkspaceFromHost(
+  opts: ResyncWorkspaceOptions,
+): Promise<RepoResyncResult[]> {
+  return resyncWorkspace(opts.worktrees, makeDockerResyncPorts(opts.container), opts.onLog);
 }

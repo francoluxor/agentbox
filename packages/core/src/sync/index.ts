@@ -25,3 +25,9 @@ export {
   normalizeLastAgent,
 } from './agent-kind.js';
 export type { ConflictVerdict, ConflictPolicy, Reconciler } from './reconciler.js';
+export type {
+  WorkspaceResyncPorts,
+  ResyncWorktree,
+  ResyncExecResult,
+  RepoResyncResult,
+} from './workspace.js';
