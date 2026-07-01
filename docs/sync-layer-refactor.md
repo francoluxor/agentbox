@@ -233,6 +233,25 @@ Two-tier layout (dependency-graph-driven): **pure contracts** in `packages/core/
   `core/test/git-refs.test.ts` + `core/test/files.test.ts` are the primary guard (relay unit
   coverage of these strings is thin); relay/ctl parity nets stay green.
 
+- **Phase 10 — control-plane wiring (topology + direct lease-push).** Closed the box-side gaps
+  that left the plane's fully-wired lease path inert. Added pure `resolveSyncTopology(provider,
+  controlPlaneUrl)` (`core/src/sync/topology.ts`) + `CreateBoxRequest.controlPlaneUrl` +
+  `CloudBoxFields.{topology,controlPlaneUrl}` (persisted so resume re-threads). Threaded
+  `cfg.effective.relay.controlPlaneUrl` from `create.ts` → `cloud-provider.create` →
+  `kickCloudBootstrap`, which now (via the extracted pure `buildBootstrapEnv`) exports
+  `AGENTBOX_CONTROL_PLANE_URL` for the daemon and writes `AGENTBOX_GIT_LEASE=1` into
+  `/etc/agentbox/box.env` (the login-shell `git push` reads it there — the daemon's env isn't
+  inherited). **The one-liner under-specified the mechanism:** the flag is inert without also
+  flipping the in-box daemon — a `mode:'box'` relay parks `git.lease-token` on `/bridge` where no
+  drainer handles it. So the ctl daemon (pure `selectInBoxTransport`) now runs a *forwarder to the
+  plane* for a control-plane cloud box (reaching the plane's direct lease handler), writing the
+  0600 relay-env file in that branch too. And a control-plane box registers on the *plane* (with
+  its origin URL, which `leaseTokenResult` mints from) via `registerBoxWithPlane`, not the laptop
+  loopback. Entirely inert unless `controlPlaneUrl` is configured; classic-cloud + docker
+  byte-unchanged. **Scoped to the laptop `create` path** (see Deferred for the plane worker).
+  Guards: `core/test/topology.test.ts`, `sandbox-cloud/test/bootstrap-env.test.ts`,
+  `ctl/test/in-box-transport.test.ts`.
+
 ## Refinements to the plan's phasing (decided during execution)
 1. **Transports co-develop with their first concern (Phase 3), not in a vacuum.** Docker
    `copyOneEntry` and cloud `uploadOneEntry` *are* the push primitives; the transport
@@ -295,11 +314,6 @@ Two-tier layout (dependency-graph-driven): **pure contracts** in `packages/core/
   `sync/agents/<tool>/stage.ts` + fill in the claude/codex `staticPaths[].exclude`
   (`CLAUDE_RUNTIME_EXCLUDES`, `CODEX_RSYNC_EXCLUDES`); the deferred cloud credential/dynamic
   *seed* collapses land in `cloudSync`; add the `AGENTBOX_SYNC_DRYRUN` passthrough.
-- **Phase 10 — close the two wiring gaps.** Thread `relay.controlPlaneUrl` →
-  `CreateBoxRequest` → box forwarder-upstream (`cloud-provider.ts:583-594`,
-  `bootstrap-launch.ts:52-78`) + persist topology on `BoxRecord`; set `AGENTBOX_GIT_LEASE=1`
-  in-box when the relay is the plane (in-box daemon `ctl/commands/daemon.ts`).
-
 ## Per-phase gate
 `pnpm build && pnpm typecheck && pnpm lint`, then package tests (core, sandbox-core,
 sandbox-docker, sandbox-cloud, relay, cli). Before pushing: the real-box smoke matrix
@@ -391,3 +405,19 @@ be mistaken for an oversight. Each notes *why* and *where it lands*.
   `leaseAndPush` keeps its weaker `!branch` check; adopting `isResolvedBranch` there would add a
   `=== 'HEAD'` rejection on the `AGENTBOX_GIT_LEASE` control-plane push path — a behavior change,
   deliberately not made.
+- **[owed] Control-plane smoke matrix (Phase 10).** The whole feature is untested end-to-end by
+  units. Before push: deploy the plane, `control-plane set-url`, create a `{vercel,hetzner}` box on
+  an App-installed repo, and verify `box.env` has `AGENTBOX_GIT_LEASE=1`, the daemon logs
+  `forwarder → <plane>` (not `mode=box`), an `agentbox/*` push leases + lands direct on GitHub, a
+  non-scratch push poll-gates, status/events render, and a stop/start resume preserves the flip +
+  re-registers. Plus the negative (no `controlPlaneUrl` → classic `mode:'box'`, unchanged) and a
+  docker sanity pass.
+- **[deferred per owner steer — laptop-only Phase 10] Plane server-side create worker.**
+  `makeControlPlaneCreateBox` (`apps/cli/src/control-plane/create-box.ts`) + the worker in
+  `control-plane.ts` still `provider.create` with no control-plane signal, so a plane-created box
+  gets a `mode:'box'` relay with no poller and its pushes hang. It needs the same threading + an
+  **in-plane** store registration with `originUrl` (direct store access, not the HTTPS admin API
+  the laptop path uses). Deferred so the laptop path proves the mechanism first.
+- **[not needed to function] Top-level `BoxRecord.topology`.** Phase 10 persists topology only on
+  `CloudBoxFields` (cloud is the only topology-bearing surface; docker is implicitly `'docker'`).
+  A uniform top-level field could be added if a non-cloud consumer ever needs it.

@@ -234,10 +234,17 @@ Config key: `relay.controlPlaneUrl` (`packages/config/src/types.ts`).
   `configured:{db:true, app:true, admin:true}`. Admin auth round-trips (valid token →
   200, missing/wrong → 401). Vercel cloud boxes push through the relay end-to-end (an
   `agentbox/*` branch lands on GitHub with a matching SHA).
-- **Two caveats worth knowing:**
-  1. `AGENTBOX_GIT_LEASE=1` (the box→plane *direct* lease-and-push topology) is currently
-     only *read* in `git.ts`; nothing sets it yet. Cloud pushes route host-side today via
-     the box-mode relay + `/bridge` CloudBoxPoller. The direct-plane path is designed and
-     wired end-to-end on the plane side, awaiting the daemon flip.
+- **Direct lease-push (Phase 10, laptop `create` path):** when `relay.controlPlaneUrl` is
+  configured, `agentbox create --provider <cloud>` now resolves `topology: 'control-plane'`,
+  registers the box on the plane with its origin URL, runs an in-box forwarder to the plane, and
+  writes `AGENTBOX_GIT_LEASE=1` into `/etc/agentbox/box.env` so the box leases a token and pushes
+  **direct** to GitHub. The flag is host-written into `box.env` (the daemon's env isn't inherited
+  by the login shell that runs `git push`) — it is *not* daemon-set. Classic-cloud (no
+  `controlPlaneUrl`) is unchanged: pushes route host-side via the box-mode relay + `/bridge`
+  CloudBoxPoller.
+- **Caveats worth knowing:**
+  1. The plane's own server-side create worker (`makeControlPlaneCreateBox`) does **not** yet set
+     the control-plane signal (deferred) — a plane-*created* box still needs the topology + an
+     in-plane registration. Use the laptop `create` path for the direct-lease topology today.
   2. **Docker is never a plane target** (bind-mounted `.git`); the plane creates cloud
      boxes only.
