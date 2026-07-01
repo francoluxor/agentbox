@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execa } from 'execa';
 import type { CloudBackend, CloudHandle, ResolvedCarryEntry } from '@agentbox/core';
+import { BOX_HOME, dirnameUnix, planCarryEntry } from '@agentbox/sandbox-core';
 
 export interface UploadCarryArgs {
   backend: CloudBackend;
@@ -30,9 +31,6 @@ export interface UploadCarryResult {
   /** Audit summary for BoxRecord.carry. */
   applied: Array<{ src: string; dest: string; bytes: number }>;
 }
-
-/** Hardcoded in-box home; cloud boxes always run as the `vscode` user. */
-const BOX_HOME = '/home/vscode';
 
 export async function uploadCarryPaths(args: UploadCarryArgs): Promise<UploadCarryResult> {
   const log = args.onLog ?? (() => {});
@@ -85,26 +83,23 @@ interface UploadOneArgs {
 
 async function uploadOneEntry(args: UploadOneArgs): Promise<void> {
   const { entry } = args;
-  if (entry.kind === 'missing') return;
-
-  // ~/ → /home/vscode at this layer (host-side). Never expanded inside the box
-  // because the supervisor user's $HOME equals BOX_HOME, but the exec shell's
-  // current user (the SDK's default) is not guaranteed to be vscode on every
-  // backend — expanding here makes the destination path explicit.
-  const boxDest = entry.absDest.startsWith('~/')
-    ? `${BOX_HOME}/${entry.absDest.slice(2)}`
-    : entry.absDest;
-
-  const isDir = entry.kind === 'dir';
-  const parentDir = isDir ? boxDest : dirnameUnix(boxDest);
+  // Shared, byte-for-byte carry decisions (~/ expansion, file-vs-dir, exclude,
+  // uid/mode defaults, rename-needed, parent-chain-needed) — see
+  // `@agentbox/sandbox-core`'s files concern. `~/` is expanded host-side, never
+  // inside the box: the supervisor user's $HOME equals BOX_HOME, but the exec
+  // shell's current user (the SDK's default) is not guaranteed to be vscode on
+  // every backend, so an explicit destination path is required.
+  const plan = planCarryEntry(entry);
+  if (!plan) return; // missing (optional + absent on host)
+  const { boxDest, isDir, parentDir, exclude, uid, mode, fileBase, renameNeeded } = plan;
 
   // 1. Tar the host source on disk so backend.uploadFile (which takes a path,
   //    not a stream) has something to send.
   const localTar = join(args.stageDir, `carry-${String(args.index)}.tar`);
-  const excludeArgs = isDir ? (entry.exclude ?? []).map((p) => `--exclude=${p}`) : [];
+  const excludeArgs = isDir ? exclude.map((p) => `--exclude=${p}`) : [];
   const tarArgs = isDir
     ? ['-C', entry.absSrc, '-cf', localTar, ...excludeArgs, '.']
-    : ['-C', dirnameUnix(entry.absSrc), '-cf', localTar, basenameUnix(entry.absSrc)];
+    : ['-C', dirnameUnix(entry.absSrc), '-cf', localTar, fileBase];
   const packed = await execa('tar', tarArgs, { reject: false });
   if (packed.exitCode !== 0) {
     throw new Error(`tar pack failed: ${String(packed.stderr).slice(0, 300)}`);
@@ -118,16 +113,10 @@ async function uploadOneEntry(args: UploadOneArgs): Promise<void> {
   //    bash command. Single-quoted args inside double-quoted command string —
   //    paths are safe because carry: dest values are user-provided absolute
   //    paths the resolver already vetted.
-  const mode = entry.mode !== undefined ? entry.mode.toString(8).padStart(4, '0') : '';
-  // Default: chown to the in-box vscode user (uid 1000). Explicit `user: 0`
-  // (root) skips the chown so a root-owned extract stays root-owned.
-  const uid = entry.user ?? 1000;
-  // For files: tar's input contains a single entry at basename(absSrc), and
-  // we extract at the dest's parent, then `mv` to the dest if the source
+  //
+  // For files: tar's input contains a single entry at basename(absSrc), and we
+  // extract at the dest's parent, then `mv` to the dest when the source
   // basename differs from the dest basename.
-  const fileBase = !isDir ? basenameUnix(entry.absSrc) : '';
-  const destBase = !isDir ? basenameUnix(boxDest) : '';
-  const renameNeeded = !isDir && fileBase !== destBase;
   const parts: string[] = [
     `mkdir -p ${shellQuote(parentDir)}`,
     isDir
@@ -145,7 +134,7 @@ async function uploadOneEntry(args: UploadOneArgs): Promise<void> {
   // $HOME and dirname(boxDest) are root-owned. Walk back up to $HOME
   // (exclusive) and chown each. Only when dest is under $HOME — system
   // paths like /etc/* keep their existing ownership.
-  if (boxDest.startsWith(BOX_HOME + '/') && parentDir !== BOX_HOME) {
+  if (plan.parentChainNeeded) {
     parts.push(
       `parent=$(dirname ${shellQuote(boxDest)}); ` +
         `while [ "$parent" != "${BOX_HOME}" ] && [ "$parent" != "/" ]; do ` +
@@ -183,17 +172,6 @@ async function uploadOneEntry(args: UploadOneArgs): Promise<void> {
       `in-box extract failed (exit ${String(res.exitCode)}): ${(res.stderr || res.stdout).slice(-300)}`,
     );
   }
-}
-
-function dirnameUnix(p: string): string {
-  const i = p.lastIndexOf('/');
-  if (i <= 0) return '/';
-  return p.slice(0, i);
-}
-
-function basenameUnix(p: string): string {
-  const i = p.lastIndexOf('/');
-  return i < 0 ? p : p.slice(i + 1);
 }
 
 /** Single-quote a shell argument; safe for any byte except NUL. */

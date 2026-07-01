@@ -31,3 +31,10 @@ export {
   ENV_PRUNE_DIRS,
   type PushEnvFilesResult,
 } from './concerns/env.js';
+export {
+  planCarryEntry,
+  BOX_HOME,
+  dirnameUnix,
+  basenameUnix,
+  type CarryPlan,
+} from './concerns/files.js';

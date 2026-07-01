@@ -1,13 +1,15 @@
 import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { execa } from 'execa';
 import { sanitizeMnemonic } from '@agentbox/config';
 import {
   hostOpenCommand,
   makeSyncContext,
   pushEnvFiles,
+  planCarryEntry,
+  BOX_HOME,
   ENV_PRUNE_DIRS,
 } from '@agentbox/sandbox-core';
 import type { ResolvedCarryEntry } from '@agentbox/core';
@@ -723,21 +725,16 @@ export async function copyCarryPathsToBox(opts: CopyCarryOptions): Promise<CopyC
   return { copied, errors, applied };
 }
 
-/** Hardcoded box home — boxes always run as the `vscode` user (uid 1000). */
-const BOX_HOME = '/home/vscode';
-
 async function copyOneEntry(container: string, entry: ResolvedCarryEntry): Promise<void> {
-  if (entry.kind === 'missing') return;
-
-  // ~/ in the dest expands to /home/vscode at this layer (host-side), NOT
-  // inside the box's shell — so we never depend on the executing user's
-  // $HOME (which is /root when we --user 0:0 below).
-  const boxDest = entry.absDest.startsWith('~/')
-    ? `${BOX_HOME}/${entry.absDest.slice(2)}`
-    : entry.absDest;
-
-  const boxDestParent = boxDest.endsWith('/') ? boxDest.slice(0, -1) : boxDest;
-  const parentDir = entry.kind === 'dir' ? boxDestParent : dirnameUnix(boxDestParent);
+  // Shared, byte-for-byte carry decisions (~/ expansion, file-vs-dir, exclude,
+  // uid/mode defaults, rename-needed, parent-chain-needed) — see
+  // `@agentbox/sandbox-core`'s files concern. `~/` is expanded host-side, NOT
+  // inside the box's shell, so we never depend on the executing user's $HOME
+  // (which is /root when we `--user 0:0` below).
+  const plan = planCarryEntry(entry);
+  if (!plan) return; // missing (optional + absent on host)
+  const { boxDest, parentDir, exclude, uid, mode, fileBase, renameNeeded, parentChainNeeded } =
+    plan;
 
   // Pre-create the dest's parent dir. Run as root so destinations outside
   // /home/vscode work; we re-chown to vscode if the dest is in $HOME.
@@ -750,18 +747,16 @@ async function copyOneEntry(container: string, entry: ResolvedCarryEntry): Promi
     throw new Error(`mkdir -p ${parentDir} failed: ${String(mkdir.stderr).slice(0, 300)}`);
   }
 
-  if (entry.kind === 'file') {
+  if (!plan.isDir) {
     // `docker cp` cannot write into the bind-mounted /workspace (it fails with a
     // tar "read/write on closed pipe"). Stream the file through `docker exec
     // tar -x` instead — that extracts from *inside* the container, through the
     // normal filesystem, exactly like the dir path below. tar archives by the
     // source basename, so rename in-box afterwards when the dest name differs.
     const srcDir = dirname(entry.absSrc);
-    const srcBase = basename(entry.absSrc);
-    const destBase = boxDest.slice(boxDest.lastIndexOf('/') + 1);
     const [packed, extract] = await streamTarPipe(
       'tar',
-      ['-C', srcDir, '-cf', '-', srcBase],
+      ['-C', srcDir, '-cf', '-', fileBase],
       'docker',
       [
         'exec',
@@ -785,10 +780,10 @@ async function copyOneEntry(container: string, entry: ResolvedCarryEntry): Promi
     if (extract.exitCode !== 0) {
       throw new Error(`tar extract failed: ${String(extract.stderr).slice(0, 300)}`);
     }
-    if (srcBase !== destBase) {
+    if (renameNeeded) {
       const mv = await execa(
         'docker',
-        ['exec', '--user', '0:0', container, 'mv', '-f', `${parentDir}/${srcBase}`, boxDest],
+        ['exec', '--user', '0:0', container, 'mv', '-f', `${parentDir}/${fileBase}`, boxDest],
         { reject: false },
       );
       if (mv.exitCode !== 0) {
@@ -802,7 +797,7 @@ async function copyOneEntry(container: string, entry: ResolvedCarryEntry): Promi
     // Stream the tarball straight into the box (see streamTarPipe — a buffered
     // round-trip hits execa's 100 MB maxBuffer and silently fails on any
     // sizable carry source). `exclude` drops heavy/regenerable subtrees.
-    const excludeArgs = (entry.exclude ?? []).map((p) => `--exclude=${p}`);
+    const excludeArgs = exclude.map((p) => `--exclude=${p}`);
     const [packed, extract] = await streamTarPipe(
       'tar',
       ['-C', entry.absSrc, '-cf', '-', ...excludeArgs, '.'],
@@ -831,11 +826,10 @@ async function copyOneEntry(container: string, entry: ResolvedCarryEntry): Promi
     }
   }
 
-  if (entry.mode !== undefined) {
-    const modeStr = entry.mode.toString(8).padStart(4, '0');
+  if (mode) {
     const chmod = await execa(
       'docker',
-      ['exec', '--user', '0:0', container, 'chmod', '-R', modeStr, boxDest],
+      ['exec', '--user', '0:0', container, 'chmod', '-R', mode, boxDest],
       { reject: false },
     );
     if (chmod.exitCode !== 0) {
@@ -847,7 +841,6 @@ async function copyOneEntry(container: string, entry: ResolvedCarryEntry): Promi
   // Default uid 1000 (in-box vscode); `user: 0` lands explicit root:root.
   // (For docker cp this matters — without an explicit chown the host's
   // macOS uid/gid leaks through into the container.)
-  const uid = entry.user ?? 1000;
   const chown = await execa(
     'docker',
     ['exec', '--user', '0:0', container, 'chown', '-R', `${String(uid)}:${String(uid)}`, boxDest],
@@ -862,7 +855,7 @@ async function copyOneEntry(container: string, entry: ResolvedCarryEntry): Promi
   // leaf is now uid-owned. Walk back up to $HOME (exclusive) and chown
   // each. Only walk when dest is under $HOME — for destinations like
   // /etc/* or /opt/*, leave system parents alone.
-  if (boxDest.startsWith(BOX_HOME + '/') && dirnameUnix(boxDest) !== BOX_HOME) {
+  if (parentChainNeeded) {
     const safeDest = boxDest.replace(/'/g, `'\\''`);
     const script =
       `set -e; parent="$(dirname '${safeDest}')"; ` +
@@ -879,11 +872,4 @@ async function copyOneEntry(container: string, entry: ResolvedCarryEntry): Promi
       throw new Error(`chown parents failed: ${String(chownParents.stderr).slice(0, 300)}`);
     }
   }
-}
-
-/** dirname() that always uses '/' regardless of host OS (box is linux). */
-function dirnameUnix(p: string): string {
-  const i = p.lastIndexOf('/');
-  if (i <= 0) return '/';
-  return p.slice(0, i);
 }
