@@ -165,3 +165,39 @@ Two-tier layout (dependency-graph-driven): **pure contracts** in `packages/core/
 `pnpm build && pnpm typecheck && pnpm lint`, then package tests (core, sandbox-core,
 sandbox-docker, sandbox-cloud, relay, cli). Before pushing: the real-box smoke matrix
 (`docs/sync-layer-refactor.md` §Remaining notes) across {local,vercel,hetzner}×{claude,codex}.
+
+## Deferred backlog
+Granular items **deferred within an otherwise-complete phase** (distinct from the whole
+future phases in §Remaining). Tracked here so a deliberate deferral / non-unification can't
+be mistaken for an oversight. Each notes *why* and *where it lands*.
+
+- **[owed] Smoke matrix before push (Phases 4b, 4c, 5).** The only thing blocking a push.
+  Phase 4b (cloud dynamic seed import surface), 4c (docker `~/.agents` volume seed through
+  the transport helper container, incl. the no-host-dir chown fallback), and 5 (box→host
+  credential extract now via `CloudSyncTransport.readText` on `checkpoint --set-default`)
+  all moved real create/checkpoint-path behavior. Run `{local,vercel,hetzner}×{claude,codex}`
+  — for Phase 5 specifically the login→destroy→recreate→inherited both-directions matrix.
+- **[→ Phase 7 driver] Box→host per-tool pull (Phase 4c).** `pullClaudeExtras` /
+  `pullCodexConfig` / `pullOpencodeConfig` stay docker-volume-specific — no polymorphic
+  caller (each `download-<tool>` CLI command is its own entry point); a `spec.pull`
+  abstraction without a consumer would be speculative. Lands with the driver or a future
+  download-all/resync consumer.
+- **[→ Phase 7 driver] Cloud dynamic-seed orchestration (Phase 4b).** `seedDynamicConfig`'s
+  cloud exec/upload sequence isn't yet on the transport seam (only the manifest *logic*
+  moved to core). Its transport unification belongs with the driver.
+- **[→ Phase 7 driver] Cloud credential *seed* orchestration (Phase 5).** `seedCredentialsOne`
+  (marker/force gate + `uploadFile` + the volume-vs-ephemeral extract split) collapses onto
+  the transport in the driver phase. Highest-risk piece — needs the login→destroy→recreate→
+  inherited smoke.
+- **[non-unification — revisit only on a real consumer] Docker helper-container credential
+  sync (Phase 5).** `syncClaudeCredentials` / `SYNC_SCRIPT` / `volumeClaudeCredentials` /
+  `extractVolumeAuthToBackup` — throwaway root container that predates any running box, so
+  it has no box-bound `SyncTransport` analog, and no polymorphic caller. The `ISOLATE`
+  seed-only gate is a docker-volume security property. Same "don't force a unification" call
+  as carry's apply mechanism and skills' box→host pull. Keep provider-specific unless a real
+  cross-provider consumer appears.
+- **[minor cleanup] Backup-file constants still docker-owned (Phase 5).**
+  `CREDENTIALS_BACKUP_FILE` / `CODEX_*` / `OPENCODE_CREDENTIALS_BACKUP_FILE` remain docker
+  consts that mirror the registry's `credential.hostBackup` (drift-guarded by the registry
+  test). Could become registry-derived re-exports to shrink the drift surface; low value,
+  low risk, no rush.
