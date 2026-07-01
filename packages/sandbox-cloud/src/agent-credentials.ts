@@ -23,8 +23,6 @@
  * after a host re-auth.
  */
 
-import { chmod, mkdir, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
 import {
   stageClaudeStaticForUpload,
   stageClaudeCredentialsForUpload,
@@ -33,21 +31,22 @@ import {
   stageOpencodeStaticForUpload,
   stageOpencodeCredentialsForUpload,
   stageOpencodeStateForUpload,
-  CREDENTIALS_BACKUP_FILE,
-  CODEX_CREDENTIALS_BACKUP_FILE,
-  OPENCODE_CREDENTIALS_BACKUP_FILE,
   DEFAULT_BOX_IMAGE,
   SHARED_CLAUDE_VOLUME,
   SHARED_CODEX_VOLUME,
   SHARED_OPENCODE_VOLUME,
   extractCodexCredentials,
   extractOpencodeCredentials,
-  hostClaudeBackupExpired,
-  isRealAgentCredential,
   syncClaudeCredentials,
   type StageResult,
 } from '@agentbox/sandbox-docker';
+import {
+  extractCredentials,
+  hostClaudeBackupExpired,
+  SEED_MARKER,
+} from '@agentbox/sandbox-core';
 import type { CloudBackend, CloudHandle, CloudVolumeMount } from '@agentbox/core';
+import { createCloudSyncTransport } from './sync-transport.js';
 
 /** Identifier for one of the three agents we sync into cloud sandboxes. */
 export type CloudAgentKind = 'claude' | 'codex' | 'opencode';
@@ -109,13 +108,6 @@ import {
   CODEX_FORWARDED_ENV_KEYS,
   OPENCODE_FORWARDED_ENV_KEYS,
 } from '@agentbox/sandbox-docker';
-
-/**
- * Marker filename inside each agent's credentials subpath that records when
- * we last seeded the credentials. Single ISO-8601 timestamp on disk. Absent
- * marker = first time → upload.
- */
-const SEED_MARKER = '.agentbox-seeded-at';
 
 /** Result of `ensureAgentVolumesForCloud` — pass `.mounts` straight into `provision({ volumes })`. */
 export interface EnsureAgentVolumesResult {
@@ -516,22 +508,6 @@ export function agentSpecsForCloud(): Array<{
 }
 
 /**
- * Per-agent: the canonical in-box auth file (what the agent actually reads/
- * writes — NOT the `~/.agentbox-creds` symlink target, because an agent that
- * writes atomically replaces the symlink with a regular file there) and the
- * host backup file we mirror it into.
- */
-const EXTRACT_SPECS: Array<{ kind: CloudAgentKind; boxPath: string; hostBackup: string }> = [
-  { kind: 'claude', boxPath: '/home/vscode/.claude/.credentials.json', hostBackup: CREDENTIALS_BACKUP_FILE },
-  { kind: 'codex', boxPath: '/home/vscode/.codex/auth.json', hostBackup: CODEX_CREDENTIALS_BACKUP_FILE },
-  {
-    kind: 'opencode',
-    boxPath: '/home/vscode/.local/share/opencode/auth.json',
-    hostBackup: OPENCODE_CREDENTIALS_BACKUP_FILE,
-  },
-];
-
-/**
  * Extract the agent login credentials from a running cloud box back to the
  * host backups under `~/.agentbox/`, so the next box (seeded by the cloud
  * push) inherits the login. The cloud analogue of docker's
@@ -539,9 +515,12 @@ const EXTRACT_SPECS: Array<{ kind: CloudAgentKind; boxPath: string; hostBackup: 
  * cloud has no shared volume, so a login captured inside a box would otherwise
  * be lost on destroy.
  *
- * Reads the canonical agent path via `backend.exec(... cat ...)`; only writes
- * the host backup when the content passes `isRealAgentCredential`, so an empty
- * / not-logged-in box never clobbers a good backup. Best-effort per agent
+ * Thin wrapper: the provider-neutral `extractCredentials` concern
+ * (`@agentbox/sandbox-core`) does the box→host work against the
+ * `SyncTransport.readText` seam (registry-driven box paths + host backups + the
+ * `isRealAgentCredential` guard); this just injects the `CloudSyncTransport`.
+ * `CloudSyncTransport.readText` is `cat <path> 2>/dev/null` with `noRetry`,
+ * byte-identical to the extract this used to inline. Best-effort per agent
  * (never throws). Returns the list of agents whose backup was updated.
  */
 export async function extractCloudAgentCredentials(
@@ -553,25 +532,6 @@ export async function extractCloudAgentCredentials(
     backups?: Partial<Record<CloudAgentKind, string>>;
   } = {},
 ): Promise<CloudAgentKind[]> {
-  const log = opts.onLog ?? (() => {});
-  const extracted: CloudAgentKind[] = [];
-  for (const spec of EXTRACT_SPECS) {
-    const hostBackup = opts.backups?.[spec.kind] ?? spec.hostBackup;
-    try {
-      // `cat` the canonical file; tolerate "missing" (exit 1) silently.
-      const r = await backend.exec(handle, `cat ${spec.boxPath} 2>/dev/null`, { noRetry: true });
-      const text = r.stdout;
-      if (r.exitCode !== 0 || !text || !isRealAgentCredential(spec.kind, text)) continue;
-      await mkdir(dirname(hostBackup), { recursive: true });
-      await writeFile(hostBackup, text, { mode: 0o600 });
-      await chmod(hostBackup, 0o600).catch(() => {});
-      extracted.push(spec.kind);
-      log(`extracted ${spec.kind} login from box to ${hostBackup}`);
-    } catch (err) {
-      log(
-        `WARN: ${spec.kind} credential extract failed (${err instanceof Error ? err.message : String(err)}) — skipping`,
-      );
-    }
-  }
-  return extracted;
+  const transport = createCloudSyncTransport({ backend, handle });
+  return extractCredentials(transport, { onLog: opts.onLog, backups: opts.backups });
 }

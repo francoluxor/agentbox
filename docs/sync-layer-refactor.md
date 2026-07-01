@@ -73,6 +73,33 @@ Two-tier layout (dependency-graph-driven): **pure contracts** in `packages/core/
   abstraction now would be speculative + risky (same "don't force a unification" call as
   carry's apply mechanism). Left for a real consumer (the Phase 7 driver, or a future
   download-all/resync path).
+- **Phase 5 — credentials concern (pure guards + box→host extract).** Moved the pure
+  credential guards into `sync/concerns/credentials.ts`: `isRealAgentCredential` (now
+  registry-driven via a new `credential.realShape` spec field — claude=`claude-oauth`
+  requires a non-empty `claudeAiOauth.refreshToken`, codex/opencode=`nonempty-json`),
+  `hostClaudeBackupExpired` (the expiry gate), `hostBackupHasCredentials`, and the
+  seed-once marker `SEED_MARKER` (`.agentbox-seeded-at`). Docker `claude-credentials.ts`
+  re-exports the three guards (shim — every docker importer/test **and** the `assert-creds`
+  CLI mock untouched, cross-package parity for the move); cloud imports the guards + marker
+  from `@agentbox/sandbox-core` instead of through docker (leak closed). Added
+  `extractCredentials(transport)` — the box→host pull expressed against
+  `SyncTransport.readText` (registry-driven box paths + host backups + the guard); cloud's
+  `extractCloudAgentCredentials` is now a thin `CloudSyncTransport`-injecting wrapper
+  (`readText` is byte-identical to the old inline extract: `cat <p> 2>/dev/null` + noRetry
+  → null on exit≠0). New `credentials-concern.test.ts` (15) mirrors the docker guard cases
+  (double-parity) + golden-tests the emitted `readText` ops; docker `claude-credentials.test.ts`
+  + cloud `agent-credentials.test.ts` (9, the extract wrapper) still green.
+  **Deliberately NOT moved (same "don't force a unification" call as carry/skills):** the
+  docker throwaway-root helper-container sync (`syncClaudeCredentials`/`SYNC_SCRIPT`/
+  `volumeClaudeCredentials`/`extractVolumeAuthToBackup`) — it predates any running box (so
+  it has no `SyncTransport` analog; the transport is box-bound) and has no polymorphic
+  caller; its `ISOLATE` seed-only gate is a docker-volume security property. The cloud
+  *seed* orchestration (`seedCredentialsOne`'s marker/force gate + `uploadFile` +
+  volume-vs-ephemeral extract split) also stays in cloud — its transport-seam collapse
+  folds into the Phase 7 driver (phasing note #2). **SMOKE STILL OWED:** the box→host
+  extract now flows through `CloudSyncTransport.readText` on `checkpoint create
+  --set-default` (best-effort, box→host only — no create-path blast radius), but Phase 5
+  stays on the login→destroy→recreate→inherited matrix per the gate before any push.
 
 ## Refinements to the plan's phasing (decided during execution)
 1. **Transports co-develop with their first concern (Phase 3), not in a vacuum.** Docker
@@ -101,11 +128,17 @@ Two-tier layout (dependency-graph-driven): **pure contracts** in `packages/core/
     seed via the transport helper container, incl. the non-recursive→recursive chown on the
     no-host-`~/.agents` fallback). Run `{local,vercel,hetzner}×{claude,codex}` per the gate
     below before pushing this branch.
-- **Phase 5 — credentials concern.** `concerns/credentials.ts`
-  (`seedCredentials`/`extractCredentials`/`refreshHostBackups`). Encode expiry gate
-  (`hostClaudeBackupExpired`) + seed-once marker (`.agentbox-seeded-at`) + force rule +
-  `isRealAgentCredential` guard as spec/caps fields. Highest-risk; extra assertions + real-box
-  login→destroy→recreate→inherited smoke both directions on docker + volume + ephemeral cloud.
+- **Phase 5 — credentials concern.** Pure guards + the box→host `extractCredentials` are
+  **done** (in Done above): expiry gate (`hostClaudeBackupExpired`), seed-once marker
+  (`SEED_MARKER`), and the `isRealAgentCredential` guard are now core/registry data
+  (`credential.realShape`). **Remaining (folds into Phase 7 driver):** the *seed*
+  orchestration — cloud `seedCredentialsOne` (marker/force gate + `uploadFile` +
+  volume-vs-ephemeral extract split) collapses onto the transport there; the docker
+  helper-container claude sync (`syncClaudeCredentials`/`SYNC_SCRIPT`, incl. the `ISOLATE`
+  seed-only gate) stays provider-specific (no box-bound `SyncTransport` analog, no
+  polymorphic caller — a deliberate non-unification). Highest-risk: the seed collapse needs
+  the real-box login→destroy→recreate→inherited smoke both directions on docker + volume +
+  ephemeral cloud, with extra assertions.
 - **Phase 6 — git seed + resync + box-facts.** Move workspace seed + resync (verbatim
   box-wins `classifyUntrackedOverlay`) behind `WorkspaceResyncPorts`; **wire `CloudSyncTransport`
   into resync to close the cloud "Phase 2" gap**. Leave the `inBoxClone` control-plane branch

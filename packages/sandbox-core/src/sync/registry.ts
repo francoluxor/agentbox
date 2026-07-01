@@ -31,6 +31,7 @@ export const AGENT_SYNC_SPECS: readonly AgentSyncSpec[] = [
       hostBackup: join(STATE_DIR, 'claude-credentials.json'),
       cloudMountPath: '/home/vscode/.agentbox-creds/claude',
       cloudSubpath: 'claude/',
+      realShape: 'claude-oauth',
     },
     forwardedEnvKeys: [
       'ANTHROPIC_API_KEY',
@@ -53,6 +54,7 @@ export const AGENT_SYNC_SPECS: readonly AgentSyncSpec[] = [
       hostBackup: join(STATE_DIR, 'codex-credentials.json'),
       cloudMountPath: '/home/vscode/.agentbox-creds/codex',
       cloudSubpath: 'codex/',
+      realShape: 'nonempty-json',
     },
     forwardedEnvKeys: ['OPENAI_API_KEY'],
     boxRunEnv: () => ({}),
@@ -98,6 +100,7 @@ export const AGENT_SYNC_SPECS: readonly AgentSyncSpec[] = [
       hostBackup: join(STATE_DIR, 'opencode-credentials.json'),
       cloudMountPath: '/home/vscode/.agentbox-creds/opencode',
       cloudSubpath: 'opencode/',
+      realShape: 'nonempty-json',
     },
     forwardedEnvKeys: [
       'ANTHROPIC_API_KEY',

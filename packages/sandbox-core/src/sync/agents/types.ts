@@ -54,6 +54,16 @@ export interface AgentCredential {
   cloudMountPath: string;
   /** Sub-dir of the shared cloud credentials volume for this agent. */
   cloudSubpath: string;
+  /**
+   * What a *real* (usable, non-placeholder) credential file must contain — the
+   * box→host extract guard (`isRealAgentCredential`). `claude-oauth` requires a
+   * non-empty `claudeAiOauth.refreshToken` (a setup-token blob has an
+   * accessToken but no refreshToken and must not clobber a good backup);
+   * `nonempty-json` (codex/opencode `auth.json`) just has to parse as a
+   * non-empty JSON object. Encodes the per-agent switch that used to live inside
+   * the docker credential helper.
+   */
+  realShape: 'claude-oauth' | 'nonempty-json';
 }
 
 /** Capabilities that genuinely differ per tool (drive resume/teleport/activity wiring). */

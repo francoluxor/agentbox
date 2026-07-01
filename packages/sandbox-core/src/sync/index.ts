@@ -50,6 +50,15 @@ export {
   type SeedAgentsVolumeResult,
 } from './concerns/skills.js';
 export {
+  isRealAgentCredential,
+  hostClaudeBackupExpired,
+  hostBackupHasCredentials,
+  extractCredentials,
+  SEED_MARKER,
+  type CredentialAgentKind,
+  type ExtractCredentialsOptions,
+} from './concerns/credentials.js';
+export {
   BOX_WORKFLOWS_DIR,
   BOX_MEMORY_DIR,
   BOX_DYNAMIC_SYNC_MANIFEST,

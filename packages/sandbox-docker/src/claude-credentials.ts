@@ -1,8 +1,21 @@
-import { chmod, mkdir, readFile } from 'node:fs/promises';
+import { chmod, mkdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { execa } from 'execa';
 import type { ClaudeConfigSpec } from './claude.js';
 import { STATE_DIR } from './state.js';
+
+// The pure credential guards (`isRealAgentCredential`, `hostClaudeBackupExpired`,
+// `hostBackupHasCredentials`) + `CredentialAgentKind` moved to the provider-
+// neutral credentials concern in @agentbox/sandbox-core (the per-agent
+// real-credential shape is now registry data, `credential.realShape`, shared
+// with cloud). Re-exported here so existing docker importers/tests — and the
+// `@agentbox/sandbox-docker` barrel — are untouched.
+export {
+  isRealAgentCredential,
+  hostClaudeBackupExpired,
+  hostBackupHasCredentials,
+  type CredentialAgentKind,
+} from '@agentbox/sandbox-core';
 
 /**
  * Host-side backup of the in-box Claude Code OAuth credentials.
@@ -34,53 +47,6 @@ export const CREDENTIALS_BACKUP_FILE = join(STATE_DIR, 'claude-credentials.json'
  */
 export const CODEX_CREDENTIALS_BACKUP_FILE = join(STATE_DIR, 'codex-credentials.json');
 export const OPENCODE_CREDENTIALS_BACKUP_FILE = join(STATE_DIR, 'opencode-credentials.json');
-
-/** Agents whose credentials we extract from a cloud box back to the host. */
-export type CredentialAgentKind = 'claude' | 'codex' | 'opencode';
-
-/**
- * True iff `text` looks like a real (usable) credential for `agent`, not an
- * empty/placeholder file. Used so the cloud extraction never clobbers a good
- * host backup with an empty box file. Claude requires a non-empty
- * `claudeAiOauth.refreshToken` (mirrors {@link hostBackupHasCredentials}); codex
- * and opencode auth files just have to parse as a non-empty JSON object.
- */
-export function isRealAgentCredential(agent: CredentialAgentKind, text: string): boolean {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return false;
-  }
-  if (typeof parsed !== 'object' || parsed === null) return false;
-  if (agent === 'claude') {
-    const rt = (parsed as { claudeAiOauth?: { refreshToken?: unknown } }).claudeAiOauth?.refreshToken;
-    return typeof rt === 'string' && rt.length > 0;
-  }
-  return Object.keys(parsed as Record<string, unknown>).length > 0;
-}
-
-/**
- * True iff the host backup holds a Claude OAuth blob whose access token is
- * already expired (`claudeAiOauth.expiresAt`, ms epoch, < now). A missing
- * `expiresAt` (or unreadable file) → false: we only report a *known* expiry, so
- * callers don't nag when the box could still refresh the token itself. `now` is
- * injectable for tests.
- */
-export async function hostClaudeBackupExpired(
-  path: string = CREDENTIALS_BACKUP_FILE,
-  now: number = Date.now(),
-): Promise<boolean> {
-  try {
-    const parsed = JSON.parse(await readFile(path, 'utf8')) as {
-      claudeAiOauth?: { expiresAt?: unknown };
-    };
-    const exp = parsed?.claudeAiOauth?.expiresAt;
-    return typeof exp === 'number' && Number.isFinite(exp) && exp < now;
-  } catch {
-    return false;
-  }
-}
 
 /** Result line parser for the volume→backup extract helper. Pure (unit-tested). */
 export function parseExtractResult(stdout: string): { copied: boolean } {
@@ -158,26 +124,6 @@ export interface SyncClaudeCredentialsResult {
    * the setup-token / API key, or prompt for an interactive login.
    */
   volumeHasCredentials: boolean;
-}
-
-/**
- * True iff the host backup file holds a real OAuth blob (a non-empty
- * `claudeAiOauth.refreshToken`). Used to decide whether to offer an
- * interactive sign-in before creating a box. Tolerant of a missing or
- * garbage file — returns false.
- */
-export async function hostBackupHasCredentials(
-  path: string = CREDENTIALS_BACKUP_FILE,
-): Promise<boolean> {
-  try {
-    const parsed = JSON.parse(await readFile(path, 'utf8')) as {
-      claudeAiOauth?: { refreshToken?: unknown };
-    };
-    const rt = parsed?.claudeAiOauth?.refreshToken;
-    return typeof rt === 'string' && rt.length > 0;
-  } catch {
-    return false;
-  }
 }
 
 export interface VolumeClaudeCredentials {
