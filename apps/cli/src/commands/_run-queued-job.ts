@@ -31,6 +31,7 @@ import {
   ensureOpencodeInstalled,
 } from '@agentbox/sandbox-docker';
 import { readJob, writeJob, type QueueAgentKind, type QueueJob } from '@agentbox/relay';
+import { toSyncKind } from '@agentbox/core';
 import { resolveClaudeAuth } from '../auth.js';
 import { resolveLimits } from '../limits.js';
 import { openCommandLog } from '../lib/log-file.js';
@@ -233,7 +234,7 @@ async function runDockerJob(
 
 /** The CLI subcommand name for an agent kind (`claude-code` → `claude`). */
 function agentBinaryName(agent: QueueAgentKind): 'claude' | 'codex' | 'opencode' {
-  return agent === 'claude-code' ? 'claude' : agent;
+  return toSyncKind(agent);
 }
 
 /**

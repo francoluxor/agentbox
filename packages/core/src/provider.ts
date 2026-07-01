@@ -10,6 +10,7 @@ import type { BoxRecord, ProviderName } from './box-record.js';
 import type { BoxEndpoints } from './endpoints.js';
 import type { ReplaceRule } from './replace.js';
 import type { BoxResourceStats } from './types.js';
+import type { SyncTransport } from './sync/transport.js';
 
 /** Coarse lifecycle state, identical across providers. */
 export type BoxRuntimeState = 'running' | 'paused' | 'stopped' | 'missing';
@@ -352,6 +353,14 @@ export interface Provider {
    * CLI skips resync for that provider.
    */
   resyncWorkspace?(box: BoxRecord): Promise<ResyncResult>;
+
+  /**
+   * Build the byte-mover the sync layer drives for operations on an already-
+   * created box (session-start resync, `cp`, credential extract, download).
+   * At create time the provider constructs its transport internally instead.
+   * Optional — providers wire this as they migrate concerns onto the seam.
+   */
+  syncTransport?(box: BoxRecord): SyncTransport;
 
   // ---- query ----
   inspect(box: BoxRecord): Promise<InspectedBox>;

@@ -16,7 +16,7 @@
  * only runs when the caller pre-resolved a non-docker provider.
  */
 
-import type { AgentKind, BoxRecord, CreateBoxRequest, Provider } from '@agentbox/core';
+import { toQueueKind, type AgentKind, type BoxRecord, type CreateBoxRequest, type Provider } from '@agentbox/core';
 import type { AttachOpenIn } from '@agentbox/config';
 import { log } from '@clack/prompts';
 import { makeProgressReporter } from '../lib/progress.js';
@@ -68,7 +68,7 @@ export interface CloudAgentCreateArgs {
 
 /** Agent CLI launcher kind for the prompt-arg builder. */
 function agentKindFor(mode: 'claude' | 'codex' | 'opencode'): AgentKind {
-  return mode === 'claude' ? 'claude-code' : mode;
+  return toQueueKind(mode);
 }
 
 /**

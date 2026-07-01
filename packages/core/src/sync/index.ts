@@ -1,0 +1,27 @@
+/** Public surface of the core sync contracts. Implementation lives in
+ * `@agentbox/sandbox-core`'s `sync/` folder and the two provider packages. */
+
+export type {
+  SyncDirection,
+  SyncTopology,
+  SyncParty,
+  SyncConcern,
+  SyncState,
+} from './types.js';
+export type {
+  SyncTransport,
+  TransportCaps,
+  PushOptions,
+  VolumeHostSource,
+  SyncExecOptions,
+  SyncExecResult,
+} from './transport.js';
+export type { SyncAgentKind, QueueAgentKind } from './agent-kind.js';
+export {
+  SYNC_AGENT_KINDS,
+  isSyncAgentKind,
+  toSyncKind,
+  toQueueKind,
+  normalizeLastAgent,
+} from './agent-kind.js';
+export type { ConflictVerdict, ConflictPolicy, Reconciler } from './reconciler.js';
