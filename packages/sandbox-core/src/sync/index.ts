@@ -14,3 +14,11 @@ export {
   type RecordingTransportOptions,
   type RecordedOp,
 } from './recording-transport.js';
+export { AGENT_SYNC_SPECS, resolveAgentSpec, agentIds } from './registry.js';
+export type {
+  AgentId,
+  AgentSyncSpec,
+  AgentPathMap,
+  AgentCredential,
+  AgentCapabilities,
+} from './agents/types.js';
