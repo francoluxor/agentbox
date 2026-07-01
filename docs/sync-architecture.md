@@ -313,6 +313,30 @@ speculative risk. Current calls (tracked in the refactor backlog):
 The rule mirrors carry's "keep the apply mechanism byte-identical": unify the
 *decision*, leave the *mechanism* where it genuinely differs.
 
+### The git-refs seam (`core/src/sync/git-refs.ts`)
+
+The clearest instance of the rule. The git branch/refspec/remote/upstream
+*decisions* were copy-pasted across the three git push-back paths (docker relay
+`server.ts`, cloud relay `host-actions.ts`, in-box `ctl`). They're pure string
+logic, so they live once in `packages/core/src/sync/git-refs.ts` — in `core`,
+not `sandbox-core`, because `@agentbox/ctl` (in-box) depends only on `core`
+(same shape as the pure `../replace.ts` engine). Callers read the decisions
+(`resolveRemote`, `landRefspec`, `upstreamRef`, `remoteTrackingRef`,
+`isScratchBranch`, …) but keep their genuinely divergent *mechanisms*: docker
+runs host commands over the shared `.git/`, cloud does the bundle up/download
+dance, ctl pushes through a leased-token URL. The canonical `GitRpcParams` wire
+type lives here too.
+
+### Download decisions co-located (`core/src/sync/files.ts`)
+
+`DownloadKind`/`parseDownloadKind`/`resolveHostPath` sit in `core/src/sync/`
+purely for **co-location** — so all sync decision logic is discoverable in one
+place — even though the two download handlers keep intrinsically different
+transports (docker re-shells the host CLI; cloud calls `pullCloudDirContents`,
+workspace-only). The transport divergence and the cloud workspace-only gate are
+NOT unified; only the pure decisions moved. The file header says so, so the
+non-unified mechanism isn't later mistaken for an oversight.
+
 ---
 
 ## Testing model

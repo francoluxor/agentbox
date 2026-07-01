@@ -216,6 +216,23 @@ Two-tier layout (dependency-graph-driven): **pure contracts** in `packages/core/
   wire spelling (see Deferred backlog) — so no relay/queue/`build-prompt-args`/`assert-creds` test
   literals shifted, and relay tests stay green.
 
+- **Phase 9 — relay delegation + git-refs unification.** Extracted the git branch/refspec/
+  remote/upstream decisions — copy-pasted across the three git push-back paths — into pure
+  `packages/core/src/sync/git-refs.ts` (`resolveRemote`, `resolveLandDest`, `landRefspec`,
+  `upstreamRef`, `remoteTrackingRef`, `isResolvedBranch`, `sanitizeGitArgs`, `isScratchBranch` +
+  `SCRATCH_BRANCH_PREFIX`), plus the canonical `GitRpcParams` wire type. In `core` (not
+  `sandbox-core`) because `@agentbox/ctl` depends only on `core` — same pattern as `../replace.ts`.
+  Co-located the download decisions in `packages/core/src/sync/files.ts` (`DownloadKind`,
+  `parseDownloadKind`, `resolveHostPath`) — the two download handlers keep their divergent
+  transports (docker re-shells the host CLI; cloud calls `pullCloudDirContents`, workspace-only);
+  only the decisions moved. Routed `server.ts` / `host-actions.ts` (`runGitRpc`/`runDownloadRpc`)
+  / `core/handler.ts` through the shared decisions and folded all six live
+  `branch.startsWith('agentbox/')` predicates to the undefined-safe `isScratchBranch`; `ctl`'s
+  `leaseAndPush` adopted `resolveRemote` (kept its weaker `!branch` check — see Deferred backlog).
+  Behavior-preserving by construction (only boolean/string expressions changed). New
+  `core/test/git-refs.test.ts` + `core/test/files.test.ts` are the primary guard (relay unit
+  coverage of these strings is thin); relay/ctl parity nets stay green.
+
 ## Refinements to the plan's phasing (decided during execution)
 1. **Transports co-develop with their first concern (Phase 3), not in a vacuum.** Docker
    `copyOneEntry` and cloud `uploadOneEntry` *are* the push primitives; the transport
@@ -278,11 +295,6 @@ Two-tier layout (dependency-graph-driven): **pure contracts** in `packages/core/
   `sync/agents/<tool>/stage.ts` + fill in the claude/codex `staticPaths[].exclude`
   (`CLAUDE_RUNTIME_EXCLUDES`, `CODEX_RSYNC_EXCLUDES`); the deferred cloud credential/dynamic
   *seed* collapses land in `cloudSync`; add the `AGENTBOX_SYNC_DRYRUN` passthrough.
-- **Phase 9 — relay delegation + git-refs unification.** Extract the triplicated
-  branch/refspec/upstream logic (`server.ts:1420`, `host-actions.ts:1122`, `ctl/git.ts:129`)
-  into pure `core/src/sync/git-refs.ts` (shared by relay-host + ctl-box — this is why they're
-  in `core`). Point `runGitRpc`/`runDownloadRpc`/`handleGitRpc` at shared `sync/git`+`sync/files`.
-  Relay gating/token/poll unchanged.
 - **Phase 10 — close the two wiring gaps.** Thread `relay.controlPlaneUrl` →
   `CreateBoxRequest` → box forwarder-upstream (`cloud-provider.ts:583-594`,
   `bootstrap-launch.ts:52-78`) + persist topology on `BoxRecord`; set `AGENTBOX_GIT_LEASE=1`
@@ -355,3 +367,27 @@ be mistaken for an oversight. Each notes *why* and *where it lands*.
   and — deliberately — avoids shifting the `build-prompt-args` / `cloud-attach` / `assert-creds`
   test literals. Recorded here so the un-canonicalized branches aren't mistaken later for an
   oversight; revisit only if the owner reverses the steer.
+- **[owed] Git push-back smoke matrix (Phase 9).** The git-refs extraction is guarded by pure
+  unit tests, but the cloud `runGitRpc` refspec/upstream path has no relay unit coverage. Before
+  push, run `{local,vercel,hetzner}×{claude,codex}`: `agentbox-ctl git push` (assert the branch
+  pushes and, for a non-`agentbox/` branch, the box's `origin/<branch>` remote-tracking ref +
+  upstream are set — the `remoteTrackingRef`/`upstreamRef` paths); `git push --host-only [--as X]
+  [--force]` (the `landRefspec` self-fetch/bundle land); `git pull` (fetch-via-relay + in-box
+  merge); `agentbox download` workspace on a cloud box (`parseDownloadKind`/`resolveHostPath`); a
+  scratch-branch push still skips the prompt/upstream while another branch still prompts
+  (`isScratchBranch` gate unchanged); and the `AGENTBOX_GIT_LEASE=1` control-plane lease push.
+- **[non-unification — later create-smoke-gated phase] Scratch-branch producers (Phase 9).** The
+  `agentbox/${name}` producer sites (`sandbox-docker/src/create.ts` ~500/563 incl. sub-worktree
+  variants, `sandbox-cloud/src/cloud-provider.ts` ~279/1268) still hardcode the prefix rather than
+  build from `SCRATCH_BRANCH_PREFIX`. They're create-path in provider packages; adopting the
+  constant needs create smoke. The constant is exported now; a later create-smoke-gated phase
+  adopts it.
+- **[non-unification — cloud-only, single-site] Cloud-bundle fetch refspecs (Phase 9).**
+  `host-actions.ts`'s `+refs/heads/*:refs/remotes/origin/*` / `--all` bundle refspecs stay inline —
+  single-site, cloud-mechanism, no docker analog. Likewise the download *transport* (CLI re-shell
+  vs `pullCloudDirContents`) and the cloud workspace-only gate stay site-local; only the pure
+  decisions were co-located in `sync/files.ts`.
+- **[non-change — would alter a push path] ctl `isResolvedBranch` harmonization (Phase 9).**
+  `leaseAndPush` keeps its weaker `!branch` check; adopting `isResolvedBranch` there would add a
+  `=== 'HEAD'` rejection on the `AGENTBOX_GIT_LEASE` control-plane push path — a behavior change,
+  deliberately not made.
