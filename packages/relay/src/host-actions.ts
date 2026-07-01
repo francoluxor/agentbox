@@ -16,8 +16,9 @@
 
 import { execa } from 'execa';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { resolveHostPath } from '@agentbox/core';
 import type { CloudBackend, CloudHandle } from '@agentbox/core';
 import { findBox, hostOpenCommand, readState } from '@agentbox/sandbox-core';
 import {
@@ -659,19 +660,10 @@ export async function boxWorkspacePath(boxId: string): Promise<string | undefine
   return hit.kind === 'ok' ? hit.box.workspacePath : undefined;
 }
 
-/**
- * Resolve a host path supplied by an in-box agent to an absolute host path.
- * Absolute paths pass through; a leading `~`/`~/` expands against the host
- * home; anything else is relative to the box's host `workspacePath` (NOT the
- * relay daemon's CWD). When `workspacePath` is unknown, relative paths fall
- * back to `path.resolve` (process CWD) — same as the old behaviour.
- */
-export function resolveHostPath(workspacePath: string | undefined, hostPath: string): string {
-  if (isAbsolute(hostPath)) return hostPath;
-  if (hostPath === '~') return homedir();
-  if (hostPath.startsWith('~/')) return join(homedir(), hostPath.slice(2));
-  return workspacePath ? resolve(workspacePath, hostPath) : resolve(hostPath);
-}
+// resolveHostPath's pure decision moved to `@agentbox/core`'s sync/files.ts.
+// Re-exported here so `server.ts` (and the cp/download call sites below) keep
+// importing it from `./host-actions.js` unchanged.
+export { resolveHostPath };
 
 /**
  * Cloud cp helpers live in `@agentbox/sandbox-cloud` — same dynamic-import

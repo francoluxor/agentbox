@@ -1,3 +1,8 @@
+// DownloadKind's canonical decision home is `@agentbox/core`'s sync/files.ts;
+// imported here so DownloadRpcParams below can reference it, re-exported below
+// so existing `./types.js` importers stay unchanged.
+import type { DownloadKind } from '@agentbox/core';
+
 export const DEFAULT_RELAY_PORT = 8787;
 /**
  * In-box relay port — distinct from {@link DEFAULT_RELAY_PORT} so a nested
@@ -369,7 +374,7 @@ export interface BrowserOpenRpcParams {
   url: string;
 }
 
-export type DownloadKind = 'workspace' | 'env' | 'config' | 'claude';
+export type { DownloadKind };
 
 export interface DownloadRpcParams {
   kind: DownloadKind;
