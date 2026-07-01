@@ -27,6 +27,14 @@ Two-tier layout (dependency-graph-driven): **pure contracts** in `packages/core/
 - **Phase 2 — registry.** `packages/sandbox-core/src/sync/registry.ts` + `agents/types.ts`:
   `AGENT_SYNC_SPECS` (data-only: paths, credentials, forwarded env keys, caps; opencode's
   3-XDG-dir layout as data) + `resolveAgentSpec(id|alias)`.
+- **Phase 3 — SyncTransport (docker+cloud) + env concern.** `core` gained `applyTarball`
+  (unified host→box primitive). `DockerSyncTransport` (docker CLI wrappers, container-only,
+  works at create) + `CloudSyncTransport` (CloudBackend wrappers). `sync/concerns/env.ts`
+  unifies docker `copyHostEnvFilesToBox` + cloud `uploadEnvFiles` (both now thin wrappers
+  injecting their transport); env helpers re-exported from sandbox-docker for existing
+  importers. `SyncContext` added. **Validated on a real docker box**: a gitignored
+  secrets.toml/.env.gitignored (git-ignored in-box → not from the git seed) landed in
+  /workspace owned vscode:vscode via the refactored path.
 
 ## Refinements to the plan's phasing (decided during execution)
 1. **Transports co-develop with their first concern (Phase 3), not in a vacuum.** Docker
