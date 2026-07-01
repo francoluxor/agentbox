@@ -1,8 +1,8 @@
 import { chmod, mkdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { execa } from 'execa';
-import type { ClaudeConfigSpec } from './claude.js';
-import { STATE_DIR } from './state.js';
+import type { ClaudeConfigSpec } from '../claude.js';
+import { STATE_DIR } from '../state.js';
 
 // The pure credential guards (`isRealAgentCredential`, `hostClaudeBackupExpired`,
 // `hostBackupHasCredentials`) + `CredentialAgentKind` moved to the provider-

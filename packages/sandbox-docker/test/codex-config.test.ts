@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parse } from 'smol-toml';
-import { isHostOnlyPath, sanitizeCodexConfigForBox } from '../src/codex-config.js';
+import { isHostOnlyPath, sanitizeCodexConfigForBox } from '../src/sync/codex-config.js';
 
 const HOST_HOME = '/Users/marco';
 

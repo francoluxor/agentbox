@@ -42,14 +42,14 @@ import {
   seedWorkspaceFromDir,
   type RepoCarryOver,
   type RestoreWorktreePlan,
-} from './in-box-git.js';
+} from './sync/in-box-git.js';
 import {
   CONTAINER_EXPORT_MERGED,
   DEFAULT_ENV_PATTERNS,
   boxRunDirFor,
   copyHostFilesToBox,
   detectEngine,
-} from './host-export.js';
+} from './sync/host-export.js';
 import {
   detectPortless,
   portlessAlias,

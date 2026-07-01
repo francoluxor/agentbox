@@ -29,15 +29,15 @@ import { dryRunProviderSync, SYNC_DRYRUN_ENV } from '@agentbox/core';
 import { renderCarryEntries } from '@agentbox/sandbox-core';
 import type { ClaudeConfigSpec } from '../claude.js';
 import { ensureClaudeVolume, seedSetupSkillIntoVolume } from '../claude.js';
-import { syncClaudeCredentials } from '../claude-credentials.js';
+import { syncClaudeCredentials } from './claude-credentials.js';
 import type { CodexConfigSpec } from '../codex.js';
 import { ensureCodexVolume, seedCodexAgentsOverride, seedCodexHooks } from '../codex.js';
 import type { AgentsConfigSpec } from '../agents.js';
 import { ensureAgentsVolume } from '../agents.js';
 import type { OpencodeConfigSpec } from '../opencode.js';
 import { ensureOpencodeVolume, seedOpencodePlugin } from '../opencode.js';
-import { copyCarryPathsToBox, copyHostEnvFilesToBox } from '../host-export.js';
-import { resyncWorkspaceFromHost } from '../in-box-git.js';
+import { copyCarryPathsToBox, copyHostEnvFilesToBox } from './host-export.js';
+import { resyncWorkspaceFromHost } from './in-box-git.js';
 
 export interface DockerSyncHandle {
   /** Running container name (all box-side ops target it). */

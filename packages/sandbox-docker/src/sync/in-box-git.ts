@@ -1,8 +1,8 @@
 import { execa } from 'execa';
 import type { GitWorktreeRecord } from '@agentbox/core';
-import { execInBox } from './docker.js';
-import type { DetectedGitRepo } from './git-worktree.js';
-import { GitWorktreeError } from './git-worktree.js';
+import { execInBox } from '../docker.js';
+import type { DetectedGitRepo } from '../git-worktree.js';
+import { GitWorktreeError } from '../git-worktree.js';
 // The box-wins classifier + the resync orchestration moved to the provider-
 // neutral git/workspace concern in @agentbox/sandbox-core; the resync runs
 // against a `WorkspaceResyncPorts` this file supplies. The host-side ports are

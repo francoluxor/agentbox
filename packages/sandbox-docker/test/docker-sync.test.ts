@@ -23,7 +23,7 @@ vi.mock('../src/claude.js', () => ({
   ensureClaudeVolume: m.ensureClaudeVolume,
   seedSetupSkillIntoVolume: m.seedSetupSkillIntoVolume,
 }));
-vi.mock('../src/claude-credentials.js', () => ({ syncClaudeCredentials: m.syncClaudeCredentials }));
+vi.mock('../src/sync/claude-credentials.js', () => ({ syncClaudeCredentials: m.syncClaudeCredentials }));
 vi.mock('../src/codex.js', () => ({
   ensureCodexVolume: m.ensureCodexVolume,
   seedCodexHooks: m.seedCodexHooks,
@@ -34,11 +34,11 @@ vi.mock('../src/opencode.js', () => ({
   ensureOpencodeVolume: m.ensureOpencodeVolume,
   seedOpencodePlugin: m.seedOpencodePlugin,
 }));
-vi.mock('../src/host-export.js', () => ({
+vi.mock('../src/sync/host-export.js', () => ({
   copyHostEnvFilesToBox: m.copyHostEnvFilesToBox,
   copyCarryPathsToBox: m.copyCarryPathsToBox,
 }));
-vi.mock('../src/in-box-git.js', () => ({ resyncWorkspaceFromHost: m.resyncWorkspaceFromHost }));
+vi.mock('../src/sync/in-box-git.js', () => ({ resyncWorkspaceFromHost: m.resyncWorkspaceFromHost }));
 vi.mock('@agentbox/sandbox-core', () => ({ renderCarryEntries: m.renderCarryEntries }));
 
 import { makeDockerSync } from '../src/sync/docker-sync.js';

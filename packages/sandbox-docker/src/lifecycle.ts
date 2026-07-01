@@ -18,7 +18,7 @@ import {
   type OpencodeSessionInfo,
 } from './opencode.js';
 import { listShellSessions, type ShellSessionSummary } from './shell-session.js';
-import { bindWorktrees, removeInBoxWorktree, resyncWorkspaceFromHost } from './in-box-git.js';
+import { bindWorktrees, removeInBoxWorktree, resyncWorkspaceFromHost } from './sync/in-box-git.js';
 import {
   cursorServerVolumeName,
   SHARED_CURSOR_EXTENSIONS_VOLUME,
@@ -35,7 +35,7 @@ import {
   type HostPaths,
   type OpenOptions,
   type OpenResult,
-} from './host-export.js';
+} from './sync/host-export.js';
 import {
   inspectContainer,
   inspectContainerStatus,

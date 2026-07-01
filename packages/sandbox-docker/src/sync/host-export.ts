@@ -14,10 +14,10 @@ import {
 } from '@agentbox/sandbox-core';
 import type { ResolvedCarryEntry } from '@agentbox/core';
 import type { BoxStatus } from '@agentbox/ctl';
-import { streamTarPipe } from './box-cp.js';
-import { execInBox } from './docker.js';
+import { streamTarPipe } from '../box-cp.js';
+import { execInBox } from '../docker.js';
 import { createDockerSyncTransport } from './sync-transport.js';
-import type { BoxRecord } from './state.js';
+import type { BoxRecord } from '../state.js';
 
 // Env/config-file sync moved to the shared concern (`@agentbox/sandbox-core`'s
 // sync/concerns/env). Re-exported here so existing importers (wizard,

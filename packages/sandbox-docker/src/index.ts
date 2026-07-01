@@ -1,6 +1,6 @@
 export { dockerProvider, type DockerCreateOptions } from './docker-provider.js';
 export { downloadFromBox, uploadToBox, type BoxCpResult } from './box-cp.js';
-export { createDockerSyncTransport, type DockerSyncTransportInit } from './sync-transport.js';
+export { createDockerSyncTransport, type DockerSyncTransportInit } from './sync/sync-transport.js';
 export { makeDockerSync, type DockerSyncHandle } from './sync/docker-sync.js';
 
 export {
@@ -60,7 +60,7 @@ export {
   type CredentialSyncDirection,
   type SyncClaudeCredentialsResult,
   type VolumeClaudeCredentials,
-} from './claude-credentials.js';
+} from './sync/claude-credentials.js';
 export {
   BOX_SYSTEM_PROMPT_PATH,
   buildCodexAgentsOverrideScript,
@@ -157,7 +157,7 @@ export {
   type RepoCarryOver,
   type SeedWorkspaceOptions,
   type WorktreeBindSpec,
-} from './in-box-git.js';
+} from './sync/in-box-git.js';
 export {
   DEFAULT_BOX_IMAGE,
   BOX_IMAGE_REGISTRY,
@@ -221,7 +221,7 @@ export {
   type StageCodexOptions,
   type StageOpencodeOptions,
   type StageResult,
-} from './host-stage.js';
+} from './sync/host-stage.js';
 export {
   BOX_WORKFLOWS_DIR,
   BOX_MEMORY_DIR,
@@ -237,7 +237,7 @@ export {
   type DynamicSyncDeletion,
   type HostSyncManifest,
   type StagedTarball,
-} from './dynamic-sync.js';
+} from './sync/dynamic-sync.js';
 export { EXCLUDE_DIRS, SNAPSHOTS_ROOT, snapshotPathFor } from './snapshot.js';
 export {
   CHECKPOINTS_ROOT,
@@ -331,7 +331,7 @@ export {
   type PullResult,
   type RefreshOptions,
   type RefreshResult,
-} from './host-export.js';
+} from './sync/host-export.js';
 export {
   detectPortless,
   installPortless,
