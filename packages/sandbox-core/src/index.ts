@@ -25,6 +25,7 @@ export {
   renderCarryEntries,
   type CarryBoxContext,
 } from './carry-render.js';
+export * from './sync/index.js';
 export {
   computeContextSha256,
   DOCKER_CONTEXT_FILE_MAP,
