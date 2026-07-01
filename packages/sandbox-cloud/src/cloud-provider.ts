@@ -12,7 +12,7 @@
  */
 
 import { basename, resolve } from 'node:path';
-import { generateBoxId } from '@agentbox/core';
+import { generateBoxId, resolveSyncTopology } from '@agentbox/core';
 import type {
   AttachKind,
   AttachSpec,
@@ -69,6 +69,7 @@ import { isSnapshotGoneError } from './snapshot-error.js';
 import { readExposedServicePorts } from './expose-ports.js';
 import { downloadFromCloudBox, pullCloudDirContents, uploadToCloudBox } from './cloud-cp.js';
 import { kickCloudBootstrap } from './bootstrap-launch.js';
+import { readGitOriginUrl, registerBoxWithPlane } from './plane-register.js';
 import { quoteShellArgv } from './shell.js';
 import { seedCloudWorkspace } from './sync/workspace-seed.js';
 import type { SeedCloudWorkspaceResult } from './sync/workspace-seed.js';
@@ -445,11 +446,38 @@ export function createCloudProvider(
       webProxyPort: backend.webProxyPort,
       launchDockerd: opts.launchDockerd !== false,
       vncPassword: box.vncEnabled ? box.vncPassword : undefined,
+      controlPlaneUrl: box.cloud?.controlPlaneUrl,
       boxHost: deriveCloudBoxHost(box.name, webPreview?.url),
     });
-    // Re-register with the host relay so its CloudBoxPoller picks up the
-    // fresh preview URL/token.
-    if (relayPreview && box.relayToken && box.cloud?.bridgeToken) {
+    // Re-register on resume. A control-plane box registers on the plane (with
+    // its origin URL, needed for lease minting); a classic-cloud box registers
+    // on the host relay so its CloudBoxPoller picks up the fresh preview
+    // URL/token. Both best-effort.
+    if (box.cloud?.controlPlaneUrl && box.relayToken) {
+      const adminToken = process.env.AGENTBOX_RELAY_ADMIN_TOKEN;
+      const originUrl = await readGitOriginUrl(box.workspacePath).catch(() => undefined);
+      if (adminToken && originUrl) {
+        try {
+          await registerBoxWithPlane({
+            controlPlaneUrl: box.cloud.controlPlaneUrl,
+            adminToken,
+            boxId: box.id,
+            token: box.relayToken,
+            name: box.name,
+            originUrl,
+            backend: backend.name,
+            bridgeToken: box.cloud.bridgeToken,
+            previewUrl: relayPreview?.url,
+            previewToken: relayPreview?.token,
+            createdAt: box.createdAt,
+            projectIndex: box.projectIndex,
+            autoApproveHostActions: box.autoApproveHostActions,
+          });
+        } catch {
+          // best-effort
+        }
+      }
+    } else if (relayPreview && box.relayToken && box.cloud?.bridgeToken) {
       try {
         await registerBoxWithRelay({
           boxId: box.id,
@@ -778,6 +806,7 @@ export function createCloudProvider(
           launchDockerd: opts.launchDockerd !== false,
           vncPassword,
           clone: inBoxClone,
+          controlPlaneUrl: req.controlPlaneUrl,
           boxHost: deriveCloudBoxHost(name, webPreview?.url),
           onLog: log,
         });
@@ -875,10 +904,51 @@ export function createCloudProvider(
           await loadEffectiveConfig(req.projectRoot ?? req.workspacePath)
         ).effective.box.autoApproveHostActions;
 
-        // Tell the host relay about this cloud box so it spawns a poller.
-        // Best-effort: a failed register doesn't break create (status / git
-        // push just won't reach the host until a later register).
-        if (relayPreview) {
+        // Register the box so its RPCs (status, git.lease-token) are recognized.
+        // Control-plane box → register on the PLANE with its origin URL (the
+        // plane mints push tokens from the registered origin); it forwards /rpc
+        // to the plane and needs no host poller. Classic-cloud box → register on
+        // the host relay so it spawns a CloudBoxPoller for /bridge. Both
+        // best-effort: a failed register doesn't break create.
+        if (req.controlPlaneUrl) {
+          const adminToken = process.env.AGENTBOX_RELAY_ADMIN_TOKEN;
+          const originUrl = req.inBoxClone
+            ? req.inBoxClone.originUrl
+            : await readGitOriginUrl(req.workspacePath).catch(() => undefined);
+          if (!adminToken) {
+            log(
+              'control-plane URL configured but AGENTBOX_RELAY_ADMIN_TOKEN is unset; ' +
+                'box git push (lease) will fail until the box is registered on the plane',
+            );
+          } else if (!originUrl) {
+            log(
+              'control-plane box: could not resolve the workspace origin URL; ' +
+                'lease-push will fail until the box is registered on the plane with an origin',
+            );
+          } else {
+            try {
+              await registerBoxWithPlane({
+                controlPlaneUrl: req.controlPlaneUrl,
+                adminToken,
+                boxId: id,
+                token: relayToken,
+                name,
+                originUrl,
+                backend: backend.name,
+                bridgeToken,
+                previewUrl: relayPreview?.url,
+                previewToken: relayPreview?.token,
+                createdAt: new Date().toISOString(),
+                projectIndex,
+                autoApproveHostActions,
+              });
+            } catch (err) {
+              log(
+                `register with control plane failed (continuing): ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          }
+        } else if (relayPreview) {
           try {
             await registerBoxWithRelay({
               boxId: id,
@@ -956,6 +1026,8 @@ export function createCloudProvider(
             // inBoxClone / plane boxes clone from a leased URL — left unset.
             hostSeeded: inBoxClone ? undefined : true,
             workspaceBranch: branch,
+            topology: resolveSyncTopology(backend.name, req.controlPlaneUrl),
+            controlPlaneUrl: req.controlPlaneUrl,
           },
           createdAt: new Date().toISOString(),
         };

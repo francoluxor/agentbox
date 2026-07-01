@@ -46,10 +46,36 @@ export interface KickCloudBootstrapArgs {
    * plane / cloud-IDE create path; the laptop path host-seeds and omits this.
    */
   clone?: { authedUrl: string; originUrl: string; branch?: string; depth?: number };
+  /**
+   * Hosted control-plane base URL when this box's live relay is the plane. When
+   * set, the kick exports `AGENTBOX_CONTROL_PLANE_URL` (daemon → forwarder
+   * upstream) and writes `AGENTBOX_GIT_LEASE=1` into box.env (login-shell
+   * `git push` → lease-and-push direct). Re-passed on every kick (create AND
+   * reEnsure/attach) from the persisted record so resume preserves the topology.
+   */
+  controlPlaneUrl?: string;
   onLog?: (line: string) => void;
 }
 
-export async function kickCloudBootstrap(args: KickCloudBootstrapArgs): Promise<void> {
+/**
+ * Pure builder for the two env surfaces a bootstrap kick emits. Split out so the
+ * control-plane threading (`AGENTBOX_CONTROL_PLANE_URL` / `AGENTBOX_GIT_LEASE`)
+ * is unit-testable without a backend.
+ *
+ * - `env` — exported for the bootstrap process + its detached children (the ctl
+ *   daemon reads these). Carries the relay/bridge tokens + the clone + upstream.
+ * - `boxEnvFile` — the identity + placeholder subset persisted to
+ *   /etc/agentbox/box.env so interactive login shells (`agentbox shell`, and the
+ *   tmux shell where `git push` runs) resolve the same values. box.env is
+ *   world-readable (0644), so it deliberately excludes the relay/bridge tokens
+ *   (those travel via the daemon's 0600 /run/agentbox/relay.env) but DOES carry
+ *   the non-secret `AGENTBOX_GIT_LEASE` flag, which the login-shell `git push`
+ *   must see. Written on every kick (create AND reEnsure/attach).
+ */
+export function buildBootstrapEnv(args: KickCloudBootstrapArgs): {
+  env: string[];
+  boxEnvFile: string[];
+} {
   const env: string[] = [
     `AGENTBOX_BOX_ID=${quoteShellArgv([args.boxId])}`,
     `AGENTBOX_BOX_NAME=${quoteShellArgv([args.boxName])}`,
@@ -77,14 +103,6 @@ export async function kickCloudBootstrap(args: KickCloudBootstrapArgs): Promise<
       env.push(`AGENTBOX_CLONE_DEPTH=${quoteShellArgv([String(args.clone.depth)])}`);
   }
 
-  // The identity + placeholder subset persisted to /etc/agentbox/box.env so
-  // interactive login shells (`agentbox shell`) and manual `agentbox-ctl render`
-  // resolve the same values the supervisor's children inherit. Deliberately
-  // excludes the relay/bridge tokens — box.env is world-readable (0644); the
-  // relay token travels via the daemon's 0600 /run/agentbox/relay.env. Written
-  // on every kick (create AND reEnsure/attach), so a changed AGENTBOX_BOX_HOST
-  // (host preview URL / IP change) refreshes on reconnect. Mirrors the docker
-  // provider's writeBoxEnvFile and the pre-unify launchCloudCtlDaemon.
   const boxEnvFile: string[] = [
     `AGENTBOX_BOX_ID=${quoteShellArgv([args.boxId])}`,
     `AGENTBOX_BOX_NAME=${quoteShellArgv([args.boxName])}`,
@@ -93,6 +111,19 @@ export async function kickCloudBootstrap(args: KickCloudBootstrapArgs): Promise<
   if (args.webProxyPort !== undefined)
     boxEnvFile.push(`AGENTBOX_WEB_PROXY_PORT=${quoteShellArgv([String(args.webProxyPort)])}`);
   if (args.boxHost) boxEnvFile.push(`AGENTBOX_BOX_HOST=${quoteShellArgv([args.boxHost])}`);
+
+  // Control-plane topology: the daemon needs the upstream URL (process env), and
+  // the login-shell `git push` needs the lease flag (box.env, world-readable).
+  if (args.controlPlaneUrl) {
+    env.push(`AGENTBOX_CONTROL_PLANE_URL=${quoteShellArgv([args.controlPlaneUrl])}`);
+    boxEnvFile.push(`AGENTBOX_GIT_LEASE=1`);
+  }
+
+  return { env, boxEnvFile };
+}
+
+export async function kickCloudBootstrap(args: KickCloudBootstrapArgs): Promise<void> {
+  const { env, boxEnvFile } = buildBootstrapEnv(args);
 
   const script = [
     `set -e`,
