@@ -170,8 +170,20 @@ Two-tier layout (dependency-graph-driven): **pure contracts** in `packages/core/
     the in-box `bootstrap` cmd). The resync path is provider-neutral (same backend.exec/uploadFile
     ports), so Vercel's pass — including the harder root-probe path — covers it; re-run the Hetzner
     half once `prepare --provider hetzner --force` succeeds.
-  - **Remaining:** 7.6 (dry-run passthrough + move per-tool static-config stage producers to
-    `sync/agents/<tool>/stage.ts` + fill claude/codex `staticPaths[].exclude`) — cleanup, no smoke.
+  - **7.6a (dry-run) — DONE:** `AGENTBOX_SYNC_DRYRUN=1` → `makeDockerSync`/`makeCloudSync` return
+    `dryRunProviderSync(label)` (core), a print-only facade: each op logs `[sync dry-run]
+    <provider>.<op>(…)` via `ctx.onLog` and returns a benign default WITHOUT executing. Unit-tested.
+  - **7.6b (stage-producer relocation + `staticPaths[].exclude` fill) — DEFERRED (backlog).** On
+    inspection this is NOT the low-risk cleanup the label implies: the 4 `stage*StaticForUpload`
+    producers live in `sandbox-docker/host-stage.ts` (714 lines), deeply entangled with docker
+    helpers (`findBrokenSymlinks`/`filterHostHooks`/`buildBoxClaudeJsonFromHost`/`mkStageDir`/the
+    `*_EXCLUDES` consts) and consumed by the prepare paths of docker + all 3 cloud backends. Moving
+    them to `sync/agents/<tool>/stage.ts` is a large cross-package reorganization of the PREPARE-time
+    staging (orthogonal to the ProviderSync facade spine) that warrants prepare-path validation
+    across backends. And `registry.staticPaths[].exclude` has **no consumer** today, so filling
+    claude/codex would only add duplicate-of-`host-stage` data + a drift-guard burden with no
+    behavioural payoff until a reader exists. Land as its own focused change (ideally alongside a
+    consumer that reads `staticPaths[].exclude`), with docker+vercel+hetzner+daytona `prepare` smoke.
 
 ## Refinements to the plan's phasing (decided during execution)
 1. **Transports co-develop with their first concern (Phase 3), not in a vacuum.** Docker

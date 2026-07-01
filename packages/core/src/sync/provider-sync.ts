@@ -27,6 +27,9 @@ import type { GitWorktreeRecord } from '../box-record.js';
 import type { ResolvedCarryEntry, ResyncResult } from '../provider.js';
 import type { SyncContext } from './context.js';
 
+/** Env var that flips every `ProviderSync` op into a print-only no-op. */
+export const SYNC_DRYRUN_ENV = 'AGENTBOX_SYNC_DRYRUN';
+
 /**
  * Outcome of applying the approved `carry:` entries into a box. Mirrors the
  * docker `CopyCarryResult` shape (kept identical so `applyCarry` returns it
@@ -62,4 +65,46 @@ export interface ProviderSync {
   seedEnvFiles(ctx: SyncContext, patterns: string[]): Promise<{ copied: number }>;
   /** Apply the approved `carry:` entries (host→box file copies) into the box. */
   applyCarry(ctx: SyncContext, entries: ResolvedCarryEntry[]): Promise<CarryApplyResult>;
+}
+
+/**
+ * Wrap a `ProviderSync` so each op prints `[sync dry-run] <label>.<op>(…)` via
+ * `ctx.onLog` and returns a benign default WITHOUT executing — the readable
+ * audit of "what the facade would do." `makeDockerSync`/`makeCloudSync` apply
+ * this when {@link SYNC_DRYRUN_ENV} is set. The inner facade is never invoked, so
+ * a dry run makes no host/box changes.
+ */
+export function dryRunProviderSync(label: string): ProviderSync {
+  const note = (ctx: SyncContext, op: string, detail = ''): void =>
+    ctx.onLog(`[sync dry-run] ${label}.${op}(${detail})`);
+  return {
+    resyncWorkspace(ctx, worktrees) {
+      note(ctx, 'resyncWorkspace', `${String(worktrees.length)} worktree(s)`);
+      return Promise.resolve({ repos: [], hadConflicts: false });
+    },
+    seedAgentConfig(ctx) {
+      note(ctx, 'seedAgentConfig');
+      return Promise.resolve();
+    },
+    seedCredentials(ctx) {
+      note(ctx, 'seedCredentials');
+      return Promise.resolve();
+    },
+    extractCredentials(ctx) {
+      note(ctx, 'extractCredentials');
+      return Promise.resolve([]);
+    },
+    seedGitIdentity(ctx) {
+      note(ctx, 'seedGitIdentity');
+      return Promise.resolve();
+    },
+    seedEnvFiles(ctx, patterns) {
+      note(ctx, 'seedEnvFiles', `${String(patterns.length)} pattern(s)`);
+      return Promise.resolve({ copied: 0 });
+    },
+    applyCarry(ctx, entries) {
+      note(ctx, 'applyCarry', `${String(entries.length)} entry/entries`);
+      return Promise.resolve({ copied: 0, errors: [], applied: [] });
+    },
+  };
 }

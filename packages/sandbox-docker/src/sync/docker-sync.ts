@@ -25,6 +25,7 @@ import type {
   ResyncResult,
   SyncContext,
 } from '@agentbox/core';
+import { dryRunProviderSync, SYNC_DRYRUN_ENV } from '@agentbox/core';
 import { renderCarryEntries } from '@agentbox/sandbox-core';
 import type { ClaudeConfigSpec } from '../claude.js';
 import { ensureClaudeVolume, seedSetupSkillIntoVolume } from '../claude.js';
@@ -73,6 +74,7 @@ function requireCreateHandle(
 }
 
 export function makeDockerSync(handle: DockerSyncHandle): ProviderSync {
+  if (process.env[SYNC_DRYRUN_ENV]) return dryRunProviderSync('docker');
   return {
     async resyncWorkspace(
       ctx: SyncContext,

@@ -33,3 +33,4 @@ export type {
 } from './workspace.js';
 export type { SyncContext } from './context.js';
 export type { ProviderSync, CarryApplyResult } from './provider-sync.js';
+export { dryRunProviderSync, SYNC_DRYRUN_ENV } from './provider-sync.js';

@@ -217,3 +217,25 @@ describe('makeDockerSync.seedAgentConfig', () => {
     await expect(sync.seedAgentConfig(ctx())).rejects.toThrow(/create-time handle/);
   });
 });
+
+describe('AGENTBOX_SYNC_DRYRUN', () => {
+  it('returns a print-only facade that executes nothing', async () => {
+    const prev = process.env.AGENTBOX_SYNC_DRYRUN;
+    process.env.AGENTBOX_SYNC_DRYRUN = '1';
+    try {
+      const sync = makeDockerSync(createHandle);
+      await sync.seedAgentConfig(ctx());
+      await sync.seedCredentials(ctx());
+      const res = await sync.applyCarry(ctx(), [] as never);
+      // Underlying fns never called; the ops are logged instead.
+      expect(m.ensureClaudeVolume).not.toHaveBeenCalled();
+      expect(m.syncClaudeCredentials).not.toHaveBeenCalled();
+      expect(m.copyCarryPathsToBox).not.toHaveBeenCalled();
+      expect(res).toEqual({ copied: 0, errors: [], applied: [] });
+      expect(logs.some((l) => l.includes('[sync dry-run] docker.seedAgentConfig'))).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.AGENTBOX_SYNC_DRYRUN;
+      else process.env.AGENTBOX_SYNC_DRYRUN = prev;
+    }
+  });
+});

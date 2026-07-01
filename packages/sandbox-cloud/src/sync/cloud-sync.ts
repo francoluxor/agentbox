@@ -29,6 +29,7 @@ import type {
   ResyncResult,
   SyncContext,
 } from '@agentbox/core';
+import { dryRunProviderSync, SYNC_DRYRUN_ENV } from '@agentbox/core';
 import { renderCarryEntries } from '@agentbox/sandbox-core';
 import { resyncCloudWorkspace } from '../workspace-resync.js';
 import {
@@ -59,6 +60,7 @@ export function makeCloudSync(
   handle: CloudHandle,
   opts: CloudSyncOptions = {},
 ): ProviderSync {
+  if (process.env[SYNC_DRYRUN_ENV]) return dryRunProviderSync(backend.name);
   return {
     // Cloud live-box resync: pre-fetch the host commits into the box, then run
     // the shared resync concern (merge + overlay, box wins; never reset --hard).
