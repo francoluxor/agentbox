@@ -184,6 +184,22 @@ Two-tier layout (dependency-graph-driven): **pure contracts** in `packages/core/
     claude/codex would only add duplicate-of-`host-stage` data + a drift-guard burden with no
     behavioural payoff until a reader exists. Land as its own focused change (ideally alongside a
     consumer that reads `staticPaths[].exclude`), with docker+vercel+hetzner+daytona `prepare` smoke.
+  - **R1–R4 (co-location relocation) — DONE + smoke-passed.** The facade named every op; this moved
+    the op *bodies* physically under `sync/` so the sync layer is discoverable in one place (owner's
+    steer: "all sync operations should happen in the sync/ folder"). Behaviour-preserving pure moves +
+    import repointing; external packages import via the package index only, so the public API is
+    unchanged (`tsc` is exhaustive over the moves). **R1:** 10 cloud sync files → `sandbox-cloud/src/
+    sync/`. **R2:** 9 docker sync-only files → `sandbox-docker/src/sync/`. **R3:** the per-tool modules
+    → `sandbox-docker/src/sync/agents/{claude,codex,opencode,skills}.ts` (whole-module moves — the
+    verified-clean sync/launch coupling meant the cohesive launch/attach code rides along rather than
+    risking an interleaved split of 1400–1600-line files). NOT done (documented non-unifications): the
+    two cloud seed-collapses onto `SyncTransport` (its generic `applyTarball` can't express the daytona
+    FUSE-`cp` / ephemeral `sudo -u` / staged `cp -a`-merge extracts), and dedup of the duplicated pure
+    helpers (owner: two methods is fine). **SMOKE:** all package tests green (sandbox-core 89 / cloud 99
+    / docker 310 / cli 668); docker create+resync (both-parent merge, box-wins, untracked, idempotent);
+    vercel re-prepare (validates the moved stage producers bake a working snapshot) + create (full
+    facade seed) + credential inheritance (box inherits host claude/codex logins) + resync. Hetzner uses
+    the identical relocated cloud code; its re-prepare stayed externally Cloudflare-403-blocked.
 
 ## Refinements to the plan's phasing (decided during execution)
 1. **Transports co-develop with their first concern (Phase 3), not in a vacuum.** Docker
