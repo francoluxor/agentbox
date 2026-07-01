@@ -9,6 +9,15 @@ import {
 import { HostActionQueue } from './host-action-queue.js';
 import { BoxNotices } from './notices.js';
 import { hostOpenCommand } from '@agentbox/sandbox-core';
+import {
+  isScratchBranch,
+  landRefspec,
+  parseDownloadKind,
+  resolveLandDest,
+  resolveRemote,
+  sanitizeGitArgs,
+  upstreamRef,
+} from '@agentbox/core';
 import { getConnector } from '@agentbox/integrations';
 import {
   assertGhReady,
@@ -507,7 +516,7 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
           }
           const params = body.params as GitRpcParams | undefined;
           const worktree = resolveWorktree(reg, params?.path ?? '/workspace');
-          const isAgentboxBranch = worktree?.branch.startsWith('agentbox/') ?? false;
+          const isAgentboxBranch = isScratchBranch(worktree?.branch);
           // Host-initiated pushes (driven by `agentbox git push <box>`) skip
           // the confirm prompt — but only if the host CLI minted a valid,
           // unexpired, scope-matched, params-hash-bound token via
@@ -536,7 +545,7 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
             const gate = await gateApproval(gateDeps, reg.boxId, 'git.push', body.params, {
               kind: 'confirm',
               message: `Allow git push from box ${reg.name}?`,
-              detail: `${params?.remote ?? 'origin'} ${(params?.args ?? []).join(' ')}`.trim(),
+              detail: `${resolveRemote(params?.remote)} ${(params?.args ?? []).join(' ')}`.trim(),
               defaultAnswer: 'n',
               context: {
                 command: 'git push',
@@ -568,7 +577,7 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
         // human (poll-parked on the hosted plane).
         const params = body.params as GitRpcParams | undefined;
         const worktree = resolveWorktree(reg, params?.path ?? '/workspace');
-        const isAgentboxBranch = worktree?.branch.startsWith('agentbox/') ?? false;
+        const isAgentboxBranch = isScratchBranch(worktree?.branch);
         if (!isAgentboxBranch) {
           const gate = await gateApproval(gateDeps, reg.boxId, 'git.lease-token', body.params, {
             kind: 'confirm',
@@ -717,7 +726,7 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
         body.method === 'download.claude'
       ) {
         const params = body.params as DownloadRpcParams | undefined;
-        const kind = (body.method.split('.')[1] ?? 'workspace') as DownloadKind;
+        const kind = parseDownloadKind(body.method);
         const verdict = await askPrompt(prompts, subscribers, reg.boxId, {
           kind: 'confirm',
           message: `Allow download (${kind}) from ${reg.name}?`,
@@ -1350,7 +1359,7 @@ async function handleGitSaveToHost(
     };
   }
   const src = worktree.branch;
-  const dest = params?.as && params.as.length > 0 ? params.as : src;
+  const dest = resolveLandDest(src, params?.as);
   if (dest === src) {
     return {
       exitCode: 0,
@@ -1358,7 +1367,7 @@ async function handleGitSaveToHost(
       stderr: '',
     };
   }
-  const refspec = `${params?.force ? '+' : ''}${src}:refs/heads/${dest}`;
+  const refspec = landRefspec(src, dest, params?.force);
   const result = await runHostCommand([
     'git',
     '-C',
@@ -1403,13 +1412,9 @@ async function handleGitRpc(
     };
   }
   const op = method === 'git.push' ? 'push' : 'fetch';
-  const remote = params?.remote ?? 'origin';
+  const remote = resolveRemote(params?.remote);
   const argv = ['git', '-C', worktree.hostMainRepo, op, remote, worktree.branch];
-  if (Array.isArray(params?.args)) {
-    for (const a of params.args) {
-      if (typeof a === 'string') argv.push(a);
-    }
-  }
+  argv.push(...sanitizeGitArgs(params?.args));
   const result = await runHostCommand(argv);
   // After a successful push, mirror what `git push -u` would have left behind:
   // make the branch track `origin/<branch>` so the in-box `git status` /
@@ -1417,13 +1422,13 @@ async function handleGitRpc(
   // (`agentbox/<name>`) — they're local-only by design. Docker shares .git/
   // with the box, so update-ref of the remote-tracking ref already happened
   // during the push; only the upstream config is missing.
-  if (method === 'git.push' && result.exitCode === 0 && !worktree.branch.startsWith('agentbox/')) {
+  if (method === 'git.push' && result.exitCode === 0 && !isScratchBranch(worktree.branch)) {
     await runHostCommand([
       'git',
       '-C',
       worktree.hostMainRepo,
       'branch',
-      `--set-upstream-to=${remote}/${worktree.branch}`,
+      `--set-upstream-to=${upstreamRef(remote, worktree.branch)}`,
       worktree.branch,
     ]);
   }

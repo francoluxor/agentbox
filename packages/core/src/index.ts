@@ -71,3 +71,4 @@ export type {
 } from './cloud-backend.js';
 export { AmbiguousBoxError, BoxNotFoundError, UserFacingError } from './errors.js';
 export { BOX_ID_PREFIX, generateBoxId } from './identity.js';
+export * from './sync/index.js';

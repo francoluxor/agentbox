@@ -12,7 +12,7 @@ export {
   seedCloudWorkspace,
   type SeedCloudWorkspaceArgs,
   type SeedCloudWorkspaceResult,
-} from './workspace-seed.js';
+} from './sync/workspace-seed.js';
 export {
   agentSpecsForCloud,
   ensureAgentHomeDirsOwned,
@@ -23,14 +23,16 @@ export {
   type CloudAgentKind,
   type EnsureAgentVolumesResult,
   type SeedAgentVolumesOptions,
-} from './agent-credentials.js';
-export { uploadEnvFiles, type UploadEnvFilesArgs, type UploadEnvFilesResult } from './env-files.js';
-export { seedDynamicConfig, type SeedDynamicConfigOptions } from './dynamic-sync.js';
+} from './sync/agent-credentials.js';
+export { uploadEnvFiles, type UploadEnvFilesArgs, type UploadEnvFilesResult } from './sync/env-files.js';
+export { createCloudSyncTransport, type CloudSyncTransportInit } from './sync/sync-transport.js';
+export { makeCloudSync, type CloudSyncOptions } from './sync/cloud-sync.js';
+export { seedDynamicConfig, type SeedDynamicConfigOptions } from './sync/dynamic-sync.js';
 export {
   seedClaudeJsonAtCreate,
   type SeedClaudeJsonOptions,
-} from './claude-json-overlay.js';
-export { seedGitIdentity, type SeedGitIdentityOptions } from './git-identity.js';
+} from './sync/claude-json-overlay.js';
+export { seedGitIdentity, type SeedGitIdentityOptions } from './sync/git-identity.js';
 export { bashScript, quoteShellArg, quoteShellArgv } from './shell.js';
 export {
   makeMockCloudBackend,
@@ -74,15 +76,17 @@ export {
   stageAgentsStaticForUpload,
   stageOpencodeStaticForUpload,
   stageOpencodeCredentialsForUpload,
+  type StageClaudeOptions,
+  type StageCodexOptions,
+  type StageOpencodeOptions,
+  type StageResult,
+} from '@agentbox/sandbox-core';
+export {
   CREDENTIALS_BACKUP_FILE,
   CODEX_CREDENTIALS_BACKUP_FILE,
   OPENCODE_CREDENTIALS_BACKUP_FILE,
   isRealAgentCredential,
   type CredentialAgentKind,
-  type StageClaudeOptions,
-  type StageCodexOptions,
-  type StageOpencodeOptions,
-  type StageResult,
 } from '@agentbox/sandbox-docker';
 // Portless helpers — same re-export pattern as the stage* helpers above.
 // Lives in sandbox-docker for historical reasons (the file predates the

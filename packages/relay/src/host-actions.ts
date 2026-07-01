@@ -16,8 +16,20 @@
 
 import { execa } from 'execa';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  isResolvedBranch,
+  isScratchBranch,
+  landRefspec,
+  parseDownloadKind,
+  remoteTrackingRef,
+  resolveHostPath,
+  resolveLandDest,
+  resolveRemote,
+  sanitizeGitArgs,
+  upstreamRef,
+} from '@agentbox/core';
 import type { CloudBackend, CloudHandle } from '@agentbox/core';
 import { findBox, hostOpenCommand, readState } from '@agentbox/sandbox-core';
 import {
@@ -56,7 +68,6 @@ import { getConnector } from '@agentbox/integrations';
 import type {
   CheckpointRpcParams,
   CpRpcParams,
-  DownloadKind,
   DownloadRpcParams,
   GitRpcParams,
   HostAction,
@@ -659,19 +670,10 @@ export async function boxWorkspacePath(boxId: string): Promise<string | undefine
   return hit.kind === 'ok' ? hit.box.workspacePath : undefined;
 }
 
-/**
- * Resolve a host path supplied by an in-box agent to an absolute host path.
- * Absolute paths pass through; a leading `~`/`~/` expands against the host
- * home; anything else is relative to the box's host `workspacePath` (NOT the
- * relay daemon's CWD). When `workspacePath` is unknown, relative paths fall
- * back to `path.resolve` (process CWD) — same as the old behaviour.
- */
-export function resolveHostPath(workspacePath: string | undefined, hostPath: string): string {
-  if (isAbsolute(hostPath)) return hostPath;
-  if (hostPath === '~') return homedir();
-  if (hostPath.startsWith('~/')) return join(homedir(), hostPath.slice(2));
-  return workspacePath ? resolve(workspacePath, hostPath) : resolve(hostPath);
-}
+// resolveHostPath's pure decision moved to `@agentbox/core`'s sync/files.ts.
+// Re-exported here so `server.ts` (and the cp/download call sites below) keep
+// importing it from `./host-actions.js` unchanged.
+export { resolveHostPath };
 
 /**
  * Cloud cp helpers live in `@agentbox/sandbox-cloud` — same dynamic-import
@@ -844,7 +846,7 @@ async function runDownloadRpc(
   deps: CloudActionExecutorDeps,
 ): Promise<HostActionResult> {
   const params = (action.params ?? {}) as Partial<DownloadRpcParams>;
-  const kind = (action.method.split('.')[1] ?? 'workspace') as DownloadKind;
+  const kind = parseDownloadKind(action.method);
   // Only `workspace` lands cleanly on cloud today — env/config/claude live in
   // per-agent volumes and aren't routed yet (Phase 6 follow-up; see backlog
   // 2.2). Surface a clear error instead of pretending to succeed.
@@ -930,7 +932,7 @@ async function runGitRpc(action: HostAction, deps: CloudActionExecutorDeps): Pro
     `git -C ${shellQuote(containerPath)} rev-parse --abbrev-ref HEAD`,
   );
   const branch = (branchProbe.stdout ?? '').trim();
-  if (branchProbe.exitCode !== 0 || branch.length === 0 || branch === 'HEAD') {
+  if (branchProbe.exitCode !== 0 || !isResolvedBranch(branch)) {
     return {
       exitCode: branchProbe.exitCode || 1,
       stdout: '',
@@ -943,7 +945,7 @@ async function runGitRpc(action: HostAction, deps: CloudActionExecutorDeps): Pro
   // pull-back steps without the final `git push` — so it skips the confirm
   // gate below entirely. Destination defaults to the box's branch name.
   if (params.hostOnly) {
-    const dest = params.as && params.as.length > 0 ? params.as : branch;
+    const dest = resolveLandDest(branch, params.as);
     const stageSave = await mkdtemp(join(tmpdir(), 'agentbox-git-save-'));
     const hostBundleSave = join(stageSave, 'op.bundle');
     const remoteBundleSave = '/tmp/agentbox-rpc-save.bundle';
@@ -956,7 +958,7 @@ async function runGitRpc(action: HostAction, deps: CloudActionExecutorDeps): Pro
         return { exitCode: make.exitCode, stdout: '', stderr: `bundle create failed: ${make.stderr || make.stdout}` };
       }
       await backend.downloadFile(handle, remoteBundleSave, hostBundleSave);
-      const refspec = `${params.force ? '+' : ''}${branch}:refs/heads/${dest}`;
+      const refspec = landRefspec(branch, dest, params.force);
       const landed = await execa(
         'git',
         ['-C', lookup.workspacePath, 'fetch', hostBundleSave, refspec],
@@ -988,7 +990,7 @@ async function runGitRpc(action: HostAction, deps: CloudActionExecutorDeps): Pro
   // auto-`y` when AGENTBOX_PROMPT=off (matches Docker behavior).
   // Per-box `agentbox/<name>` branches bypass the gate — pushing to them is
   // the box's whole job; the prompt would only ever ask about other branches.
-  const isAgentboxBranch = branch.startsWith('agentbox/');
+  const isAgentboxBranch = isScratchBranch(branch);
   // Host-initiated pushes (driven by `agentbox git push <box>`) skip the
   // confirm prompt — but only with a valid scope-matched, params-hash-bound
   // one-time token. If a token is *present* but invalid (mutated args,
@@ -1050,7 +1052,7 @@ async function runGitRpc(action: HostAction, deps: CloudActionExecutorDeps): Pro
           {
             kind: 'confirm',
             message: `Allow git push from cloud box ${deps.boxName ?? deps.boxId}?`,
-            detail: `${params.remote ?? 'origin'} ${branch} ${(params.args ?? []).join(' ')}`.trim(),
+            detail: `${resolveRemote(params.remote)} ${branch} ${(params.args ?? []).join(' ')}`.trim(),
             defaultAnswer: 'n',
             context: { command: 'git push', cwd: containerPath, argv: params.args },
           },
@@ -1064,7 +1066,7 @@ async function runGitRpc(action: HostAction, deps: CloudActionExecutorDeps): Pro
       const verdict = await askPrompt(deps.prompts, deps.subscribers, deps.boxId, {
         kind: 'confirm',
         message: `Allow git push from cloud box ${deps.boxName ?? deps.boxId}?`,
-        detail: `${params.remote ?? 'origin'} ${branch} ${(params.args ?? []).join(' ')}`.trim(),
+        detail: `${resolveRemote(params.remote)} ${branch} ${(params.args ?? []).join(' ')}`.trim(),
         defaultAnswer: 'n',
         context: { command: 'git push', cwd: containerPath, argv: params.args },
       });
@@ -1105,11 +1107,9 @@ async function runGitRpc(action: HostAction, deps: CloudActionExecutorDeps): Pro
       // 4. Real push. Args are user-controlled (`agentbox-ctl git push --
       // <args>`); pass them through to git on the host. Remote defaults to
       // 'origin'; the bundle's branch is the explicit refspec.
-      const remote = params.remote ?? 'origin';
+      const remote = resolveRemote(params.remote);
       const argv = ['-C', lookup.workspacePath, 'push', remote, branch];
-      if (Array.isArray(params.args)) {
-        for (const a of params.args) if (typeof a === 'string') argv.push(a);
-      }
+      argv.push(...sanitizeGitArgs(params.args));
       const push = await execa('git', argv, { reject: false });
       let pushStderr = push.stderr ?? '';
       // After a successful push, sync the box's view of origin to match what
@@ -1119,7 +1119,7 @@ async function runGitRpc(action: HostAction, deps: CloudActionExecutorDeps): Pro
       // upstream on the branch and doesn't fetch / display the PR. Per-box
       // scratch branches (`agentbox/<name>`) skip the sync — they're
       // local-only by design.
-      if ((push.exitCode ?? 1) === 0 && !branch.startsWith('agentbox/')) {
+      if ((push.exitCode ?? 1) === 0 && !isScratchBranch(branch)) {
         try {
           const sha = await execa(
             'git',
@@ -1130,17 +1130,17 @@ async function runGitRpc(action: HostAction, deps: CloudActionExecutorDeps): Pro
           if (sha.exitCode === 0 && shaText.length > 0) {
             const updateRef = await backend.exec(
               handle,
-              `git -C ${shellQuote(containerPath)} update-ref refs/remotes/${remote}/${branch} ${shellQuote(shaText)}`,
+              `git -C ${shellQuote(containerPath)} update-ref ${remoteTrackingRef(remote, branch)} ${shellQuote(shaText)}`,
             );
             if (updateRef.exitCode !== 0) {
-              pushStderr += `\nrelay: post-push in-box update-ref refs/remotes/${remote}/${branch} failed: ${updateRef.stderr || updateRef.stdout}`;
+              pushStderr += `\nrelay: post-push in-box update-ref ${remoteTrackingRef(remote, branch)} failed: ${updateRef.stderr || updateRef.stdout}`;
             }
             const setUpstream = await backend.exec(
               handle,
-              `git -C ${shellQuote(containerPath)} branch --set-upstream-to=${remote}/${branch} ${shellQuote(branch)}`,
+              `git -C ${shellQuote(containerPath)} branch --set-upstream-to=${upstreamRef(remote, branch)} ${shellQuote(branch)}`,
             );
             if (setUpstream.exitCode !== 0) {
-              pushStderr += `\nrelay: post-push in-box --set-upstream-to=${remote}/${branch} failed: ${setUpstream.stderr || setUpstream.stdout}`;
+              pushStderr += `\nrelay: post-push in-box --set-upstream-to=${upstreamRef(remote, branch)} failed: ${setUpstream.stderr || setUpstream.stdout}`;
             }
           } else {
             pushStderr += `\nrelay: post-push rev-parse ${branch} failed on host; skipping in-box origin/upstream sync`;
@@ -1156,7 +1156,7 @@ async function runGitRpc(action: HostAction, deps: CloudActionExecutorDeps): Pro
       };
     }
     // git.fetch: host fetches origin, bundles, uploads, sandbox fetches.
-    const remote = params.remote ?? 'origin';
+    const remote = resolveRemote(params.remote);
     const hostFetch = await execa('git', ['-C', lookup.workspacePath, 'fetch', remote], { reject: false });
     if (hostFetch.exitCode !== 0) {
       return {

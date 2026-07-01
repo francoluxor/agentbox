@@ -31,6 +31,7 @@ import {
   ensureOpencodeInstalled,
 } from '@agentbox/sandbox-docker';
 import { readJob, writeJob, type QueueAgentKind, type QueueJob } from '@agentbox/relay';
+import { toSyncKind } from '@agentbox/core';
 import { resolveClaudeAuth } from '../auth.js';
 import { resolveLimits } from '../limits.js';
 import { openCommandLog } from '../lib/log-file.js';
@@ -179,7 +180,7 @@ async function runDockerJob(
   // registered. Written before the session starts so a crash mid-launch is
   // still attributable to a box.
   onBoxCreated(result.record.id);
-  await recordLastAgent(result.record.id, agentBinaryName(job.agent)).catch(() => {});
+  await recordLastAgent(result.record.id, toSyncKind(job.agent)).catch(() => {});
   await writeJob({ ...job, boxId: result.record.id });
 
   // On-create resync conflicts (checkpoint-restore path): prepend the warning to
@@ -231,11 +232,6 @@ async function runDockerJob(
   await maybeOpenQueuedTerminal(job, result.record.name, log);
 }
 
-/** The CLI subcommand name for an agent kind (`claude-code` → `claude`). */
-function agentBinaryName(agent: QueueAgentKind): 'claude' | 'codex' | 'opencode' {
-  return agent === 'claude-code' ? 'claude' : agent;
-}
-
 /**
  * `queue.openIn`: open a fresh host terminal attached to the just-ready box.
  * Best-effort — a failure here never fails the job (the box is up and the user
@@ -258,7 +254,7 @@ async function maybeOpenQueuedTerminal(
   const argv = [
     process.execPath,
     cliEntry,
-    agentBinaryName(job.agent),
+    toSyncKind(job.agent),
     'attach',
     boxName,
     '--attach-in',
@@ -330,7 +326,7 @@ async function runCloudJob(
   // Record boxId before the session starts so a crash mid-launch is still
   // attributable to a box and the working-agent gate can join it to its box.
   onBoxCreated(result.record.id);
-  await recordLastAgent(result.record.id, agentBinaryName(job.agent)).catch(() => {});
+  await recordLastAgent(result.record.id, toSyncKind(job.agent)).catch(() => {});
   await writeJob({ ...job, boxId: result.record.id });
 
   const promptedArgs = buildPromptArgs(job.agent, job.prompt, job.agentArgs);

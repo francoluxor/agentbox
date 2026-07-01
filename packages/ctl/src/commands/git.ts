@@ -1,4 +1,5 @@
 import { Command, Option } from 'commander';
+import { resolveRemote, type GitRpcParams } from '@agentbox/core';
 import { spawn } from 'node:child_process';
 import { postRpcAndExit, postRpcAwait } from '../relay-rpc.js';
 import { buildPrCommand } from './pr-subcommands.js';
@@ -34,16 +35,6 @@ export interface PushOptions extends CommonOptions {
   as?: string;
   /** With --host-only: allow a non-fast-forward overwrite of the destination. */
   force?: boolean;
-}
-
-interface GitRpcParams {
-  path: string;
-  remote?: string;
-  args?: string[];
-  hostOnly?: boolean;
-  as?: string;
-  force?: boolean;
-  hostInitiated?: string;
 }
 
 interface GitCloneRpcParams {
@@ -102,9 +93,12 @@ function captureGit(args: string[], cwd: string): Promise<string> {
 /**
  * Control-plane push: instead of the relay pushing host-side, the box leases a
  * repo-scoped GitHub-App token from the control plane and pushes directly.
- * Used when AGENTBOX_GIT_LEASE=1 (set by the in-box daemon when the relay is a
- * hosted control plane). The token lives in the remote URL config for the push
- * only and is scrubbed (origin restored) in `finally` — never in the push argv.
+ * Used when AGENTBOX_GIT_LEASE=1. The host writes that flag into
+ * /etc/agentbox/box.env at create/resume when a control-plane URL is configured
+ * (the daemon's own env isn't inherited by the login shell that runs `git
+ * push`, so the flag must live in box.env). The token lives in the remote URL
+ * config for the push only and is scrubbed (origin restored) in `finally` —
+ * never in the push argv.
  */
 async function leaseAndPush(opts: CommonOptions, extra: string[]): Promise<number> {
   const prefix = 'agentbox-ctl git';
@@ -125,7 +119,7 @@ async function leaseAndPush(opts: CommonOptions, extra: string[]): Promise<numbe
     process.stderr.write(`${prefix}: lease response missing remoteUrl\n`);
     return 1;
   }
-  const remote = opts.remote ?? 'origin';
+  const remote = resolveRemote(opts.remote);
   const branch = await captureGit(['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
   if (!branch) {
     process.stderr.write(`${prefix}: could not resolve current branch\n`);
@@ -237,7 +231,7 @@ export const gitCommand = new Command('git')
           if (fetchCode !== 0) process.exit(fetchCode);
           // Merge happens in the container, where the working tree lives. No
           // creds needed; refs are already in the shared .git from the fetch.
-          const remote = opts.remote ?? 'origin';
+          const remote = resolveRemote(opts.remote);
           // Resolve branch via the current HEAD's upstream, falling back to
           // `<remote>/HEAD` so a freshly cloned worktree still pulls.
           const cwd = opts.cwd ?? process.cwd();

@@ -7,6 +7,7 @@ import type { Store } from '../store/store.js';
 import { applyStoreOp, isStoreRpcMethod, type StoreRpcRequest } from '../store/store-rpc.js';
 import { resolveWorktree } from '../worktree.js';
 import type { CreateJobRequest } from '../store/store.js';
+import { isScratchBranch } from '@agentbox/core';
 import type {
   BoxRegistration,
   GitRpcParams,
@@ -335,7 +336,7 @@ async function dispatchRpc(
   if (method === 'git.lease-token') {
     const p = params as GitRpcParams | undefined;
     const worktree = resolveWorktree(reg, p?.path ?? '/workspace');
-    const isAgentboxBranch = worktree?.branch.startsWith('agentbox/') ?? false;
+    const isAgentboxBranch = isScratchBranch(worktree?.branch);
     if (!isAgentboxBranch) {
       const gate = await gateApproval({ mode: 'poll', store: deps.store }, reg.boxId, method, params, {
         kind: 'confirm',

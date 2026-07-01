@@ -17,12 +17,16 @@ import type {
   PrepareOptions,
   PrepareResult,
   Provider,
+  ProviderSync,
+  ResyncResult,
 } from '@agentbox/core';
+import { makeSyncContext } from '@agentbox/sandbox-core';
+import { makeDockerSync } from './sync/docker-sync.js';
 import { createBox, type CreateBoxOptions } from './create.js';
 import { destroyBox, inspectBox, pauseBox, startBox, stopBox, unpauseBox } from './lifecycle.js';
 import { execInBox, inspectContainerStatus } from './docker.js';
 import { boxResourceStats } from './stats.js';
-import { detectEngine } from './host-export.js';
+import { detectEngine } from './sync/host-export.js';
 import { portlessGetUrl } from './portless.js';
 import { DEFAULT_BOX_IMAGE, imageExists, pullOrBuild } from './image.js';
 import {
@@ -127,6 +131,25 @@ export const dockerProvider: Provider = {
 
   async destroy(box: BoxRecord): Promise<void> {
     await destroyBox(box.id);
+  },
+
+  async resyncWorkspace(box: BoxRecord, onLog?: (line: string) => void): Promise<ResyncResult> {
+    // Merge the host's current branch into each per-box worktree + overlay the
+    // host's uncommitted/untracked (box wins). Reproduces `resyncBox`: the
+    // facade short-circuits when the box has no worktrees. Only `ctx.onLog` is
+    // read by resync (the concern reads each worktree's hostMainRepo).
+    const ctx = makeSyncContext({
+      boxName: box.name,
+      boxId: box.id,
+      provider: 'docker',
+      hostWorkspace: box.workspacePath,
+      onLog,
+    });
+    return makeDockerSync({ container: box.container }).resyncWorkspace(ctx, box.gitWorktrees ?? []);
+  },
+
+  sync(box: BoxRecord): ProviderSync {
+    return makeDockerSync({ container: box.container });
   },
 
   async inspect(box: BoxRecord): Promise<InspectedBox> {

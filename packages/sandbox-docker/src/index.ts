@@ -1,5 +1,7 @@
 export { dockerProvider, type DockerCreateOptions } from './docker-provider.js';
 export { downloadFromBox, uploadToBox, type BoxCpResult } from './box-cp.js';
+export { createDockerSyncTransport, type DockerSyncTransportInit } from './sync/sync-transport.js';
+export { makeDockerSync, type DockerSyncHandle } from './sync/docker-sync.js';
 
 export {
   attachClaudeSession,
@@ -38,7 +40,7 @@ export {
   type RebuildPluginNativeDepsResult,
   type StartClaudeSessionOptions,
   type WarmUpClaudeResult,
-} from './claude.js';
+} from './sync/agents/claude.js';
 export {
   CREDENTIALS_BACKUP_FILE,
   CODEX_CREDENTIALS_BACKUP_FILE,
@@ -58,7 +60,7 @@ export {
   type CredentialSyncDirection,
   type SyncClaudeCredentialsResult,
   type VolumeClaudeCredentials,
-} from './claude-credentials.js';
+} from './sync/claude-credentials.js';
 export {
   BOX_SYSTEM_PROMPT_PATH,
   buildCodexAgentsOverrideScript,
@@ -89,7 +91,7 @@ export {
   type PullCodexOptions,
   type PullCodexResult,
   type StartCodexSessionOptions,
-} from './codex.js';
+} from './sync/agents/codex.js';
 export {
   buildAgentsMounts,
   ensureAgentsVolume,
@@ -99,7 +101,7 @@ export {
   type AgentsMountResult,
   type EnsureAgentsVolumeOptions,
   type EnsureAgentsVolumeResult,
-} from './agents.js';
+} from './sync/agents/skills.js';
 export {
   buildOpencodeAttachArgv,
   buildOpencodeLoginRunArgv,
@@ -126,7 +128,7 @@ export {
   type PullOpencodeOptions,
   type PullOpencodeResult,
   type StartOpencodeSessionOptions,
-} from './opencode.js';
+} from './sync/agents/opencode.js';
 export { createBox, type CreateBoxOptions, type CreatedBox } from './create.js';
 export {
   agentboxHomeBytes,
@@ -155,7 +157,7 @@ export {
   type RepoCarryOver,
   type SeedWorkspaceOptions,
   type WorktreeBindSpec,
-} from './in-box-git.js';
+} from './sync/in-box-git.js';
 export {
   DEFAULT_BOX_IMAGE,
   BOX_IMAGE_REGISTRY,
@@ -202,16 +204,11 @@ export {
   type RelayStatus,
   type StopRelayResult,
 } from './relay.js';
+// The host-config stage producers now live in the provider-neutral sync layer
+// (`@agentbox/sandbox-core`); cloud consumers import them from there. The claude
+// per-project path helpers + Stage types stay re-exported here (from core) for
+// existing `@agentbox/sandbox-docker` importers.
 export {
-  stageClaudeStaticForUpload,
-  stageClaudeJsonOnlyForUpload,
-  stageClaudeCredentialsForUpload,
-  stageCodexStaticForUpload,
-  stageCodexCredentialsForUpload,
-  stageAgentsStaticForUpload,
-  stageOpencodeStaticForUpload,
-  stageOpencodeCredentialsForUpload,
-  stageOpencodeStateForUpload,
   encodeClaudeProjectsKey,
   resolveClaudeMemoryDir,
   BOX_CLAUDE_PROJECT_DIR,
@@ -219,7 +216,7 @@ export {
   type StageCodexOptions,
   type StageOpencodeOptions,
   type StageResult,
-} from './host-stage.js';
+} from '@agentbox/sandbox-core';
 export {
   BOX_WORKFLOWS_DIR,
   BOX_MEMORY_DIR,
@@ -235,7 +232,7 @@ export {
   type DynamicSyncDeletion,
   type HostSyncManifest,
   type StagedTarball,
-} from './dynamic-sync.js';
+} from './sync/dynamic-sync.js';
 export { EXCLUDE_DIRS, SNAPSHOTS_ROOT, snapshotPathFor } from './snapshot.js';
 export {
   CHECKPOINTS_ROOT,
@@ -329,7 +326,7 @@ export {
   type PullResult,
   type RefreshOptions,
   type RefreshResult,
-} from './host-export.js';
+} from './sync/host-export.js';
 export {
   detectPortless,
   installPortless,

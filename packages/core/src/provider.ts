@@ -10,6 +10,8 @@ import type { BoxRecord, ProviderName } from './box-record.js';
 import type { BoxEndpoints } from './endpoints.js';
 import type { ReplaceRule } from './replace.js';
 import type { BoxResourceStats } from './types.js';
+import type { SyncTransport } from './sync/transport.js';
+import type { ProviderSync } from './sync/provider-sync.js';
 
 /** Coarse lifecycle state, identical across providers. */
 export type BoxRuntimeState = 'running' | 'paused' | 'stopped' | 'missing';
@@ -141,6 +143,14 @@ export interface CreateBoxRequest {
    * only — the docker provider bind-mounts the host `.git` and never clones.
    */
   inBoxClone?: { authedUrl: string; originUrl: string; branch?: string };
+  /**
+   * Hosted control-plane base URL when this box's live relay IS the plane (cloud
+   * only). When set, the provider resolves `topology: 'control-plane'`, registers
+   * the box on the plane with its origin URL, and the box's in-box daemon
+   * forwards `/rpc` to the plane + pushes via a leased token (`AGENTBOX_GIT_LEASE`).
+   * Absent → classic host-side sync (`'cloud'`/`'docker'`). Docker ignores it.
+   */
+  controlPlaneUrl?: string;
   /** Provider-specific knobs (docker: sharedCache/portless; daytona: resources/region). */
   providerOptions?: Record<string, unknown>;
   onLog?: (line: string) => void;
@@ -349,9 +359,28 @@ export interface Provider {
    * uncommitted/untracked changes, keeping the box's version on conflict. The
    * CLI calls this on agent-session starts (gated by `box.resyncOnStart`).
    * Optional — providers that can't reach a live host workspace omit it and the
-   * CLI skips resync for that provider.
+   * CLI skips resync for that provider. `onLog` streams progress to the CLI
+   * spinner (the underlying resync concern logs per-repo merge/overlay lines).
    */
-  resyncWorkspace?(box: BoxRecord): Promise<ResyncResult>;
+  resyncWorkspace?(box: BoxRecord, onLog?: (line: string) => void): Promise<ResyncResult>;
+
+  /**
+   * The co-located `ProviderSync` facade for an already-created box: every
+   * shared sync op (resync, agent config, credentials, env, carry, git identity)
+   * named once, each a thin delegation to the provider-neutral concern. The
+   * handle is closed from `box` at construction. `create()` builds the same
+   * facade directly from raw handles (no record yet) and walks it. Optional —
+   * providers wire this as they adopt the facade (Phase 7).
+   */
+  sync?(box: BoxRecord): ProviderSync;
+
+  /**
+   * Build the byte-mover the sync layer drives for operations on an already-
+   * created box (session-start resync, `cp`, credential extract, download).
+   * At create time the provider constructs its transport internally instead.
+   * Optional — providers wire this as they migrate concerns onto the seam.
+   */
+  syncTransport?(box: BoxRecord): SyncTransport;
 
   // ---- query ----
   inspect(box: BoxRecord): Promise<InspectedBox>;
