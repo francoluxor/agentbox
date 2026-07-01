@@ -1,9 +1,8 @@
-import { stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { execa } from 'execa';
-import { findUnsyncableSymlinks } from './claude.js';
+import { seedAgentsVolume } from '@agentbox/sandbox-core';
 import { ensureVolume, volumeExists } from './docker.js';
+import { createDockerSyncTransport } from './sync-transport.js';
 
 /**
  * The shared `~/.agents` directory — the cross-agent "Agent Skills" location
@@ -30,15 +29,6 @@ export interface AgentsConfigSpec {
  *  buys nothing (no auth to keep separate). */
 export function resolveAgentsVolume(): AgentsConfigSpec {
   return { volume: SHARED_AGENTS_VOLUME };
-}
-
-async function pathExists(p: string): Promise<boolean> {
-  try {
-    await stat(p);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 export interface EnsureAgentsVolumeOptions {
@@ -77,36 +67,18 @@ export async function ensureAgentsVolume(
   await ensureVolume(spec.volume);
   const created = !existed;
 
-  const hostAgents = join(homedir(), '.agents');
-  const willSync = opts.syncFromHost && (await pathExists(hostAgents));
-  if (willSync) {
-    const unsyncable = await findUnsyncableSymlinks(hostAgents, [hostAgents]);
-    const symlinkExcludes = unsyncable.map((rel) => ` --exclude=/${rel}`).join('');
-    await execa('docker', [
-      'run',
-      '--rm',
-      '--user',
-      '0',
-      '-v',
-      `${spec.volume}:/dst`,
-      '-v',
-      `${hostAgents}:/src:ro`,
-      opts.image,
-      'sh',
-      '-c',
-      'rsync -a --copy-unsafe-links' + symlinkExcludes + ' /src/ /dst/ && chown -R 1000:1000 /dst',
-    ]);
-    return { created, synced: true };
-  }
-
-  // No host ~/.agents to sync — still make the (possibly freshly created,
-  // root-owned) volume root writable by the in-box `vscode` user.
-  await execa(
-    'docker',
-    ['run', '--rm', '--user', '0', '-v', `${spec.volume}:/dst`, opts.image, 'sh', '-c', 'chown 1000:1000 /dst'],
-    { reject: false },
-  );
-  return { created, synced: false };
+  // The host→volume rsync (symlink handling, `--copy-unsafe-links`, the
+  // no-host-dir writable-chown fallback) is the shared skills concern, driven
+  // through the transport's throwaway rsync-helper container. `container: ''`
+  // because the seed needs only the helper image, not a running box.
+  const transport = createDockerSyncTransport({ container: '', image: opts.image });
+  const { synced } = await seedAgentsVolume({
+    transport,
+    volume: spec.volume,
+    hostAgents: join(homedir(), '.agents'),
+    syncFromHost: opts.syncFromHost,
+  });
+  return { created, synced };
 }
 
 export interface AgentsMountResult {

@@ -43,6 +43,12 @@ export {
   resolveClaudeMemoryDir,
   BOX_CLAUDE_PROJECT_DIR,
 } from './agents/claude/paths.js';
+export { findUnsyncableSymlinks } from './host-links.js';
+export {
+  seedAgentsVolume,
+  type SeedAgentsVolumeArgs,
+  type SeedAgentsVolumeResult,
+} from './concerns/skills.js';
 export {
   BOX_WORKFLOWS_DIR,
   BOX_MEMORY_DIR,

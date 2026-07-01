@@ -58,6 +58,14 @@ export interface VolumeHostSource {
   exclude?: string[];
   /** rsync `--update` (newest-wins) — e.g. opencode `model.json`. */
   update?: boolean;
+  /**
+   * rsync `--copy-unsafe-links` — dereference symlinks pointing outside the
+   * source tree into real files in the volume. The `~/.agents` skills seed sets
+   * this (skills symlink their `SKILL.md` into checkouts); pair it with
+   * `exclude` entries for links that can't be dereferenced (broken / not mounted
+   * in the box) so the rsync doesn't abort with "symlink has no referent".
+   */
+  copyUnsafeLinks?: boolean;
 }
 
 /**

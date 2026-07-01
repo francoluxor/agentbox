@@ -150,6 +150,7 @@ export function createDockerSyncTransport(init: DockerSyncTransportInit): SyncTr
         args.push('-v', `${src.hostDir}:${mount}:ro`);
         const dest = src.destSubpath ? `/dst/${src.destSubpath}` : '/dst';
         const rsync = ['rsync', '-a'];
+        if (src.copyUnsafeLinks) rsync.push('--copy-unsafe-links');
         if (src.update) rsync.push('--update');
         for (const ex of src.exclude ?? []) rsync.push(`--exclude=${ex}`);
         rsync.push(`${mount}/`, `${dest}/`);

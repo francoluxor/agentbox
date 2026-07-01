@@ -55,6 +55,24 @@ Two-tier layout (dependency-graph-driven): **pure contracts** in `packages/core/
   rsync), so this is cloud-runtime + test only. Docker `dynamic-sync.test.ts` (12) still
   green through the shims (cross-package guard). `seedDynamicConfig`'s cloud exec/upload
   orchestration unchanged (its transport unification belongs with Phase 7).
+- **Phase 4c — skills concern (`~/.agents` seed behind the transport seam).** Moved the
+  pure host-side symlink pre-scan (`findUnsyncableSymlinks` + `isUnder`) into
+  `sync/host-links.ts` (re-exported from docker `claude.ts` for its test/importers) and
+  added `sync/concerns/skills.ts:seedAgentsVolume(transport, …)` — computes the
+  unsyncable-symlink `--exclude`s host-side and drives the docker rsync-helper container
+  through `transport.seedVolumeFromHost`. Added `VolumeHostSource.copyUnsafeLinks` to the
+  core contract + honored it in `DockerSyncTransport`. Docker `ensureAgentsVolume` is now a
+  thin wrapper (ensureVolume + `created` detection, then delegate the seed); its
+  best-effort no-host-dir writable-chown is preserved (sync failures still propagate). Net
+  −100 lines. New `skills-concern.test.ts` (5) golden-tests the emitted `seedVolumeFromHost`
+  op; docker `find-unsyncable-symlinks.test.ts` (6) still green through the re-export.
+  **Box→host pull deliberately NOT unified:** `pullClaudeExtras`/`pullCodexConfig`/
+  `pullOpencodeConfig` are intrinsically docker-volume-specific (helper container over
+  `${volume}:/src:ro` + bespoke per-tool inventory/merge) with NO polymorphic caller — each
+  `download-<tool>` CLI command is a tool-specific entry point. Forcing a `spec.pull`
+  abstraction now would be speculative + risky (same "don't force a unification" call as
+  carry's apply mechanism). Left for a real consumer (the Phase 7 driver, or a future
+  download-all/resync path).
 
 ## Refinements to the plan's phasing (decided during execution)
 1. **Transports co-develop with their first concern (Phase 3), not in a vacuum.** Docker
@@ -69,32 +87,20 @@ Two-tier layout (dependency-graph-driven): **pure contracts** in `packages/core/
 ## Remaining (behavior-moving; each must keep existing provider tests green and be
 ## smoke-tested {local,vercel,hetzner}×{claude,codex} before pushing)
 
-- **Phase 4c — skills concern (the remaining Phase 4 sub-concern; behavior-moving).**
-  Scoping findings from the pass that did carry + dynamic:
-  - **`~/.agents` shared-volume seed.** docker `agents.ts:ensureAgentsVolume` is a
-    docker-specific rsync-helper-container seed (`docker run --rm --user 0 … rsync -a
-    --copy-unsafe-links <symlink-excludes> /src/ /dst/ && chown -R 1000:1000`) with symlink
-    handling (`findUnsyncableSymlinks`) + a chown-only fallback when the host has no
-    `~/.agents`. It's called once from docker `create.ts:722`. The transport already exposes
-    `seedVolumeFromHost(volume, VolumeHostSource[])` (`sync-transport.ts:144`) — the seam to
-    move this behind — but the symlink-exclude + no-host-dir chown fallback are real behavior
-    that must ride along (VolumeHostSource has `exclude`/`update` but no symlink-deref knob yet).
-  - **cloud static staging.** `host-stage.ts:stageAgentsStaticForUpload` is consumed by
-    hetzner `prepare.ts:298` + daytona `prepare.ts:74` + the cloud index — moving/renaming
-    must keep those three importers green.
-  - **per-tool box→host pull.** `pullClaudeExtras` (`claude.ts:1521`), `pullCodexConfig`
-    (`codex.ts:734`), `pullOpencodeConfig` (`opencode.ts:551`) are large docker-volume-specific
-    fns, each called from a CLI `download-<tool>` command (dry-run + apply). Unifying dispatch
-    via a `spec.pull` field means moving them into `sync/agents/<tool>/` first (a
-    sandbox-core registry can't reference sandbox-docker), which is the bulk of the work.
-  - **Recommended split:** land as its own gated commit AFTER a real-box smoke matrix, since
-    it moves the volume-seed + pull behavior. Data-first: add a `pull` descriptor to
-    `AgentSyncSpec` + a `concerns/skills.ts` that dispatches through the transport's
-    `seedVolumeFromHost` (docker) / stage-into-snapshot (cloud), then repoint the three
-    `download-*` commands at the registry.
+- **Phase 4 is complete** (carry + dynamic + skills, all above in Done). One piece was
+  **deliberately deferred, not skipped:** the box→host per-tool pull (`pullClaudeExtras`/
+  `pullCodexConfig`/`pullOpencodeConfig`) stays docker-volume-specific — no polymorphic
+  caller exists to unify, and the fns are intrinsically docker (helper container over the
+  config volume). It folds naturally into the Phase 7 driver or a future download-all/resync
+  consumer; a `spec.pull` abstraction without a consumer would be speculative.
   - **transport fix already landed (Phase 3):** `DockerSyncTransport.applyTarball` always
     pins `--user <uid>:<uid>` (incl. `0:0` for root) — the carry `uid:0` path needs it; env
     (`uid:1000`) is unchanged.
+  - **SMOKE MATRIX STILL OWED before any push:** Phase 4b (dynamic) and 4c (skills) move
+    real create-path behavior (cloud dynamic seed import surface; docker `~/.agents` volume
+    seed via the transport helper container, incl. the non-recursive→recursive chown on the
+    no-host-`~/.agents` fallback). Run `{local,vercel,hetzner}×{claude,codex}` per the gate
+    below before pushing this branch.
 - **Phase 5 — credentials concern.** `concerns/credentials.ts`
   (`seedCredentials`/`extractCredentials`/`refreshHostBackups`). Encode expiry gate
   (`hostClaudeBackupExpired`) + seed-once marker (`.agentbox-seeded-at`) + force rule +
