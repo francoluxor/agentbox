@@ -15,6 +15,10 @@
  * clones) — and is not moved.
  */
 
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { execa } from 'execa';
 import type {
   RepoResyncResult,
   ResyncWorktree,
@@ -213,4 +217,61 @@ export async function resyncWorkspace(
   }
 
   return results;
+}
+
+/**
+ * The host-side half of {@link WorkspaceResyncPorts} — read-only git probes on
+ * the host's own repo (checked-out ref, an uncommitted-changes stash sha, the
+ * gitignore-respecting untracked list, a file content hash, and a tar pack of
+ * chosen files). Host git is provider-neutral: it's the host's real repo whether
+ * the box is docker or cloud, so both providers reuse these verbatim while
+ * supplying their own box-side ports (`boxGit`/`probeUntrackedTokens`/
+ * `applyTarToBox`). Each method reproduces the pre-refactor docker
+ * `resyncWorkspaceFromHost` command byte-for-byte.
+ *
+ * The cloud live-box resync (Phase 7.5) reuses `listHostUntracked`/`hashHostFile`/
+ * `packHostFiles` unchanged and overrides `resolveHostRef`/`createHostStash`
+ * (its host ref/stash are pre-fetched into the box, not merged from a bind mount).
+ */
+export function makeHostGitPorts(): Pick<
+  WorkspaceResyncPorts,
+  'resolveHostRef' | 'createHostStash' | 'listHostUntracked' | 'hashHostFile' | 'packHostFiles'
+> {
+  return {
+    async resolveHostRef(hostMain) {
+      const hostBranchProbe = await execa(
+        'git',
+        ['-C', hostMain, 'symbolic-ref', '--short', '-q', 'HEAD'],
+        { reject: false },
+      );
+      const hostRef =
+        hostBranchProbe.exitCode === 0 && hostBranchProbe.stdout.trim()
+          ? hostBranchProbe.stdout.trim()
+          : (await execa('git', ['-C', hostMain, 'rev-parse', 'HEAD'], { reject: false })).stdout.trim();
+      return hostRef || null;
+    },
+    async createHostStash(hostMain) {
+      const stash = await execa('git', ['-C', hostMain, 'stash', 'create'], { reject: false });
+      return stash.exitCode === 0 ? stash.stdout.trim() || null : null;
+    },
+    async listHostUntracked(hostMain) {
+      const untracked = await execa(
+        'git',
+        ['-C', hostMain, 'ls-files', '--others', '--exclude-standard', '-z'],
+        { reject: false },
+      );
+      return untracked.exitCode === 0 ? splitNul(untracked.stdout) : [];
+    },
+    async hashHostFile(hostMain, relPath) {
+      return createHash('sha256').update(await readFile(join(hostMain, relPath))).digest('hex');
+    },
+    async packHostFiles(hostMain, relPaths) {
+      const tarOut = await execa('tar', ['-C', hostMain, '--null', '-T', '-', '-cf', '-'], {
+        input: relPaths.join('\0'),
+        encoding: 'buffer',
+        reject: false,
+      });
+      return tarOut.exitCode === 0 ? (tarOut.stdout as Buffer) : null;
+    },
+  };
 }

@@ -31,3 +31,5 @@ export type {
   ResyncExecResult,
   RepoResyncResult,
 } from './workspace.js';
+export type { SyncContext } from './context.js';
+export type { ProviderSync, CarryApplyResult } from './provider-sync.js';

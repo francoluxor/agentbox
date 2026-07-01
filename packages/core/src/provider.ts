@@ -11,6 +11,7 @@ import type { BoxEndpoints } from './endpoints.js';
 import type { ReplaceRule } from './replace.js';
 import type { BoxResourceStats } from './types.js';
 import type { SyncTransport } from './sync/transport.js';
+import type { ProviderSync } from './sync/provider-sync.js';
 
 /** Coarse lifecycle state, identical across providers. */
 export type BoxRuntimeState = 'running' | 'paused' | 'stopped' | 'missing';
@@ -350,9 +351,20 @@ export interface Provider {
    * uncommitted/untracked changes, keeping the box's version on conflict. The
    * CLI calls this on agent-session starts (gated by `box.resyncOnStart`).
    * Optional — providers that can't reach a live host workspace omit it and the
-   * CLI skips resync for that provider.
+   * CLI skips resync for that provider. `onLog` streams progress to the CLI
+   * spinner (the underlying resync concern logs per-repo merge/overlay lines).
    */
-  resyncWorkspace?(box: BoxRecord): Promise<ResyncResult>;
+  resyncWorkspace?(box: BoxRecord, onLog?: (line: string) => void): Promise<ResyncResult>;
+
+  /**
+   * The co-located `ProviderSync` facade for an already-created box: every
+   * shared sync op (resync, agent config, credentials, env, carry, git identity)
+   * named once, each a thin delegation to the provider-neutral concern. The
+   * handle is closed from `box` at construction. `create()` builds the same
+   * facade directly from raw handles (no record yet) and walks it. Optional —
+   * providers wire this as they adopt the facade (Phase 7).
+   */
+  sync?(box: BoxRecord): ProviderSync;
 
   /**
    * Build the byte-mover the sync layer drives for operations on an already-

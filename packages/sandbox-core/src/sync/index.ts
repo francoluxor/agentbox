@@ -58,7 +58,12 @@ export {
   type CredentialAgentKind,
   type ExtractCredentialsOptions,
 } from './concerns/credentials.js';
-export { classifyUntrackedOverlay, NON_REGULAR_TOKEN, resyncWorkspace } from './concerns/git.js';
+export {
+  classifyUntrackedOverlay,
+  makeHostGitPorts,
+  NON_REGULAR_TOKEN,
+  resyncWorkspace,
+} from './concerns/git.js';
 export {
   BOX_WORKFLOWS_DIR,
   BOX_MEMORY_DIR,

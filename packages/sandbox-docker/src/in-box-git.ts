@@ -1,6 +1,3 @@
-import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { execa } from 'execa';
 import type { GitWorktreeRecord } from '@agentbox/core';
 import { execInBox } from './docker.js';
@@ -8,9 +5,11 @@ import type { DetectedGitRepo } from './git-worktree.js';
 import { GitWorktreeError } from './git-worktree.js';
 // The box-wins classifier + the resync orchestration moved to the provider-
 // neutral git/workspace concern in @agentbox/sandbox-core; the resync runs
-// against a `WorkspaceResyncPorts` this file supplies. `classifyUntrackedOverlay`
-// is re-exported so the docker test is untouched.
-import { classifyUntrackedOverlay, resyncWorkspace } from '@agentbox/sandbox-core';
+// against a `WorkspaceResyncPorts` this file supplies. The host-side ports are
+// the shared `makeHostGitPorts()` (host git is provider-neutral); only the
+// box-side ports are docker-specific here. `classifyUntrackedOverlay` is
+// re-exported so the docker test is untouched.
+import { classifyUntrackedOverlay, makeHostGitPorts, resyncWorkspace } from '@agentbox/sandbox-core';
 import type { RepoResyncResult, WorkspaceResyncPorts } from '@agentbox/core';
 export { classifyUntrackedOverlay };
 export type { RepoResyncResult };
@@ -689,49 +688,17 @@ function splitNul(s: string): string[] {
 }
 
 /**
- * Docker implementation of the workspace-resync ports (`@agentbox/core`):
- * host-side git via host `execa('git', …)`, box-side via `docker exec --user
- * vscode`. Every method reproduces the pre-refactor `resyncWorkspaceFromHost`
- * command byte-for-byte — the docker `.git/` bind mount means the host branch
- * ref is already present in the box (no fetch needed).
+ * Docker implementation of the workspace-resync ports (`@agentbox/core`): the
+ * host-side git probes are the shared, provider-neutral `makeHostGitPorts()`
+ * (host git is the host's own repo either way); the box-side ports run via
+ * `docker exec --user vscode`. Every method reproduces the pre-refactor
+ * `resyncWorkspaceFromHost` command byte-for-byte — the docker `.git/` bind
+ * mount means the host branch ref is already present in the box (no fetch
+ * needed).
  */
 function makeDockerResyncPorts(container: string): WorkspaceResyncPorts {
   return {
-    async resolveHostRef(hostMain) {
-      const hostBranchProbe = await execa(
-        'git',
-        ['-C', hostMain, 'symbolic-ref', '--short', '-q', 'HEAD'],
-        { reject: false },
-      );
-      const hostRef =
-        hostBranchProbe.exitCode === 0 && hostBranchProbe.stdout.trim()
-          ? hostBranchProbe.stdout.trim()
-          : (await execa('git', ['-C', hostMain, 'rev-parse', 'HEAD'], { reject: false })).stdout.trim();
-      return hostRef || null;
-    },
-    async createHostStash(hostMain) {
-      const stash = await execa('git', ['-C', hostMain, 'stash', 'create'], { reject: false });
-      return stash.exitCode === 0 ? stash.stdout.trim() || null : null;
-    },
-    async listHostUntracked(hostMain) {
-      const untracked = await execa(
-        'git',
-        ['-C', hostMain, 'ls-files', '--others', '--exclude-standard', '-z'],
-        { reject: false },
-      );
-      return untracked.exitCode === 0 ? splitNul(untracked.stdout) : [];
-    },
-    async hashHostFile(hostMain, relPath) {
-      return createHash('sha256').update(await readFile(join(hostMain, relPath))).digest('hex');
-    },
-    async packHostFiles(hostMain, relPaths) {
-      const tarOut = await execa('tar', ['-C', hostMain, '--null', '-T', '-', '-cf', '-'], {
-        input: relPaths.join('\0'),
-        encoding: 'buffer',
-        reject: false,
-      });
-      return tarOut.exitCode === 0 ? (tarOut.stdout as Buffer) : null;
-    },
+    ...makeHostGitPorts(),
     async boxGit(ct, args) {
       return execInBox(container, ['git', '-C', ct, ...args], { user: 'vscode' });
     },
