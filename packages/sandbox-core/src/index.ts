@@ -21,6 +21,14 @@ export {
 } from './git-detect.js';
 export { hostOpenCommand } from './host-open.js';
 export {
+  errSummary,
+  firstLine,
+  type CheckResult,
+  type CheckStatus,
+  type CredStatusSummary,
+  type ProviderModule,
+} from './doctor.js';
+export {
   carryPlaceholderContext,
   renderCarryEntries,
   type CarryBoxContext,

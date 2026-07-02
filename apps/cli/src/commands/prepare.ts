@@ -25,6 +25,7 @@ import { intro, log, spinner } from '@clack/prompts';
 import {
   boxImageConfigKey,
   loadEffectiveConfig,
+  PROVIDER_NAMES,
   setConfigValue,
   unsetConfigValue,
 } from '@agentbox/config';
@@ -313,7 +314,7 @@ export async function runPrepare(
   opts: RunPrepareOptions = {},
 ): Promise<void> {
   if (!isKnownProvider(providerName)) {
-    process.stderr.write('error: --provider must be one of: docker, daytona, hetzner, vercel, e2b\n');
+    process.stderr.write(`error: --provider must be one of: ${PROVIDER_NAMES.join(', ')}\n`);
     process.exit(1);
   }
 

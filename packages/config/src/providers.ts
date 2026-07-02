@@ -1,0 +1,137 @@
+/**
+ * Single source of truth for the set of sandbox providers.
+ *
+ * Adding one row to `PROVIDERS` is the *only* place a new provider's identity
+ * has to be registered. This table drives, by derivation:
+ *   - the `ProviderKind` union (below),
+ *   - the `box.provider` enum + its description (see `types.ts`),
+ *   - the per-provider `box.image<P>` / `box.size<P>` / `box.defaultCheckpoint<P>`
+ *     entries in `KEY_REGISTRY` (generated in `types.ts`),
+ *   - the CLI's known/cloud provider lists, the install-wizard picker
+ *     labels/hints, the wizard's rebuild-time estimate, and the doctor groups.
+ *
+ * The interface fields on `UserConfig`/`EffectiveConfig` and the JSON schema
+ * still list the per-provider keys explicitly (static types can't be generated
+ * from a runtime array); a test (`test/providers.test.ts`) fails if either
+ * drifts from this table.
+ */
+
+export interface ProviderMeta {
+  /** Canonical name — MUST equal the `@agentbox/sandbox-<name>` package suffix. */
+  readonly name: string;
+  /** 'local' = docker; 'cloud' = has a CloudBackend + a prepared base snapshot. */
+  readonly kind: 'local' | 'cloud';
+  /** Human label for the install-wizard picker. */
+  readonly label: string;
+  /** One-line hint for the install-wizard picker. */
+  readonly loginHint: string;
+  /** Rough base-image/snapshot bake time (minutes) shown by the install wizard. */
+  readonly rebuildMinutes: string;
+  /** Fragment describing this backend, joined into the `box.provider` enum description. */
+  readonly blurb: string;
+  /** Description of the per-provider `box.size<P>` KEY_REGISTRY entry. */
+  readonly sizeDesc: string;
+  /** Description of the per-provider `box.image<P>` KEY_REGISTRY entry. */
+  readonly imageDesc: string;
+}
+
+export const PROVIDERS = [
+  {
+    name: 'docker',
+    kind: 'local',
+    label: 'Docker (local)',
+    loginHint: 'builds a ~1GB local image; no login needed',
+    rebuildMinutes: '1',
+    blurb: 'local Docker containers',
+    sizeDesc:
+      'Per-provider override of `box.size` for docker. Reserved — docker sizing is controlled via `box.memory` / `box.cpus` / `box.disk`.',
+    imageDesc:
+      'Per-provider override of `box.image` for docker (local docker image ref, e.g. `agentbox/box:dev`). Wins over the generic when set.',
+  },
+  {
+    name: 'daytona',
+    kind: 'cloud',
+    label: 'Daytona (cloud sandbox)',
+    loginHint: 'approve a browser sign-in link',
+    rebuildMinutes: '7',
+    blurb: 'Daytona Cloud sandboxes',
+    sizeDesc:
+      'Per-provider override of `box.size` for daytona. `cpu-memory-disk` GB spec (e.g. `4-8-20`). Only honored on the image/Dockerfile create path; Daytona rejects custom resources on snapshot-resume.',
+    imageDesc:
+      'Per-provider override of `box.image` for daytona (named snapshot, e.g. `agentbox-base-<fingerprint>`). Written by `agentbox prepare --provider daytona`.',
+  },
+  {
+    name: 'hetzner',
+    kind: 'cloud',
+    label: 'Hetzner (cloud VPS)',
+    loginHint: 'paste an API token from the Hetzner Console',
+    rebuildMinutes: '7-10',
+    blurb: 'Hetzner Cloud VPSes',
+    sizeDesc:
+      'Per-provider override of `box.size` for hetzner. Server type string (e.g. `cx23`, `cx33`, `cx43`).',
+    imageDesc:
+      'Per-provider override of `box.image` for hetzner (image description, e.g. `agentbox-base-<fingerprint>`). Written by `agentbox prepare --provider hetzner`.',
+  },
+  {
+    name: 'vercel',
+    kind: 'cloud',
+    label: 'Vercel (cloud microVM)',
+    loginHint: 'installs the Vercel sandbox CLI, then a browser sign-in',
+    rebuildMinutes: '5-10',
+    blurb: 'Vercel Sandboxes',
+    sizeDesc:
+      'Per-provider override of `box.size` for vercel. Reserved — vercel sizing is controlled via `box.vercelVcpus`.',
+    imageDesc:
+      'Per-provider override of `box.image` for vercel (snapshot id, e.g. `snap_…`). Written by `agentbox prepare --provider vercel`.',
+  },
+  {
+    name: 'e2b',
+    kind: 'cloud',
+    label: 'E2B (cloud microVM)',
+    loginHint: 'paste an API key from the E2B dashboard',
+    rebuildMinutes: '2',
+    blurb: 'E2B microVMs',
+    sizeDesc:
+      'Per-provider override of `box.size` for e2b. Reserved — e2b sizing is template-level (set at `agentbox prepare --provider e2b` time via --vcpus / --memory).',
+    imageDesc:
+      'Per-provider override of `box.image` for e2b (template id or `name:tag`, e.g. `agentbox-base:latest`). Written by `agentbox prepare --provider e2b`.',
+  },
+] as const satisfies readonly ProviderMeta[];
+
+/** Sandbox backend new boxes are created on. Derived from the `PROVIDERS` table. */
+export type ProviderKind = (typeof PROVIDERS)[number]['name'];
+
+/** All provider names, in canonical order. */
+export const PROVIDER_NAMES: readonly ProviderKind[] = PROVIDERS.map((p) => p.name);
+
+/** Cloud provider names only (everything except docker). */
+export const CLOUD_PROVIDER_NAMES: readonly ProviderKind[] = PROVIDERS.filter(
+  (p) => p.kind === 'cloud',
+).map((p) => p.name);
+
+export function isProviderKind(name: string): name is ProviderKind {
+  return (PROVIDER_NAMES as readonly string[]).includes(name);
+}
+
+export function providerMeta(name: ProviderKind): ProviderMeta {
+  const m = PROVIDERS.find((p) => p.name === name);
+  if (!m) throw new Error(`unknown provider: ${String(name)}`);
+  return m;
+}
+
+/**
+ * Capitalize a provider name for its config-key suffix: `e2b` -> `E2b`,
+ * `docker` -> `Docker`, `digitalocean` -> `Digitalocean`. First char upper,
+ * the rest verbatim — matches the hand-written keys this table replaced.
+ */
+export function providerKeyCap(name: string): string {
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+/** Per-provider config key, e.g. `('image','hetzner')` -> `'box.imageHetzner'`. */
+export function perProviderConfigKey(
+  base: 'image' | 'size' | 'defaultCheckpoint',
+  provider: string,
+): string {
+  return `box.${base}${providerKeyCap(provider)}`;
+}

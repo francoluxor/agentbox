@@ -5,10 +5,13 @@
  */
 
 import type { Provider } from '@agentbox/core';
+import type { ProviderModule } from '@agentbox/sandbox-core';
 import { createCloudProvider } from '@agentbox/sandbox-cloud';
 import { daytonaBackend, DEFAULT_BOX_IMAGE_REF } from './backend.js';
 import { prepareDaytona } from './prepare.js';
 import { currentDaytonaBaseFingerprintLive } from './prepared-state.js';
+import { ensureDaytonaCredentials } from './credentials.js';
+import { doctorChecks, readCredStatusSummary } from './provider-module.js';
 
 const cloudProvider = createCloudProvider(daytonaBackend, {
   defaultResources: { cpu: 2, memory: 4, disk: 8 },
@@ -18,6 +21,16 @@ export const daytonaProvider: Provider = {
   ...cloudProvider,
   prepare: prepareDaytona,
   baseFingerprint: () => currentDaytonaBaseFingerprintLive(),
+};
+
+/** Uniform surface the CLI provider loader resolves this package through. */
+export const providerModule: ProviderModule = {
+  provider: daytonaProvider,
+  backend: daytonaBackend,
+  ensureCredentials: ensureDaytonaCredentials,
+  readCredStatus: readCredStatusSummary,
+  currentBaseFingerprintLive: (claudeInstall) => currentDaytonaBaseFingerprintLive(claudeInstall),
+  doctorChecks,
 };
 
 export { daytonaBackend, DEFAULT_BOX_IMAGE_REF };

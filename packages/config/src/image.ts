@@ -13,43 +13,41 @@
  * creates on other providers.
  */
 import type { EffectiveConfig, ProviderKind } from './types.js';
+import { isProviderKind, perProviderConfigKey } from './providers.js';
+
+/**
+ * Read a per-provider `box.<base><P>` string field off the effective config.
+ * Unknown provider names fall into the `docker` bucket (back-compat: a stray
+ * value in argv/config shouldn't crash before the validation layer).
+ */
+function perProviderValue(
+  cfg: EffectiveConfig,
+  base: 'image' | 'size' | 'defaultCheckpoint',
+  provider: ProviderKind | string,
+): string {
+  const name = isProviderKind(provider) ? provider : 'docker';
+  const field = perProviderConfigKey(base, name).slice('box.'.length);
+  const val = (cfg.box as Record<string, unknown>)[field];
+  return typeof val === 'string' ? val : '';
+}
 
 export function resolveBoxImage(cfg: EffectiveConfig, provider: ProviderKind | string): string {
-  // Unknown provider names fall into the docker bucket — a stray value in
-  // argv or config shouldn't crash before the validation layer.
-  const perProvider =
-    provider === 'daytona'
-      ? cfg.box.imageDaytona
-      : provider === 'hetzner'
-        ? cfg.box.imageHetzner
-        : provider === 'vercel'
-          ? cfg.box.imageVercel
-          : provider === 'e2b'
-            ? cfg.box.imageE2b
-            : cfg.box.imageDocker;
-  if (perProvider && perProvider.length > 0) return perProvider;
+  // Unknown provider names fall back to the generic `box.image` — a stray
+  // value in argv or config shouldn't crash before the validation layer.
+  const perProvider = perProviderValue(cfg, 'image', provider);
+  if (perProvider.length > 0) return perProvider;
   return cfg.box.image;
 }
+
+export { perProviderValue };
 
 /**
  * Flat KEY_REGISTRY key for `agentbox prepare --provider X` to pin the
  * resulting image into the right per-provider slot; mirrors
- * `defaultCheckpointConfigKey` / `boxSizeConfigKey`. Unknown provider →
- * generic `box.image` (legacy callers).
+ * `defaultCheckpointConfigKey`. Unknown provider → generic `box.image`
+ * (legacy callers).
  */
-export function boxImageConfigKey(
-  provider: ProviderKind | string | undefined,
-):
-  | 'box.image'
-  | 'box.imageDocker'
-  | 'box.imageDaytona'
-  | 'box.imageHetzner'
-  | 'box.imageVercel'
-  | 'box.imageE2b' {
-  if (provider === 'docker') return 'box.imageDocker';
-  if (provider === 'daytona') return 'box.imageDaytona';
-  if (provider === 'hetzner') return 'box.imageHetzner';
-  if (provider === 'vercel') return 'box.imageVercel';
-  if (provider === 'e2b') return 'box.imageE2b';
+export function boxImageConfigKey(provider: ProviderKind | string | undefined): string {
+  if (provider && isProviderKind(provider)) return perProviderConfigKey('image', provider);
   return 'box.image';
 }

@@ -8,11 +8,18 @@
  *   cli > workspace > project > global > built-in defaults.
  */
 
+import {
+  PROVIDERS,
+  PROVIDER_NAMES,
+  perProviderConfigKey,
+  type ProviderKind,
+} from './providers.js';
+
 export type IdeFlavor = 'vscode' | 'cursor' | 'auto';
 export type EngineKind = 'orbstack' | 'docker-desktop' | 'other' | 'auto';
 export type BrowserKind = 'agent-browser' | 'playwright' | 'both';
-/** Sandbox backend new boxes are created on. */
-export type ProviderKind = 'docker' | 'daytona' | 'hetzner' | 'vercel' | 'e2b';
+/** Sandbox backend new boxes are created on. Defined in `providers.ts` (the single source of truth) and re-exported here for back-compat. */
+export type { ProviderKind };
 /**
  * How the base image/snapshot installs Claude Code at bake time. `native`
  * (Anthropic's installer, the default) or `npm` (`@anthropic-ai/claude-code`) —
@@ -467,19 +474,57 @@ export interface KeyDescriptor {
   advanced?: boolean;
 }
 
+/** Join blurbs into "a, b, c, or d" for the enum description. */
+function joinOr(items: readonly string[]): string {
+  if (items.length <= 1) return items.join('');
+  return `${items.slice(0, -1).join(', ')}, or ${items[items.length - 1]}`;
+}
+
+/**
+ * Per-provider config-key descriptors generated from the `PROVIDERS` table so a
+ * new provider gets its `box.defaultCheckpoint<P>` / `box.size<P>` /
+ * `box.image<P>` entries automatically. The `size`/`image` descriptions come
+ * from the table (they carry provider-specific detail); the checkpoint one is
+ * uniform.
+ */
+function perProviderCheckpointKeys(): KeyDescriptor[] {
+  return PROVIDERS.map((p) => ({
+    key: perProviderConfigKey('defaultCheckpoint', p.name),
+    type: 'string',
+    description: `Per-provider override of \`box.defaultCheckpoint\` for ${p.name}. Wins over the global when set; set via \`agentbox checkpoint set-default --provider ${p.name}\`.`,
+    advanced: true,
+  }));
+}
+function perProviderSizeKeys(): KeyDescriptor[] {
+  return PROVIDERS.map((p) => ({
+    key: perProviderConfigKey('size', p.name),
+    type: 'string',
+    description: p.sizeDesc,
+    advanced: true,
+  }));
+}
+function perProviderImageKeys(): KeyDescriptor[] {
+  return PROVIDERS.map((p) => ({
+    key: perProviderConfigKey('image', p.name),
+    type: 'string',
+    description: p.imageDesc,
+    advanced: true,
+  }));
+}
+
 /**
  * Single source of truth for which keys are addressable from the CLI. The
  * parser, `set`/`unset`, and `list` all walk this. Adding a key here is the
  * one place a new field has to be registered (plus the type interface above
- * and the JSON schema).
+ * and the JSON schema). Per-provider `box.{image,size,defaultCheckpoint}<P>`
+ * keys are generated from the `PROVIDERS` table (see `providers.ts`).
  */
 export const KEY_REGISTRY: readonly KeyDescriptor[] = [
   {
     key: 'box.provider',
     type: 'enum',
-    enumValues: ['docker', 'daytona', 'hetzner', 'vercel', 'e2b'] as const,
-    description:
-      'Sandbox backend new boxes are created on: local Docker containers, Daytona Cloud sandboxes, Hetzner Cloud VPSes, Vercel Sandboxes, or E2B microVMs.',
+    enumValues: PROVIDER_NAMES,
+    description: `Sandbox backend new boxes are created on: ${joinOr(PROVIDERS.map((p) => p.blurb))}.`,
   },
   {
     key: 'box.hostSnapshot',
@@ -493,82 +538,14 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     description:
       'Checkpoint ref new boxes in this project start from when --snapshot is not given (set via `agentbox checkpoint set-default`). Used as fallback when no per-provider override is set.',
   },
-  {
-    key: 'box.defaultCheckpointDocker',
-    type: 'string',
-    description:
-      'Per-provider override of `box.defaultCheckpoint` for docker. Wins over the global when set; set via `agentbox checkpoint set-default --provider docker`.',
-    advanced: true,
-  },
-  {
-    key: 'box.defaultCheckpointDaytona',
-    type: 'string',
-    description:
-      'Per-provider override of `box.defaultCheckpoint` for daytona. Wins over the global when set; set via `agentbox checkpoint set-default --provider daytona`.',
-    advanced: true,
-  },
-  {
-    key: 'box.defaultCheckpointHetzner',
-    type: 'string',
-    description:
-      'Per-provider override of `box.defaultCheckpoint` for hetzner. Wins over the global when set; set via `agentbox checkpoint set-default --provider hetzner`.',
-    advanced: true,
-  },
-  {
-    key: 'box.defaultCheckpointVercel',
-    type: 'string',
-    description:
-      'Per-provider override of `box.defaultCheckpoint` for vercel. Wins over the global when set; set via `agentbox checkpoint set-default --provider vercel`.',
-    advanced: true,
-  },
-  {
-    key: 'box.defaultCheckpointE2b',
-    type: 'string',
-    description:
-      'Per-provider override of `box.defaultCheckpoint` for e2b. Wins over the global when set; set via `agentbox checkpoint set-default --provider e2b`.',
-    advanced: true,
-  },
+  ...perProviderCheckpointKeys(),
   {
     key: 'box.size',
     type: 'string',
     description:
       'Default VM size for cloud providers. Provider-interpreted: hetzner = server type (e.g. `cx33`); daytona = `cpu-memory-disk` GB (e.g. `4-8-20`). Used as fallback when no per-provider override is set. Docker/Vercel ignore it.',
   },
-  {
-    key: 'box.sizeDocker',
-    type: 'string',
-    description:
-      'Per-provider override of `box.size` for docker. Reserved — docker sizing is controlled via `box.memory` / `box.cpus` / `box.disk`.',
-    advanced: true,
-  },
-  {
-    key: 'box.sizeDaytona',
-    type: 'string',
-    description:
-      'Per-provider override of `box.size` for daytona. `cpu-memory-disk` GB spec (e.g. `4-8-20`). Only honored on the image/Dockerfile create path; Daytona rejects custom resources on snapshot-resume.',
-    advanced: true,
-  },
-  {
-    key: 'box.sizeHetzner',
-    type: 'string',
-    description:
-      'Per-provider override of `box.size` for hetzner. Server type string (e.g. `cx23`, `cx33`, `cx43`).',
-    advanced: true,
-  },
-  {
-    key: 'box.sizeVercel',
-    type: 'string',
-    description:
-      'Per-provider override of `box.size` for vercel. Reserved — vercel sizing is controlled via `box.vercelVcpus`.',
-    advanced: true,
-  },
-  {
-    key: 'box.sizeE2b',
-    type: 'string',
-    description:
-      'Per-provider override of `box.size` for e2b. Reserved — e2b sizing is template-level (set at `agentbox prepare --provider e2b` time via --vcpus / --memory).',
-    advanced: true,
-  },
+  ...perProviderSizeKeys(),
   {
     key: 'checkpoint.maxLayers',
     type: 'int',
@@ -632,36 +609,7 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     description: 'Generic box image ref (fallback). Used as fallback when no per-provider override is set; the default `agentbox/box:dev` is treated as a sentinel by cloud backends (boot from their prepared base snapshot instead).',
     advanced: true,
   },
-  {
-    key: 'box.imageDocker',
-    type: 'string',
-    description: 'Per-provider override of `box.image` for docker (local docker image ref, e.g. `agentbox/box:dev`). Wins over the generic when set.',
-    advanced: true,
-  },
-  {
-    key: 'box.imageDaytona',
-    type: 'string',
-    description: 'Per-provider override of `box.image` for daytona (named snapshot, e.g. `agentbox-base-<fingerprint>`). Written by `agentbox prepare --provider daytona`.',
-    advanced: true,
-  },
-  {
-    key: 'box.imageHetzner',
-    type: 'string',
-    description: 'Per-provider override of `box.image` for hetzner (image description, e.g. `agentbox-base-<fingerprint>`). Written by `agentbox prepare --provider hetzner`.',
-    advanced: true,
-  },
-  {
-    key: 'box.imageVercel',
-    type: 'string',
-    description: 'Per-provider override of `box.image` for vercel (snapshot id, e.g. `snap_…`). Written by `agentbox prepare --provider vercel`.',
-    advanced: true,
-  },
-  {
-    key: 'box.imageE2b',
-    type: 'string',
-    description: 'Per-provider override of `box.image` for e2b (template id or `name:tag`, e.g. `agentbox-base:latest`). Written by `agentbox prepare --provider e2b`.',
-    advanced: true,
-  },
+  ...perProviderImageKeys(),
   {
     key: 'box.imageRegistry',
     type: 'string',

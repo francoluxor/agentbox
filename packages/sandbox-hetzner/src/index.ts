@@ -12,10 +12,13 @@
  */
 
 import type { Provider } from '@agentbox/core';
+import type { ProviderModule } from '@agentbox/sandbox-core';
 import { createCloudProvider } from '@agentbox/sandbox-cloud';
 import { hetznerBackend, HETZNER_DEFAULT_BOX_IMAGE_REF } from './backend.js';
 import { prepareHetznerProvider } from './prepare.js';
 import { currentHetznerBaseFingerprintLive } from './prepared-state.js';
+import { ensureHetznerCredentials } from './credentials.js';
+import { doctorChecks, readCredStatusSummary } from './provider-module.js';
 
 const cloudProvider = createCloudProvider(hetznerBackend, {
   defaultResources: { cpu: 2, memory: 4, disk: 40 },
@@ -25,6 +28,16 @@ export const hetznerProvider: Provider = {
   ...cloudProvider,
   prepare: prepareHetznerProvider,
   baseFingerprint: () => currentHetznerBaseFingerprintLive(),
+};
+
+/** Uniform surface the CLI provider loader resolves this package through. */
+export const providerModule: ProviderModule = {
+  provider: hetznerProvider,
+  backend: hetznerBackend,
+  ensureCredentials: ensureHetznerCredentials,
+  readCredStatus: readCredStatusSummary,
+  currentBaseFingerprintLive: (claudeInstall) => currentHetznerBaseFingerprintLive(claudeInstall),
+  doctorChecks,
 };
 
 export { hetznerBackend, HETZNER_DEFAULT_BOX_IMAGE_REF };

@@ -23,7 +23,10 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, resolve as pathResolve } from 'node:path';
 
-export type PreparedProviderKind = 'docker' | 'daytona' | 'hetzner' | 'vercel' | 'e2b';
+import type { ProviderKind } from '@agentbox/config';
+
+/** Providers that bake a `~/.agentbox/<provider>-prepared.json` artifact. Same set as the config `ProviderKind` (the single source of truth). */
+export type PreparedProviderKind = ProviderKind;
 
 /**
  * The cross-provider record. `TImage` is the provider's opaque image

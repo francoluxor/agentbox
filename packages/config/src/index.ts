@@ -20,6 +20,17 @@ export {
 } from './types.js';
 
 export {
+  PROVIDERS,
+  PROVIDER_NAMES,
+  CLOUD_PROVIDER_NAMES,
+  isProviderKind,
+  providerMeta,
+  providerKeyCap,
+  perProviderConfigKey,
+  type ProviderMeta,
+} from './providers.js';
+
+export {
   coerceFromString,
   parseUserConfig,
   parseUserConfigObject,

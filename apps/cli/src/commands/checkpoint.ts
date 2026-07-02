@@ -10,7 +10,7 @@ import {
   setConfigValue,
   unsetConfigValue,
 } from '@agentbox/config';
-import type { ProviderKind } from '@agentbox/config';
+import { CLOUD_PROVIDER_NAMES, type ProviderKind } from '@agentbox/config';
 import type { BoxRecord } from '@agentbox/core';
 import {
   clearRelayNotice,
@@ -32,24 +32,16 @@ import {
 import type { CloudCheckpointInfo } from '@agentbox/sandbox-cloud';
 import { resolveBoxOrExit } from '../box-ref.js';
 import { providerForBox } from '../provider/registry.js';
+import { loadProviderModule } from '../provider/loaders.js';
 import { handleLifecycleError } from './_errors.js';
 
 /** Cloud backends that store snapshots under ~/.agentbox/cloud-checkpoints/<backend>/. */
-const CLOUD_BACKENDS = ['daytona', 'hetzner', 'vercel', 'e2b'] as const;
-type CloudBackend = (typeof CLOUD_BACKENDS)[number];
+const CLOUD_BACKENDS = CLOUD_PROVIDER_NAMES;
+type CloudBackend = ProviderKind;
 
 /** Lazily resolve a cloud provider's checkpoint capability (dynamic import keeps SDKs out of the hot path). */
 async function cloudProviderFor(backend: CloudBackend): Promise<import('@agentbox/core').Provider> {
-  switch (backend) {
-    case 'daytona':
-      return (await import('@agentbox/sandbox-daytona')).daytonaProvider;
-    case 'hetzner':
-      return (await import('@agentbox/sandbox-hetzner')).hetznerProvider;
-    case 'vercel':
-      return (await import('@agentbox/sandbox-vercel')).vercelProvider;
-    case 'e2b':
-      return (await import('@agentbox/sandbox-e2b')).e2bProvider;
-  }
+  return (await loadProviderModule(backend)).provider;
 }
 
 /** Footer warning shown in attached sessions while a checkpoint runs. */
