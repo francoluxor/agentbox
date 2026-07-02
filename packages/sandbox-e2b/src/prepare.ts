@@ -34,7 +34,13 @@ import { copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { Provider } from '@agentbox/core';
-import { computeContextSha256, readCliStamp } from '@agentbox/sandbox-core';
+import {
+  claudeInstallFingerprint,
+  computeContextSha256,
+  readCliStamp,
+  stageAllAgentStatic,
+  type AgentStaticStage,
+} from '@agentbox/sandbox-core';
 import { ensureE2bCredentials } from './credentials.js';
 import { resolveApiKey, Template } from './sdk.js';
 import {
@@ -61,6 +67,8 @@ export interface PrepareE2bOptions {
   cliRuntimeRoot?: string;
   /** Repo root for the dev fallback (defaults to a cwd-walk). */
   repoRoot?: string;
+  /** How build-template.sh installs Claude Code (`native` default | `npm`). */
+  claudeInstall?: 'native' | 'npm';
   onLog?: (line: string) => void;
 }
 
@@ -87,8 +95,10 @@ export async function prepareE2b(
     cliRuntimeRoot: opts.cliRuntimeRoot ?? findStagedCliRuntimeRoot(),
     repoRoot: opts.repoRoot,
   });
-  const contextSha = await computeContextSha256(
-    assets.map((a) => ({ rel: a.name, abs: a.localPath })),
+  const claudeInstall = opts.claudeInstall ?? 'native';
+  const contextSha = claudeInstallFingerprint(
+    await computeContextSha256(assets.map((a) => ({ rel: a.name, abs: a.localPath }))),
+    claudeInstall,
   );
 
   // Skip-fast: existing template + matching fingerprint.
@@ -121,9 +131,20 @@ export async function prepareE2b(
   // a temp dir under its logical name (asset.name) so the copy chain reads
   // from a single context root.
   const contextDir = await mkdtemp(join(tmpdir(), 'agentbox-e2b-build-'));
+  let agentStages: AgentStaticStage[] = [];
   try {
     progress(`staging build context at ${contextDir}`);
     await stageAssetsInto(contextDir, assets);
+
+    // Stage the host's per-tool static config (shared sync-layer producer) and
+    // copy each tarball into the build context (E2B copy sources must be
+    // relative to fileContextPath).
+    agentStages = await stageAllAgentStatic({ hostWorkspace: opts.hostWorkspace });
+    for (const s of agentStages) for (const w of s.staged.warnings) log(w);
+    const usableStages = agentStages.filter((s) => s.staged.tarballPath !== null);
+    for (const s of usableStages) {
+      await copyFile(s.staged.tarballPath as string, resolve(contextDir, e2bStagePaths(s.kind).contextRel));
+    }
 
     // Build the Template via the SDK builder. fromBaseImage() starts from E2B's
     // own `e2bdev/base` (Debian 12 + node 20 + git + sudo), which halves the
@@ -138,7 +159,29 @@ export async function prepareE2b(
         user: 'root',
       });
     }
-    template.runCmd('bash /tmp/agentbox-build-template.sh 2>&1', { user: 'root' });
+    template.runCmd(`AGENTBOX_CLAUDE_INSTALL=${claudeInstall} bash /tmp/agentbox-build-template.sh 2>&1`, {
+      user: 'root',
+    });
+
+    // Seed the host's static agent config ON TOP of the built box (the vscode
+    // user + home dirs exist only after build-template.sh). Copy each staged
+    // tarball into the build, then one root pass extracts + chowns them —
+    // mirrors Vercel/Hetzner/Daytona's host-static bake.
+    for (const s of usableStages) {
+      const { contextRel, remoteTar } = e2bStagePaths(s.kind);
+      progress(`  seed ${s.kind} static -> ${s.extractDir}`);
+      template.copy(contextRel, remoteTar, { forceUpload: true, mode: 0o644, user: 'root' });
+    }
+    if (usableStages.length > 0) {
+      const extract =
+        usableStages
+          .map((s) => `mkdir -p ${s.extractDir} && tar -xzf ${e2bStagePaths(s.kind).remoteTar} -C ${s.extractDir} --no-same-permissions --no-same-owner -m`)
+          .join(' && ') +
+        ' && chown -R vscode:vscode /home/vscode/.claude /home/vscode/.codex /home/vscode/.local' +
+        ' && ([ -d /home/vscode/.agents ] && chown -R vscode:vscode /home/vscode/.agents || true)' +
+        ' && rm -f /tmp/agentbox-seed-*.tar.gz';
+      template.runCmd(extract, { user: 'root' });
+    }
     // setReadyCmd flips the builder into TemplateFinal — required for build().
     // The check passes once the script's last `install` step lands the ctl bundle.
     const finalTemplate = template.setReadyCmd(
@@ -187,6 +230,9 @@ export async function prepareE2b(
     progress(`prepare complete — base template ${taggedId}`);
     return { snapshotName: taggedId };
   } finally {
+    await Promise.all(agentStages.map((s) => s.staged.cleanup())).catch(() => {
+      // best-effort: staged-tarball cleanup failures are noise.
+    });
     await rm(contextDir, { recursive: true, force: true }).catch(() => {
       // best-effort: temp dir cleanup failures are noise, not errors.
     });
@@ -207,6 +253,16 @@ async function stageAssetsInto(
     await mkdir(dirname(dest), { recursive: true });
     await copyFile(a.localPath, dest);
   }
+}
+
+/** E2B build paths for a staged tool (derived from its kind). E2B copy sources
+ *  must be RELATIVE to the Template `fileContextPath`, so the tarball is staged
+ *  into the context dir under `contextRel` then copied to `remoteTar`. */
+function e2bStagePaths(kind: AgentStaticStage['kind']): { contextRel: string; remoteTar: string } {
+  return {
+    contextRel: `agentbox-seed-${kind}.tar.gz`,
+    remoteTar: `/tmp/agentbox-seed-${kind}.tar.gz`,
+  };
 }
 
 /**
@@ -248,5 +304,6 @@ export const prepareE2bProvider: NonNullable<Provider['prepare']> = (req) =>
     name: req.name,
     hostWorkspace: req.hostWorkspace ?? process.cwd(),
     force: req.force,
+    claudeInstall: req.claudeInstall,
     onLog: req.onLog,
   });

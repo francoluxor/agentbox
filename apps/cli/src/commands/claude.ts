@@ -742,7 +742,10 @@ export const claudeCommand = new Command('claude')
     // runtime; if the local install no longer matches, the wizard offers to
     // rebuild before creating. Docker self-heals via `ensureImage`, so its
     // baseStatus is always `fresh` and the wizard is a no-op here.
-    const baseStatus = await evaluateBaseFreshness(providerName);
+    const baseStatus = await evaluateBaseFreshness(
+      providerName,
+      cfg.effective.box.claudeInstall,
+    );
     const wiz = await maybeRunSetupWizard({
       workspace: opts.workspace,
       yes: !!opts.yes,

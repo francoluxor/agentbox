@@ -302,6 +302,14 @@ export interface PrepareOptions {
    */
   registry?: string;
   /**
+   * How the bake installs Claude Code: `native` (Anthropic's installer, the
+   * default) or `npm` (`@anthropic-ai/claude-code`). Threaded into each
+   * provider's install script (`AGENTBOX_CLAUDE_INSTALL` env) or Dockerfile
+   * build-arg. An opt-in fallback for cloud egress IPs whose CDN the native
+   * installer 403s. Bake-time only — resolved from `box.claudeInstall`.
+   */
+  claudeInstall?: 'native' | 'npm';
+  /**
    * Progress sink for the build-side log stream (Docker BuildKit output,
    * Daytona's `onLogs` chunks). Wired to the CLI spinner / latest.log.
    */
@@ -469,6 +477,11 @@ export interface Provider {
    * Returns `undefined` when the assets can't be resolved (e.g. a dev tree
    * without `pnpm -w build`); callers degrade to "don't nag" rather than
    * flag a false stale.
+   *
+   * `claudeInstall` MUST match the mode the base was baked with (from
+   * `box.claudeInstall`), because `prepare` folds it into the stored
+   * fingerprint via `claudeInstallFingerprint`. Omitting it makes an
+   * npm-baked base always read as stale.
    */
-  baseFingerprint?(): Promise<string | undefined>;
+  baseFingerprint?(claudeInstall?: 'native' | 'npm'): Promise<string | undefined>;
 }
