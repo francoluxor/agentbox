@@ -12,6 +12,7 @@ import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  claudeInstallFingerprint,
   computeContextSha256,
   DOCKER_CONTEXT_FILE_MAP,
   readCliStamp,
@@ -84,10 +85,15 @@ export async function computeDaytonaContextFingerprint(): Promise<DaytonaFingerp
  * by the CLI's `evaluateBaseFreshness` to compare against the stored
  * `daytona-prepared.json.base.contextSha256`.
  */
-export async function currentDaytonaBaseFingerprintLive(): Promise<string | undefined> {
+export async function currentDaytonaBaseFingerprintLive(
+  claudeInstall: 'native' | 'npm' = 'native',
+): Promise<string | undefined> {
   try {
     const fp = await computeDaytonaContextFingerprint();
-    return fp?.contextSha256;
+    if (!fp?.contextSha256) return undefined;
+    // Fold in claudeInstall exactly as `prepare` does — otherwise an npm-baked
+    // base never matches the stored (npm-folded) fingerprint.
+    return claudeInstallFingerprint(fp.contextSha256, claudeInstall);
   } catch {
     return undefined;
   }

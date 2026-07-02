@@ -477,6 +477,11 @@ export interface Provider {
    * Returns `undefined` when the assets can't be resolved (e.g. a dev tree
    * without `pnpm -w build`); callers degrade to "don't nag" rather than
    * flag a false stale.
+   *
+   * `claudeInstall` MUST match the mode the base was baked with (from
+   * `box.claudeInstall`), because `prepare` folds it into the stored
+   * fingerprint via `claudeInstallFingerprint`. Omitting it makes an
+   * npm-baked base always read as stale.
    */
-  baseFingerprint?(): Promise<string | undefined>;
+  baseFingerprint?(claudeInstall?: 'native' | 'npm'): Promise<string | undefined>;
 }

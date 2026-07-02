@@ -34,16 +34,17 @@ export async function cloudBackendForProvider(
  */
 export async function currentCloudBaseFingerprintLive(
   provider: ProviderName,
+  claudeInstall?: 'native' | 'npm',
 ): Promise<string | undefined> {
   switch (provider) {
     case 'daytona':
-      return (await import('@agentbox/sandbox-daytona')).currentDaytonaBaseFingerprintLive();
+      return (await import('@agentbox/sandbox-daytona')).currentDaytonaBaseFingerprintLive(claudeInstall);
     case 'hetzner':
-      return (await import('@agentbox/sandbox-hetzner')).currentHetznerBaseFingerprintLive();
+      return (await import('@agentbox/sandbox-hetzner')).currentHetznerBaseFingerprintLive(claudeInstall);
     case 'vercel':
-      return (await import('@agentbox/sandbox-vercel')).currentVercelBaseFingerprintLive();
+      return (await import('@agentbox/sandbox-vercel')).currentVercelBaseFingerprintLive(claudeInstall);
     case 'e2b':
-      return (await import('@agentbox/sandbox-e2b')).currentE2bBaseFingerprintLive();
+      return (await import('@agentbox/sandbox-e2b')).currentE2bBaseFingerprintLive(claudeInstall);
     default:
       return undefined;
   }

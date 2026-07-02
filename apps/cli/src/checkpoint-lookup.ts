@@ -155,11 +155,14 @@ export type BaseStatus =
  * same way `prepare` does — so both values are byte-identical when nothing
  * has changed.
  */
-export async function evaluateBaseFreshness(provider: ProviderName): Promise<BaseStatus> {
+export async function evaluateBaseFreshness(
+  provider: ProviderName,
+  claudeInstall?: 'native' | 'npm',
+): Promise<BaseStatus> {
   if (provider === 'docker') return { state: 'fresh' };
   const stored = currentCloudBaseFingerprint(provider);
   if (!stored) return { state: 'unprepared' };
-  const current = await currentCloudBaseFingerprintLive(provider).catch(() => undefined);
+  const current = await currentCloudBaseFingerprintLive(provider, claudeInstall).catch(() => undefined);
   if (!current) return { state: 'unknown' };
   if (stored !== current) {
     return {
