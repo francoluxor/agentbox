@@ -23,7 +23,7 @@ services:
     build:
       # Repo root — the app needs its @agentbox/relay workspace dep.
       context: ../..
-      dockerfile: apps/control-plane/Dockerfile
+      dockerfile: apps/hub/Dockerfile
     environment:
       POSTGRES_URL: postgres://postgres:pw@db:5432/agentbox
       AGENTBOX_RELAY_ADMIN_TOKEN: ${AGENTBOX_RELAY_ADMIN_TOKEN:?set AGENTBOX_RELAY_ADMIN_TOKEN}

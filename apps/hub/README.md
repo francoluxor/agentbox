@@ -1,6 +1,6 @@
-# @agentbox/control-plane
+# @agentbox/hub
 
-The AgentBox **hosted control plane** — the `@agentbox/relay` core wrapped as a
+The AgentBox **hub** — the `@agentbox/relay` core wrapped as a
 Next.js app. The **same code** deploys to Vercel (managed) or self-hosts on a
 VPS (Postgres + `next start`). It holds the centralized concerns so boxes don't
 have to:
@@ -58,7 +58,7 @@ App isn't on your account it falls back to the **Deploy Button** (clone + App in
 Postgres in-browser), then sets the secrets + redeploys. The app **boots even with no
 secrets** (`/healthz` always 200; admin/leasing 503 until wired), so the bare→wire→redeploy
 sequence is never broken. Manual equivalent: create the project with Root Directory
-`apps/control-plane`, attach Neon, set the three env vars, deploy.
+`apps/hub`, attach Neon, set the three env vars, deploy.
 
 Then point boxes/CLI at it: `agentbox control-plane set-url https://<deployment>`.
 

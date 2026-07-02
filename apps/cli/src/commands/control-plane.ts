@@ -195,7 +195,7 @@ function printManualDeploy(): void {
   log.info(
     [
       'Deploy later with the written env:',
-      `  Self-host:  cd apps/control-plane && docker compose --env-file ${ENV_PATH} up --build`,
+      `  Self-host:  cd apps/hub && docker compose --env-file ${ENV_PATH} up --build`,
       `  Vercel:     agentbox control-plane setup --deploy vercel  (or 'vercel env add' the vars + 'vercel deploy --prod')`,
       `  Then:       agentbox control-plane set-url https://<your-plane-url>`,
     ].join('\n'),

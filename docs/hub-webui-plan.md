@@ -255,11 +255,28 @@ extract `startRelayDaemon` into `packages/relay/src/daemon.ts` and export
   bypass example — only `POST /rpc` is a relay route, so `GET /rpc` falls through to
   the delegate.) Bin `serve` smoke: `listening …` + healthz + clean SIGINT unchanged.
 
-### Phase 1 — Rename + scaffold
-`control-plane → hub`; shadcn init; Tailwind v4 tokens from the design; `@/*`
-alias; port Sidebar/Topbar/shell (static, mock data OK).
-- **Verify:** `next build` clean; the Vercel path (`dispatch()` + PostgresStore)
-  still answers `/admin/*` + `/healthz` (regression vs today's app).
+### Phase 1 — Rename + scaffold — DONE
+`control-plane → hub`; shadcn tooling (`components.json`, `cn()`, postcss); Tailwind
+v4 tokens via `@theme inline`; `@/*` alias; IBM Plex fonts. Ported the **shadcn
+prototype** (`../agentbox-design/control-shadcn/`) in full, static with a mock
+**client** store: UI kit (`components/ui/*`), icons, shell (Sidebar 232px + Topbar),
+and **all views** — Dashboard, Box detail (stat grid + streaming terminal), Project
+detail, Settings, and the Create-box / Create-project modals. Routing = App Router
+(`/`, `/boxes/[id]`, `/projects/[id]`, `/settings`); the mock store + modal state
+live in a client `HubProvider` (mount-gated to dodge `Date.now()` hydration drift).
+Kept the Vercel path (`app/[...path]/route.ts` + `lib/plane.ts`) byte-intact.
+- **Extra rename refs fixed** beyond vercel.json/Dockerfile/docker-compose (these
+  break the hosted deploy if missed): `apps/cli/src/control-plane/deploy-vercel.ts`
+  (`ROOT_DIRECTORY`), `packages/sandbox-hetzner/src/control-plane-deploy.ts`
+  (`REMOTE_APP_DIR`), `.dockerignore`, the `agentbox control-plane` self-host help
+  path, and the `apps/web/.../control-plane.mdx` deploy-path references. The
+  `agentbox control-plane` **command** name + the `agentbox-control-plane` Vercel
+  **project** name are unchanged (Phase 5 / deployed-resource concerns).
+- **Verified:** `next build` clean — route list shows `/` (page) coexisting with
+  `/[...path]` (dispatch handler), no conflict; `typecheck` clean; regression on the
+  built app: `GET /healthz` → 200 relay JSON, `GET /admin/registry` → 503 (hit the
+  configured Postgres, not a Next 404 — dispatch intact); `/` + all views render in
+  a headless browser (dashboard, box detail terminal, create-project modal).
 
 ### Phase 2 — Embedded server + in-process source
 `apps/hub/server.ts` (prepare Next → `startRelayDaemon({uiHandler})`),
