@@ -27,13 +27,15 @@ import {
   resolveCloudCheckpoint,
   writeCloudCheckpointManifest,
 } from '@agentbox/sandbox-cloud';
-import { readCliStamp, recordBox } from '@agentbox/sandbox-core';
+import { readCliStamp, recordBox, type ProviderModule } from '@agentbox/sandbox-core';
 import { e2bBackend, DEFAULT_BOX_IMAGE_REF } from './backend.js';
 import { Sandbox, resolveApiKey } from './sdk.js';
 import { withE2bRetry } from './retry.js';
 import { prepareE2bProvider } from './prepare.js';
 import { buildE2bAttach } from './build-attach.js';
 import { currentE2bBaseFingerprintLive } from './prepared-state.js';
+import { ensureE2bCredentials } from './credentials.js';
+import { doctorChecks, readCredStatusSummary } from './provider-module.js';
 
 const BACKEND_NAME = 'e2b';
 
@@ -153,6 +155,16 @@ export const e2bProvider: Provider = {
   buildAttach: buildE2bAttach,
   checkpoint: e2bCheckpoint,
   baseFingerprint: () => currentE2bBaseFingerprintLive(),
+};
+
+/** Uniform surface the CLI provider loader resolves this package through. */
+export const providerModule: ProviderModule = {
+  provider: e2bProvider,
+  backend: e2bBackend,
+  ensureCredentials: ensureE2bCredentials,
+  readCredStatus: readCredStatusSummary,
+  currentBaseFingerprintLive: (claudeInstall) => currentE2bBaseFingerprintLive(claudeInstall),
+  doctorChecks,
 };
 
 export { e2bBackend, DEFAULT_BOX_IMAGE_REF };

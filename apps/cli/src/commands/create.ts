@@ -234,7 +234,7 @@ export const createCommand = new Command('create')
       opts,
       resolveDefaultCheckpoint(
         cfg.effective,
-        providerName as 'docker' | 'daytona' | 'hetzner' | 'vercel',
+        providerName,
       ),
     );
     // VM size: `--size` flag wins; otherwise the cascaded box.size /
@@ -242,7 +242,7 @@ export const createCommand = new Command('create')
     // override beats a project-level per-provider key.
     const sizeDefault = resolveBoxSize(
       cfg.effective,
-      providerName as 'docker' | 'daytona' | 'hetzner' | 'vercel',
+      providerName,
     );
     const effectiveSize = opts.size && opts.size.length > 0 ? opts.size : sizeDefault;
     // Box image: same precedence pattern as --size. `--image` wins; otherwise
@@ -250,7 +250,7 @@ export const createCommand = new Command('create')
     // prepare --provider X`).
     const imageDefault = resolveBoxImage(
       cfg.effective,
-      providerName as 'docker' | 'daytona' | 'hetzner' | 'vercel',
+      providerName,
     );
     const effectiveImage = opts.image && opts.image.length > 0 ? opts.image : imageDefault;
 

@@ -29,10 +29,12 @@ import {
   deleteVercelSnapshot,
   DEFAULT_BOX_IMAGE_REF,
 } from './backend.js';
-import { readCliStamp, recordBox } from '@agentbox/sandbox-core';
+import { readCliStamp, recordBox, type ProviderModule } from '@agentbox/sandbox-core';
 import { prepareVercelProvider } from './prepare.js';
 import { buildVercelAttach } from './build-attach.js';
 import { currentVercelBaseFingerprintLive } from './prepared-state.js';
+import { ensureVercelCredentials } from './credentials.js';
+import { doctorChecks, readCredStatusSummary } from './provider-module.js';
 
 const BACKEND_NAME = 'vercel';
 
@@ -104,6 +106,16 @@ export const vercelProvider: Provider = {
   buildAttach: buildVercelAttach,
   checkpoint: vercelCheckpoint,
   baseFingerprint: () => currentVercelBaseFingerprintLive(),
+};
+
+/** Uniform surface the CLI provider loader resolves this package through. */
+export const providerModule: ProviderModule = {
+  provider: vercelProvider,
+  backend: vercelBackend,
+  ensureCredentials: ensureVercelCredentials,
+  readCredStatus: readCredStatusSummary,
+  currentBaseFingerprintLive: (claudeInstall) => currentVercelBaseFingerprintLive(claudeInstall),
+  doctorChecks,
 };
 
 export { vercelBackend, DEFAULT_BOX_IMAGE_REF };
