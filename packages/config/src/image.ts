@@ -17,16 +17,19 @@ import { isProviderKind, perProviderConfigKey } from './providers.js';
 
 /**
  * Read a per-provider `box.<base><P>` string field off the effective config.
- * Unknown provider names fall into the `docker` bucket (back-compat: a stray
- * value in argv/config shouldn't crash before the validation layer).
+ * Only BUILT-IN providers have such a key; any other name — a stray value, or
+ * an external plugin provider — returns '' so the caller falls through to the
+ * generic `box.<base>`. For a plugin that generic is the image sentinel
+ * (`agentbox/box:dev`), which the plugin's own backend maps to its prepared
+ * snapshot — so a plugin never accidentally reads docker's per-provider value.
  */
 function perProviderValue(
   cfg: EffectiveConfig,
   base: 'image' | 'size' | 'defaultCheckpoint',
   provider: ProviderKind | string,
 ): string {
-  const name = isProviderKind(provider) ? provider : 'docker';
-  const field = perProviderConfigKey(base, name).slice('box.'.length);
+  if (!isProviderKind(provider)) return '';
+  const field = perProviderConfigKey(base, provider).slice('box.'.length);
   const val = (cfg.box as Record<string, unknown>)[field];
   return typeof val === 'string' ? val : '';
 }

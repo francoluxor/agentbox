@@ -13,6 +13,26 @@ import { AGENTBOX_COMMIT, AGENTBOX_VERSION } from './version.js';
 process.env.AGENTBOX_CLI_VERSION = AGENTBOX_VERSION;
 process.env.AGENTBOX_CLI_COMMIT = AGENTBOX_COMMIT;
 
+// Stamp the staged `runtime/` root so externally-installed provider plugins can
+// resolve the shared box-side assets (ctl.cjs + shims) from the RUNNING CLI via
+// `@agentbox/provider-sdk`'s `resolveSharedRuntimeAsset`. Probe both bundle
+// layouts (dist/index.js and dist/<chunk>.js) for the `_shared` marker.
+import { existsSync as _existsSync } from 'node:fs';
+import { dirname as _dirname, resolve as _resolve } from 'node:path';
+import { fileURLToPath as _fileURLToPath } from 'node:url';
+{
+  const selfDir = _dirname(_fileURLToPath(import.meta.url));
+  for (const cand of [
+    _resolve(selfDir, '..', 'runtime'),
+    _resolve(selfDir, '..', '..', 'runtime'),
+  ]) {
+    if (_existsSync(_resolve(cand, '_shared'))) {
+      process.env.AGENTBOX_CLI_RUNTIME_DIR = cand;
+      break;
+    }
+  }
+}
+
 import { Command } from 'commander';
 import { applyEngineOverrideAtStartup } from './engine-override.js';
 import { buildGroupedHelp } from './help.js';
@@ -37,6 +57,7 @@ import { downloadCommand } from './commands/download.js';
 import { driveCommand } from './commands/drive.js';
 import { forkCommand } from './commands/fork.js';
 import { installCommand, runInstallWizard } from './commands/install.js';
+import { pluginCommand } from './commands/plugin.js';
 import { doctorCommand } from './commands/doctor.js';
 import { isFirstRun } from './lib/first-run.js';
 import { printCliError } from './lib/print-cli-error.js';
@@ -128,6 +149,7 @@ program.addCommand(e2bCommand);
 program.addCommand(dockerCommand);
 program.addCommand(updateCommand);
 program.addCommand(installCommand);
+program.addCommand(pluginCommand);
 program.addCommand(doctorCommand);
 
 program.configureHelp({ visibleCommands: () => [] });

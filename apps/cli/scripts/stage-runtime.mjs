@@ -117,6 +117,33 @@ for (const [srcRel, destRel, exec] of hetznerFiles) {
   copy(srcRel, join(hetznerCtx, destRel), exec);
 }
 
+// _shared — provider-NEUTRAL box-side runtime assets exposed to external
+// provider plugins via `@agentbox/provider-sdk`'s `resolveSharedRuntimeAsset`.
+// A VPS-style plugin brings only its own install script + system prompt and
+// pulls ctl + the shims from here, so it always installs the *running* CLI's
+// `ctl.cjs` (version-locked to the CLI, not to whatever the plugin bundled).
+// The CLI stamps this dir into `AGENTBOX_CLI_RUNTIME_DIR` at startup.
+const sharedCtx = join(runtime, '_shared');
+const sharedFiles = [
+  ['packages/ctl/dist/bin.cjs', 'ctl.cjs', true],
+  ['packages/sandbox-docker/scripts/agentbox-vnc-start', 'agentbox-vnc-start', true],
+  ['packages/sandbox-docker/scripts/agentbox-dockerd-start', 'agentbox-dockerd-start', true],
+  ['packages/sandbox-docker/scripts/agentbox-portless-trust', 'agentbox-portless-trust', true],
+  ['packages/sandbox-docker/scripts/agentbox-checkpoint-cleanup', 'agentbox-checkpoint-cleanup', true],
+  ['packages/sandbox-docker/scripts/agentbox-open', 'agentbox-open', true],
+  ['packages/sandbox-docker/scripts/gh-shim', 'gh-shim', true],
+  ['packages/sandbox-docker/scripts/git-shim', 'git-shim', true],
+  ['packages/sandbox-docker/scripts/ntn-shim', 'ntn-shim', true],
+  ['packages/sandbox-docker/scripts/linear-shim', 'linear-shim', true],
+  ['packages/sandbox-docker/scripts/claude-managed-settings.json', 'claude-managed-settings.json', false],
+  ['packages/sandbox-docker/scripts/agentbox-codex-hooks.json', 'agentbox-codex-hooks.json', false],
+  ['packages/sandbox-docker/scripts/opencode-agentbox-plugin.js', 'opencode-agentbox-plugin.js', false],
+  ['apps/cli/share/agentbox-setup/SKILL.md', 'agentbox-setup-skill.md', false],
+];
+for (const [srcRel, destRel, exec] of sharedFiles) {
+  copy(srcRel, join(sharedCtx, destRel), exec);
+}
+
 // Daytona provider — overlay files the daytona prepare step adds on top of
 // Dockerfile.box via Image.addLocalFile(). Resolver lives at
 // `packages/sandbox-daytona/src/dockerfile-context.ts` and looks for these

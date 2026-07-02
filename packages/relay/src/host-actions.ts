@@ -18,6 +18,7 @@ import { execa } from 'execa';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   isResolvedBranch,
   isScratchBranch,
@@ -31,7 +32,13 @@ import {
   upstreamRef,
 } from '@agentbox/core';
 import type { CloudBackend, CloudHandle } from '@agentbox/core';
-import { findBox, hostOpenCommand, readState } from '@agentbox/sandbox-core';
+import {
+  findBox,
+  hostOpenCommand,
+  isSupportedApiVersion,
+  pluginForProvider,
+  readState,
+} from '@agentbox/sandbox-core';
 import {
   assertGhReady,
   checkoutGuards,
@@ -141,6 +148,31 @@ export async function resolveCloudBackend(name: string): Promise<CloudBackend> {
   if (name === 'e2b') {
     const pkg = '@agentbox/sandbox-' + 'e2b';
     return loadCloudBackend(pkg, async () => ((await import(pkg)) as { e2bBackend: CloudBackend }).e2bBackend);
+  }
+  // External provider plugins: not bundle-inlined, so resolve from the same
+  // `~/.agentbox/plugins.json` registry the CLI writes and `import()` the
+  // recorded entry with a TRUE variable specifier. The relay runs on the host
+  // (same ~/.agentbox), so the registry + the installed package are reachable.
+  const plugin = pluginForProvider(name);
+  if (plugin) {
+    if (!isSupportedApiVersion(plugin.apiVersion)) {
+      throw new Error(
+        `relay: plugin '${plugin.packageName}' targets provider SDK v${String(plugin.apiVersion)}, which this AgentBox does not support`,
+      );
+    }
+    return loadCloudBackend(plugin.packageName, async () => {
+      const mod = (await import(pathToFileURL(plugin.resolvedEntry).href)) as {
+        providerModule?: { provider?: { name?: string }; backend?: CloudBackend };
+        providerModules?: { provider?: { name?: string }; backend?: CloudBackend }[];
+      };
+      const all = mod.providerModules ?? (mod.providerModule ? [mod.providerModule] : []);
+      // Strict name match — never fall back to all[0] (wrong-backend hazard).
+      const pm = all.find((m) => m.provider?.name === name);
+      if (!pm?.backend) {
+        throw new Error(`plugin '${plugin.packageName}' exposes no cloud backend for '${name}'`);
+      }
+      return pm.backend;
+    });
   }
   throw new Error(`no host executor for cloud backend '${name}'`);
 }

@@ -730,10 +730,20 @@ signedPreviewUrl, attachArgv, revokeAttachToken, ensureVolume,
 createSnapshot, deleteSnapshot, list
 ```
 
-Then add a one-line case to `resolveCloudBackend` in
-`packages/relay/src/host-actions.ts` and register the name in
-`apps/cli/src/provider/registry.ts`'s `KNOWN`. Compose the full
-`Provider` with `createCloudProvider(backend)`.
+Compose the full `Provider` with `createCloudProvider(backend)` and export a
+`providerModule` (see `packages/sandbox-core/src/doctor.ts`).
+
+Two ways to ship it:
+
+- **Built-in** (first-party): add one row to the `PROVIDERS` table in
+  `packages/config/src/providers.ts` and one entry to the `IMPORTERS` map in
+  `apps/cli/src/provider/loaders.ts` (both bundle-inlined), plus the relay's
+  literal-import block in `resolveCloudBackend`
+  (`packages/relay/src/host-actions.ts`).
+- **External / community plugin**: publish `agentbox-provider-<name>` built on
+  `@agentbox/provider-sdk` and `agentbox plugin add` it — **no edits to AgentBox**.
+  This is the recommended path for third-party clouds. See
+  [`provider-plugins.md`](./provider-plugins.md).
 
 ### 7.1 Validating with the mock backend + contract tests
 
