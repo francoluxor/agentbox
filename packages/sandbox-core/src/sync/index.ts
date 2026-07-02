@@ -90,6 +90,8 @@ export {
   stageOpencodeStaticForUpload,
   stageOpencodeCredentialsForUpload,
   stageOpencodeStateForUpload,
+  stageAllAgentStatic,
+  type AgentStaticStage,
   type StageClaudeOptions,
   type StageCodexOptions,
   type StageOpencodeOptions,

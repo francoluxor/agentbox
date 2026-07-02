@@ -641,3 +641,44 @@ export async function stageOpencodeStateForUpload(
   if (!(await pathExists(hostModel))) return emptyResult();
   return stageSingleFileTarball('opencode-state', hostModel, 'model.json');
 }
+
+// ---------- all-agent static bake (shared across cloud prepare paths) ----------
+
+/** Box-side dir each tool's static tarball extracts into. Provider-neutral —
+ *  the same target on every backend (docker model). */
+const CLAUDE_STATIC_BOX_DIR = '/home/vscode/.claude';
+const CODEX_STATIC_BOX_DIR = '/home/vscode/.codex';
+const OPENCODE_STATIC_BOX_DIR = '/home/vscode/.local/share/opencode';
+const AGENTS_STATIC_BOX_DIR = '/home/vscode/.agents';
+
+export interface AgentStaticStage {
+  kind: 'claude' | 'codex' | 'opencode' | 'agents';
+  /** Absolute box path the static tarball extracts into. */
+  extractDir: string;
+  staged: StageResult;
+}
+
+/**
+ * Stage all four host static-config trees in parallel, each paired with the
+ * box-side dir it extracts into. This is the single source of truth for the
+ * cloud prepare paths (vercel / hetzner / daytona / e2b): every provider walks
+ * this list and supplies only its own upload + extract transport, never its own
+ * copy of the producer→dir mapping. The caller must `staged.cleanup()` each
+ * result after the build has picked the tarball up.
+ */
+export async function stageAllAgentStatic(
+  opts: { hostWorkspace?: string } = {},
+): Promise<AgentStaticStage[]> {
+  const [claude, codex, opencode, agents] = await Promise.all([
+    stageClaudeStaticForUpload({ hostWorkspace: opts.hostWorkspace }),
+    stageCodexStaticForUpload(),
+    stageOpencodeStaticForUpload(),
+    stageAgentsStaticForUpload(),
+  ]);
+  return [
+    { kind: 'claude', extractDir: CLAUDE_STATIC_BOX_DIR, staged: claude },
+    { kind: 'codex', extractDir: CODEX_STATIC_BOX_DIR, staged: codex },
+    { kind: 'opencode', extractDir: OPENCODE_STATIC_BOX_DIR, staged: opencode },
+    { kind: 'agents', extractDir: AGENTS_STATIC_BOX_DIR, staged: agents },
+  ];
+}
