@@ -40,7 +40,7 @@ import {
   type CheckResult,
   type ProviderName,
 } from '../lib/doctor-checks.js';
-import { PROVIDER_NAMES, providerMeta } from '@agentbox/config';
+import { PROVIDER_NAMES, providerMeta, type ProviderKind } from '@agentbox/config';
 import { isRuntimeProvider, loadProviderModule } from '../provider/loaders.js';
 import { markSetupComplete } from '../lib/first-run.js';
 import { maybePromptStar } from '../lib/star-prompt.js';
@@ -444,7 +444,10 @@ function tutorialBody(provider: ProviderName): string {
   );
 }
 
-const KNOWN_PROVIDERS: readonly ProviderName[] = PROVIDER_NAMES;
+// The interactive picker offers built-in providers only; external plugin
+// providers are set up via `agentbox plugin add` (they still validate as a
+// `--provider` value through `isProviderName` below).
+const KNOWN_PROVIDERS: readonly ProviderKind[] = PROVIDER_NAMES;
 
 function isProviderName(s: string): s is ProviderName {
   return isRuntimeProvider(s);

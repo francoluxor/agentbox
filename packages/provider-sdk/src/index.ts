@@ -59,6 +59,13 @@ export { UserFacingError, BoxNotFoundError } from '@agentbox/core';
 // ---- cloud scaffolding (runtime): "a cloud is one file" ----
 export { createCloudProvider, type CreateCloudProviderOptions } from '@agentbox/sandbox-cloud';
 
+// ---- conformance: a reference in-memory backend to certify your CloudBackend ----
+export {
+  makeMockCloudBackend,
+  type MockCloudBackend,
+  type MockCloudBackendOptions,
+} from '@agentbox/sandbox-cloud';
+
 // ---- provider module contract + doctor helpers ----
 export {
   errSummary,
@@ -69,8 +76,15 @@ export {
   type CredStatusSummary,
 } from '@agentbox/sandbox-core';
 
-// ---- box-state helpers a backend may touch ----
-export { recordBox, readState, removeBoxRecord, allocateProjectIndex } from '@agentbox/sandbox-core';
+// ---- box-state + host helpers a backend/CLI surface may touch ----
+export {
+  recordBox,
+  readState,
+  removeBoxRecord,
+  allocateProjectIndex,
+  resolveBoxRef,
+  hostOpenCommand,
+} from '@agentbox/sandbox-core';
 
 // ---- prepared-state / base-image fingerprint primitives ----
 export {
@@ -89,7 +103,11 @@ export {
 } from '@agentbox/sandbox-core';
 
 // ---- config access ----
-export { loadEffectiveConfig, type EffectiveConfig } from '@agentbox/config';
+export {
+  loadEffectiveConfig,
+  findProjectRoot,
+  type EffectiveConfig,
+} from '@agentbox/config';
 
 // ---- shared box-side runtime assets (ctl.cjs + shims from the running CLI) ----
 export {
