@@ -24,6 +24,7 @@
 import { intro, log, spinner } from '@clack/prompts';
 import {
   boxImageConfigKey,
+  isProviderKind,
   loadEffectiveConfig,
   PROVIDER_NAMES,
   setConfigValue,
@@ -352,16 +353,25 @@ export async function runPrepare(
     });
     if (result.snapshotName !== undefined) {
       sp.stop(`prepared ${providerName}: snapshot '${result.snapshotName}'`);
-      const configKey = boxImageConfigKey(providerName);
-      try {
-        const written = await setConfigValue('project', configKey, result.snapshotName, cwd);
-        log.success(`${configKey} = ${result.snapshotName} (written to ${written.path})`);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        log.warn(
-          `prepared snapshot '${result.snapshotName}', but failed to pin it into the project config: ${msg}\n` +
-            `Run \`agentbox config set --project ${configKey} ${result.snapshotName}\` manually.`,
-        );
+      if (isProviderKind(providerName)) {
+        const configKey = boxImageConfigKey(providerName);
+        try {
+          const written = await setConfigValue('project', configKey, result.snapshotName, cwd);
+          log.success(`${configKey} = ${result.snapshotName} (written to ${written.path})`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log.warn(
+            `prepared snapshot '${result.snapshotName}', but failed to pin it into the project config: ${msg}\n` +
+              `Run \`agentbox config set --project ${configKey} ${result.snapshotName}\` manually.`,
+          );
+        }
+      } else {
+        // External plugin providers persist their baked ref in their own
+        // prepared-state (`~/.agentbox/<name>-prepared.json`), which the
+        // plugin's backend reads back when it sees the image sentinel — so
+        // there is no AgentBox config key to pin (and pinning to the generic
+        // `box.image` would poison built-in providers).
+        log.success(`prepared ${providerName}: snapshot '${result.snapshotName}'`);
       }
     } else {
       sp.stop(`${providerName.slice(0, 1).toUpperCase() + providerName.slice(1)} provider ready`);

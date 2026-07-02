@@ -90,3 +90,12 @@ export {
 
 // ---- config access ----
 export { loadEffectiveConfig, type EffectiveConfig } from '@agentbox/config';
+
+// ---- shared box-side runtime assets (ctl.cjs + shims from the running CLI) ----
+export {
+  resolveSharedRuntimeAsset,
+  sharedRuntimeDir,
+  CLI_RUNTIME_DIR_ENV,
+  SHARED_RUNTIME_ASSETS,
+  type SharedRuntimeAsset,
+} from './runtime-assets.js';
