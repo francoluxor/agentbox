@@ -49,16 +49,25 @@ streaming), before the full `--protocol json` interaction bus.
 - [x] **7. Server actions + UI**: `createBoxAction`/`addProjectAction`
   (`actions.ts`); re-enabled the buttons; `CreateBoxButton`+modal, `JobLogStream`,
   `AddProjectButton`+modal. typecheck + lint + `next build` clean.
-- [~] **8. Verification**: logic + boot verified (below); `docs/hub-webui-plan.md`
-  Phase 6 added. **Remaining:** the Docker E2E (create → creating → running,
-  detached tmux, no attach) — needs Docker + agent creds; part of the pre-push
-  smoke matrix.
-  - ✓ registry round-trip (register → list → hash; idempotent createdAt) +
-    `enqueueQueueJob` → `loadQueue` manifest, verified in an isolated `$HOME`.
-  - ✓ typecheck + lint + `next build` clean (config/relay/cli/hub); `/api/jobs/[id]/logs`
-    coexists with `/[...path]`.
-  - ✓ hub boots (isolated `$HOME`, auth off): `/healthz` `ui:true`; unknown job
-    `/api/jobs/deadbeef/logs` → 404 (getJob global wiring runs); `/` → 200.
+- [x] **8. Verification** — logic + full local E2E passed; `docs/hub-webui-plan.md`
+  Phase 6 added.
+  - ✓ registry round-trip + `enqueueQueueJob`→`loadQueue` manifest (isolated `$HOME`).
+  - ✓ typecheck + lint + `next build` clean (config/relay/cli/hub).
+  - ✓ **Local E2E on a real hub (8787, rebuilt CLI worker):**
+    - **docker × claude** and **docker × codex** (queue path): box built → `running`,
+      detached `<agent>` tmux session, agent process running, **never attached**,
+      job flipped `done` with `boxId` written back.
+    - **docker × claude via the browser UI** (real `addProjectAction` +
+      `createBoxAction` → `backend.create`): New-project modal registered a folder;
+      Create-box modal streamed the live build log; dashboard showed the box
+      `creating` → `running`; **full sync layer ran** (synced claude/codex/agents/
+      opencode config + skills + credentials — untouched); ground-truth detached
+      `claude` tmux, no attach.
+    - Zero-box registry projects render in the dashboard; `/api/jobs/[id]/logs`
+      SSE streamed `log`→`end`.
+  - ⚠ **Cloud not run:** no cloud provider credentials configured on this machine
+    (no daytona/hetzner/e2b/vercel keys); cloud-from-hub is deferred in v1 anyway.
+    Needs cloud provisioning to smoke the shared enqueue core cross-provider.
 
 > **Sync layer preserved:** hub create goes through `enqueueQueueJob` →
 > `_run-queued-job` → `createBox()`, the same path the CLI uses — download/upload
@@ -123,3 +132,9 @@ streaming), before the full `--protocol json` interaction bus.
   and the create-box/add-project UI. Verified logic + hub boot (item 8);
   Docker create→running E2E remains as the pre-push smoke test. **Not pushed** —
   awaiting the {local,vercel,hetzner}×{claude,codex} smoke matrix.
+- _2026-07-03_ — **local smoke passed**: docker×{claude,codex} via queue + a full
+  browser E2E (add-project + create-box through the real server actions →
+  creating→running, sync layer intact, detached no-attach). Cloud legs
+  (vercel/hetzner) blocked — no cloud creds on this machine. Smoke artifacts
+  cleaned (boxes destroyed, registry entries + temp files removed, user's hub
+  restored on 8787). **Still not pushed** — awaiting go-ahead + cloud legs.
