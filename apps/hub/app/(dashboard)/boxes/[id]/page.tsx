@@ -67,7 +67,8 @@ export default function BoxDetailPage() {
         <Stat k="Last activity" v={<Ago ms={box.lastActivity} />} mono />
       </StatGrid>
 
-      <GitActions id={box.id} running={box.status === 'running'} />
+      <SectionLabel>Git operations</SectionLabel>
+      <GitActions box={box} />
 
       <ServicesPanel id={box.id} running={box.status === 'running'} />
 

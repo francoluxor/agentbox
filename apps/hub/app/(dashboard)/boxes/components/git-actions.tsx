@@ -1,147 +1,428 @@
 'use client';
 
-import { useCallback, useEffect, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import { Icons } from '@/components/icons';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { Icons, type Icon } from '@/components/icons';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogBody,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogIcon,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
   gitBranchAction,
   gitCheckoutAction,
   gitPullAction,
   gitPushAction,
   gitPushHostAction,
+  restartServiceAction,
 } from '@/lib/boxes/actions';
-import type { BoxOpResult, GitInfo } from '@/lib/boxes/backend-types';
-import { SectionLabel } from './section-label';
+import type { ActionResult, BoxOpResult, GitInfo, ServicesResult } from '@/lib/boxes/backend-types';
+import type { Box } from '@/lib/boxes/types';
+import { cn } from '@/lib/utils';
 
-export function GitActions({ id, running }: { id: string; running: boolean }) {
+// ── toast stack (shadcn toast styling, AgentBox tokens) ──
+interface Toast {
+  id: number;
+  title: string;
+  detail?: string;
+  variant?: 'error';
+}
+let _toastId = 0;
+
+function useToasts() {
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const dismiss = useCallback((id: number) => setToasts((ts) => ts.filter((t) => t.id !== id)), []);
+  const push = useCallback(
+    (t: Omit<Toast, 'id'>) => {
+      const id = ++_toastId;
+      setToasts((ts) => [...ts, { id, ...t }]);
+      setTimeout(() => dismiss(id), 4200);
+    },
+    [dismiss],
+  );
+  return { toasts, push, dismiss };
+}
+
+function ToastStack({ toasts, dismiss }: { toasts: Toast[]; dismiss: (id: number) => void }) {
+  return (
+    <div className="pointer-events-none fixed bottom-5 right-5 z-[60] flex w-[340px] max-w-[calc(100vw-40px)] flex-col gap-2">
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          className="anim-pop pointer-events-auto relative flex items-start gap-3 rounded-xl border border-border bg-card p-3.5 pr-9 shadow-[0_16px_40px_-18px_rgba(20,24,30,.35)]"
+        >
+          <span
+            className={cn(
+              'mt-0.5 grid h-6 w-6 flex-none place-items-center rounded-md border',
+              t.variant === 'error'
+                ? 'border-[var(--red-line)] bg-[var(--red-soft)] text-[var(--red)]'
+                : 'border-[var(--green-line)] bg-accent text-primary',
+            )}
+          >
+            {t.variant === 'error' ? <Icons.warn className="size-3.5" /> : <Icons.check className="size-3.5" />}
+          </span>
+          <div className="min-w-0">
+            <div className="text-[13px] font-semibold leading-tight">{t.title}</div>
+            {t.detail ? (
+              <div className="mt-0.5 break-words font-mono text-[11.5px] leading-normal text-muted-foreground">{t.detail}</div>
+            ) : null}
+          </div>
+          <button
+            className="absolute right-2.5 top-2.5 grid h-5 w-5 cursor-pointer place-items-center rounded border-0 bg-transparent text-[#a4a9b0] hover:text-foreground"
+            onClick={() => dismiss(t.id)}
+            aria-label="Dismiss"
+          >
+            <Icons.x className="size-3" />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function GitOpRow({ label, desc, children }: { label: string; desc: ReactNode; children: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center gap-3 px-4.5 p-3.5">
+      <div className="min-w-[150px] flex-1">
+        <div className="text-[13.5px] font-medium">{label}</div>
+        <div className="mt-0.5 font-mono text-[11.5px] text-muted-foreground">{desc}</div>
+      </div>
+      <div className="flex flex-none flex-wrap gap-1.5">{children}</div>
+    </div>
+  );
+}
+
+// An outline button that shows a spinner while its async op runs.
+function OpButton({
+  icon: Ic,
+  disabled,
+  onRun,
+  children,
+}: {
+  icon: Icon;
+  disabled?: boolean;
+  onRun: () => Promise<void>;
+  children: ReactNode;
+}) {
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    setBusy(true);
+    try {
+      await onRun();
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Button variant="outline" size="sm" disabled={disabled || busy} onClick={run}>
+      {busy ? <span className="spin" style={{ width: 12, height: 12 }} /> : <Ic />}
+      {children}
+    </Button>
+  );
+}
+
+// First non-empty line of the command output (stdout preferred, else stderr) —
+// git puts "Switched to…" on stderr, the host-only landing note on stdout.
+function firstLine(stdout?: string, stderr?: string): string | undefined {
+  const text = (stdout ?? '').trim() || (stderr ?? '').trim();
+  return text ? text.split('\n')[0] : undefined;
+}
+
+function serviceDesc(names: string[] | null): string {
+  if (names === null) return 'loading…';
+  if (names.length === 0) return 'no services declared';
+  return names.join(' · ');
+}
+
+export function GitActions({ box }: { box: Box }) {
   const router = useRouter();
+  const { toasts, push, dismiss } = useToasts();
   const [git, setGit] = useState<GitInfo | null>(null);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [pending, startTransition] = useTransition();
-  const [checkoutTo, setCheckoutTo] = useState('');
-  const [newName, setNewName] = useState('');
-  const [newFrom, setNewFrom] = useState('');
+  const [svcNames, setSvcNames] = useState<string[] | null>(null);
+  const [modal, setModal] = useState<'change' | 'new' | null>(null);
+  const offline = box.status !== 'running';
 
   const loadGit = useCallback(async () => {
     try {
-      const res = await fetch(`/api/v1/boxes/${encodeURIComponent(id)}/git`, { credentials: 'same-origin' });
-      setGit(res.ok ? ((await res.json()) as GitInfo) : { ok: false });
+      const r = await fetch(`/api/v1/boxes/${encodeURIComponent(box.id)}/git`, { credentials: 'same-origin' });
+      setGit(r.ok ? ((await r.json()) as GitInfo) : null);
     } catch {
-      setGit({ ok: false });
+      setGit(null);
     }
-  }, [id]);
+  }, [box.id]);
+
+  const loadServices = useCallback(async () => {
+    try {
+      const r = await fetch(`/api/v1/boxes/${encodeURIComponent(box.id)}/services`, { credentials: 'same-origin' });
+      if (r.ok) setSvcNames(((await r.json()) as ServicesResult).services.map((s) => s.name));
+    } catch {
+      /* leave as-is */
+    }
+  }, [box.id]);
 
   useEffect(() => {
     void loadGit();
-  }, [loadGit]);
+    void loadServices();
+  }, [loadGit, loadServices]);
 
-  // Run a mutation server action, surface the result, then refresh git + the box.
-  const run = (label: string, fn: () => Promise<BoxOpResult>) => {
-    startTransition(async () => {
-      const res = await fn();
-      setMsg(res.ok ? { ok: true, text: `${label} done` } : { ok: false, text: `${label} failed: ${res.error}` });
-      await loadGit();
-      router.refresh();
-    });
+  // Live branch (box.branch from the dashboard snapshot goes stale after a checkout).
+  const branch = git?.ok && git.branch ? git.branch : box.branch || '—';
+
+  const refresh = () => {
+    void loadGit();
+    router.refresh();
   };
 
-  const info = git?.ok ? git : null;
+  const runOp = async (title: string, fn: () => Promise<BoxOpResult>) => {
+    const res = await fn();
+    if (res.ok) {
+      push({ title, detail: firstLine(res.stdout, res.stderr) });
+      refresh();
+    } else {
+      push({ variant: 'error', title: `${title} failed`, detail: res.error });
+    }
+  };
+
+  const runRestartAll = async () => {
+    const res: ActionResult = await restartServiceAction(box.id);
+    if (res.ok) {
+      push({ title: 'Services restarted' });
+      void loadServices();
+      router.refresh();
+    } else {
+      push({ variant: 'error', title: 'Restart failed', detail: res.error });
+    }
+  };
 
   return (
     <>
-      <SectionLabel>Git</SectionLabel>
-      <Card className="divide-y divide-border/60 overflow-hidden">
-        {/* current branch + dirty/ahead/behind */}
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 text-sm">
-          <Icons.branch />
-          <span className="font-mono text-secondary-foreground">{info?.branch ?? '—'}</span>
-          {info?.dirty ? <span className="font-mono text-xs text-[var(--amber)]">uncommitted changes</span> : null}
-          {info && (info.ahead || info.behind) ? (
-            <span className="font-mono text-xs text-muted-foreground">
-              {info.ahead ? `↑${String(info.ahead)}` : ''} {info.behind ? `↓${String(info.behind)}` : ''}
-            </span>
-          ) : null}
-        </div>
-
-        {/* remote / host sync actions */}
-        <div className="flex flex-wrap gap-1.5 px-4 py-3">
-          <Button variant="outline" size="sm" disabled={!running || pending} onClick={() => run('Pull', () => gitPullAction(id))}>
-            <Icons.arrowL className="rotate-90" />
-            Pull
-          </Button>
-          <Button variant="outline" size="sm" disabled={!running || pending} onClick={() => run('Push', () => gitPushAction(id))}>
-            <Icons.arrowUp />
-            Push
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            title="Land the branch in the host repo only — nothing is published to the remote"
-            disabled={!running || pending}
-            onClick={() => run('Push to host', () => gitPushHostAction(id))}
-          >
-            <Icons.server />
-            Push to host
-          </Button>
-        </div>
-
-        {/* change branch */}
-        <form
-          className="flex flex-wrap items-center gap-1.5 px-4 py-3"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (checkoutTo.trim()) run('Checkout', () => gitCheckoutAction(id, checkoutTo.trim()));
-          }}
-        >
-          <Input
-            className="h-[30px] w-48 flex-1 text-xs"
-            placeholder="switch to branch…"
-            value={checkoutTo}
-            onChange={(e) => setCheckoutTo(e.target.value)}
-            disabled={!running || pending}
-          />
-          <Button type="submit" variant="outline" size="sm" disabled={!running || pending || !checkoutTo.trim()}>
-            Checkout
-          </Button>
-        </form>
-
-        {/* new agentbox/* branch (create + switch) */}
-        <form
-          className="flex flex-wrap items-center gap-1.5 px-4 py-3"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (newName.trim()) run('New branch', () => gitBranchAction(id, newName.trim(), newFrom.trim() || undefined));
-          }}
-        >
-          <Input
-            className="h-[30px] w-40 text-xs"
-            placeholder="new branch name…"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            disabled={!running || pending}
-          />
-          <Input
-            className="h-[30px] w-32 text-xs"
-            placeholder="from (HEAD)"
-            value={newFrom}
-            onChange={(e) => setNewFrom(e.target.value)}
-            disabled={!running || pending}
-          />
-          <Button type="submit" variant="outline" size="sm" disabled={!running || pending || !newName.trim()}>
-            <Icons.plus />
-            Create
-          </Button>
-        </form>
-
-        {msg ? (
-          <div className={`px-4 py-2 font-mono text-xs ${msg.ok ? 'text-[var(--green-ink)]' : 'text-[var(--red)]'}`}>
-            {msg.text}
+      <Card className={cn('divide-y divide-border/60 overflow-hidden', offline ? 'opacity-90' : '')}>
+        {offline ? (
+          <div className="flex items-center gap-2.5 bg-[var(--amber-soft)] px-4.5 p-2.5 text-[12.5px] text-[var(--amber)]">
+            <Icons.warn className="size-3.5 flex-none" />
+            Box is {box.status} — git operations need a running box.
           </div>
         ) : null}
+        <GitOpRow label="Sync" desc={`origin ↔ ${branch}`}>
+          <OpButton icon={Icons.arrowL} disabled={offline} onRun={() => runOp('Pulled from origin', () => gitPullAction(box.id))}>
+            Pull
+          </OpButton>
+          <OpButton icon={Icons.ext} disabled={offline} onRun={() => runOp('Pushed to origin', () => gitPushAction(box.id))}>
+            Push
+          </OpButton>
+          <OpButton
+            icon={Icons.server}
+            disabled={offline}
+            onRun={() => runOp('Pushed to host', () => gitPushHostAction(box.id))}
+          >
+            Push to host
+          </OpButton>
+        </GitOpRow>
+        <GitOpRow label="Branch" desc={`currently on ${branch}`}>
+          <Button variant="outline" size="sm" disabled={offline} onClick={() => setModal('change')}>
+            <Icons.branch />
+            Change branch
+          </Button>
+          <Button variant="outline" size="sm" disabled={offline} onClick={() => setModal('new')}>
+            <Icons.plus />
+            New branch
+          </Button>
+        </GitOpRow>
+        <GitOpRow label="Services" desc={serviceDesc(svcNames)}>
+          <OpButton icon={Icons.activity} disabled={offline} onRun={runRestartAll}>
+            Restart all services
+          </OpButton>
+        </GitOpRow>
       </Card>
+
+      {modal === 'change' ? (
+        <ChangeBranchModal box={box} branch={branch} onClose={() => setModal(null)} onDone={push} onRefresh={refresh} />
+      ) : null}
+      {modal === 'new' ? (
+        <NewBranchModal box={box} onClose={() => setModal(null)} onDone={push} onRefresh={refresh} />
+      ) : null}
+      <ToastStack toasts={toasts} dismiss={dismiss} />
     </>
+  );
+}
+
+type OnDone = (t: Omit<Toast, 'id'>) => void;
+
+function ChangeBranchModal({
+  box,
+  branch,
+  onClose,
+  onDone,
+  onRefresh,
+}: {
+  box: Box;
+  branch: string;
+  onClose: () => void;
+  onDone: OnDone;
+  onRefresh: () => void;
+}) {
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const ready = value.trim().length > 0;
+
+  const submit = () => {
+    if (!ready || busy) return;
+    setBusy(true);
+    setError(null);
+    void (async () => {
+      const res = await gitCheckoutAction(box.id, value.trim());
+      if (res.ok) {
+        onDone({ title: 'Branch changed', detail: firstLine(res.stdout, res.stderr) });
+        onClose();
+        onRefresh();
+      } else {
+        setError(res.error);
+        setBusy(false);
+      }
+    })();
+  };
+
+  return (
+    <Dialog onClose={onClose} className="max-w-[440px]">
+      <DialogHeader>
+        <DialogIcon>
+          <Icons.branch />
+        </DialogIcon>
+        <div>
+          <DialogTitle>Change branch</DialogTitle>
+          <DialogDescription>
+            {box.id} · currently on {branch}
+          </DialogDescription>
+        </div>
+      </DialogHeader>
+      <DialogBody>
+        <Label htmlFor="gb-branch">Branch</Label>
+        <Input
+          id="gb-branch"
+          className="font-mono text-[13px]"
+          autoFocus
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') submit();
+          }}
+          placeholder="feature-x"
+        />
+        <p className="mt-1.5 text-xs text-muted-foreground">
+          The branch must exist and not be checked out in another worktree.
+        </p>
+        {error ? <p className="mt-2 break-words font-mono text-xs text-destructive">{error}</p> : null}
+      </DialogBody>
+      <DialogFooter>
+        <Button variant="outline" onClick={onClose} disabled={busy}>
+          Cancel
+        </Button>
+        <Button onClick={submit} disabled={!ready || busy}>
+          {busy ? <span className="spin" /> : <Icons.check />}
+          {busy ? 'Checking out…' : 'Change branch'}
+        </Button>
+      </DialogFooter>
+    </Dialog>
+  );
+}
+
+function NewBranchModal({
+  box,
+  onClose,
+  onDone,
+  onRefresh,
+}: {
+  box: Box;
+  onClose: () => void;
+  onDone: OnDone;
+  onRefresh: () => void;
+}) {
+  const [name, setName] = useState('');
+  const [from, setFrom] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const ready = name.trim().length > 0;
+
+  const submit = () => {
+    if (!ready || busy) return;
+    setBusy(true);
+    setError(null);
+    void (async () => {
+      const res = await gitBranchAction(box.id, name.trim(), from.trim() || undefined);
+      if (res.ok) {
+        onDone({ title: 'Branch created', detail: firstLine(res.stdout, res.stderr) });
+        onClose();
+        onRefresh();
+      } else {
+        setError(res.error);
+        setBusy(false);
+      }
+    })();
+  };
+
+  return (
+    <Dialog onClose={onClose} className="max-w-[440px]">
+      <DialogHeader>
+        <DialogIcon>
+          <Icons.branch />
+        </DialogIcon>
+        <div>
+          <DialogTitle>New branch</DialogTitle>
+          <DialogDescription>{box.id} · branching in the box workspace</DialogDescription>
+        </div>
+      </DialogHeader>
+      <DialogBody>
+        <div className="mb-4">
+          <Label htmlFor="nb-name">Name</Label>
+          <Input
+            id="nb-name"
+            className="font-mono text-[13px]"
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') submit();
+            }}
+            placeholder="my-branch"
+          />
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            An <span className="font-mono">agentbox/</span> prefix is added when missing.
+          </p>
+        </div>
+        <Label htmlFor="nb-from">
+          Base ref <span className="font-normal text-[#a4a9b0]">(optional)</span>
+        </Label>
+        <Input
+          id="nb-from"
+          className="font-mono text-[13px]"
+          value={from}
+          onChange={(e) => setFrom(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') submit();
+          }}
+          placeholder="HEAD"
+        />
+        <p className="mt-1.5 text-xs text-muted-foreground">Defaults to the box's current HEAD.</p>
+        {error ? <p className="mt-2 break-words font-mono text-xs text-destructive">{error}</p> : null}
+      </DialogBody>
+      <DialogFooter>
+        <Button variant="outline" onClick={onClose} disabled={busy}>
+          Cancel
+        </Button>
+        <Button onClick={submit} disabled={!ready || busy}>
+          {busy ? <span className="spin" /> : <Icons.plus />}
+          {busy ? 'Creating…' : 'Create branch'}
+        </Button>
+      </DialogFooter>
+    </Dialog>
   );
 }
