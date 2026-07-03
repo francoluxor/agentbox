@@ -49,8 +49,16 @@ streaming), before the full `--protocol json` interaction bus.
 - [x] **7. Server actions + UI**: `createBoxAction`/`addProjectAction`
   (`actions.ts`); re-enabled the buttons; `CreateBoxButton`+modal, `JobLogStream`,
   `AddProjectButton`+modal. typecheck + lint + `next build` clean.
-- [ ] **8. Runtime verification**: E2E slice check (below); update
-  `docs/hub-webui-plan.md`.
+- [~] **8. Verification**: logic + boot verified (below); `docs/hub-webui-plan.md`
+  Phase 6 added. **Remaining:** the Docker E2E (create → creating → running,
+  detached tmux, no attach) — needs Docker + agent creds; part of the pre-push
+  smoke matrix.
+  - ✓ registry round-trip (register → list → hash; idempotent createdAt) +
+    `enqueueQueueJob` → `loadQueue` manifest, verified in an isolated `$HOME`.
+  - ✓ typecheck + lint + `next build` clean (config/relay/cli/hub); `/api/jobs/[id]/logs`
+    coexists with `/[...path]`.
+  - ✓ hub boots (isolated `$HOME`, auth off): `/healthz` `ui:true`; unknown job
+    `/api/jobs/deadbeef/logs` → 404 (getJob global wiring runs); `/` → 200.
 
 > **Sync layer preserved:** hub create goes through `enqueueQueueJob` →
 > `_run-queued-job` → `createBox()`, the same path the CLI uses — download/upload
@@ -109,3 +117,9 @@ streaming), before the full `--protocol json` interaction bus.
 ## Progress log
 - _2026-07-03_ — branch `feat/web-create-boxes` cut off `feat/control-plane-create`;
   backlog created; starting slice item 1 (project registry).
+- _2026-07-03_ — first vertical slice landed (items 1–7): config registry, relay
+  `enqueueQueueJob` core + `pokeQueue`/`onStatusChange`, hub `create`/`addProject`
+  backend + registry-backed projects + `creating`-box synthesis, per-job log SSE,
+  and the create-box/add-project UI. Verified logic + hub boot (item 8);
+  Docker create→running E2E remains as the pre-push smoke test. **Not pushed** —
+  awaiting the {local,vercel,hetzner}×{claude,codex} smoke matrix.
