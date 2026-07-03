@@ -55,7 +55,7 @@ function ServiceRow({
         disabled={disabled}
         onClick={() => onRestart(svc.name)}
       >
-        <Icons.play />
+        <Icons.refresh />
       </Button>
     </div>
   );
@@ -107,7 +107,7 @@ export function ServicesPanel({ id, running }: { id: string; running: boolean })
         right={
           hasServices ? (
             <Button variant="outline" size="sm" disabled={!running || pending} onClick={() => restart(undefined)}>
-              <Icons.play />
+              <Icons.refresh />
               Restart all
             </Button>
           ) : null

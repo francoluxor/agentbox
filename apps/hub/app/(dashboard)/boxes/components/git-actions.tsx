@@ -237,7 +237,7 @@ export function GitActions({ box }: { box: Box }) {
           </Button>
         </GitOpRow>
         <GitOpRow label="Services" desc={serviceDesc(svcNames)}>
-          <OpButton icon={Icons.activity} disabled={offline} onRun={runRestartAll}>
+          <OpButton icon={Icons.refresh} disabled={offline} onRun={runRestartAll}>
             Restart all services
           </OpButton>
         </GitOpRow>
