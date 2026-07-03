@@ -116,6 +116,19 @@ export function buildOpenApi(): Record<string, unknown> {
           },
         },
       },
+      '/projects/{id}': {
+        delete: {
+          summary: 'Unregister an empty project (folder/files on disk are untouched)',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: {
+            '200': { description: 'Removed', content: { 'application/json': { schema: { type: 'object', properties: { ok: { const: true } }, required: ['ok'] } } } },
+            '401': errorResponse,
+            '404': errorResponse,
+            '409': errorResponse, // project still has boxes
+            '503': errorResponse,
+          },
+        },
+      },
       '/approvals': {
         get: {
           summary: 'List pending host-action approvals',

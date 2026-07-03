@@ -35,6 +35,11 @@ That starts the hub (if it isn't already running) and opens it in your browser a
   an optional task) straight from the dashboard; the live build log streams into a
   panel and the box appears as `creating` → `running`.
 
+- **Manage projects** — register a folder as a project (a folder picker browses
+  your machine), and remove an **empty** project (0 boxes) with the **Delete**
+  button on its dashboard/detail header. Deleting only unregisters the folder from
+  the hub — its files, git repo, and checkpoints are untouched.
+
 <Callout type="info" title="Driving it programmatically">Everything the UI does is also available over HTTP — see the [Hub REST API](/docs/hub-api) for launching and managing boxes from an IDE, a script, or a remote hub.</Callout>
 
 ## Commands

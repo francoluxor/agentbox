@@ -61,6 +61,7 @@ with an HTTP status that matches the `code` (`400 invalid_request`,
 | `POST /boxes/{id}/destroy` | Destroy a box (container + volumes). |
 | `GET /projects` | Registered projects (create targets). |
 | `POST /projects` | Register a folder as a project. Body: `{ path }` (absolute). |
+| `DELETE /projects/{id}` | Unregister an **empty** project (0 boxes). Folder/files on disk are untouched; `409` if it still has boxes. |
 | `GET /approvals` | Pending host-action approvals. |
 | `POST /approvals/{id}/answer` | Answer an approval. Body: `{ answer: "y" \| "n" }`. |
 | `GET /jobs/{id}` | Create-job status (`queued`/`running`/`done`/`failed`). |

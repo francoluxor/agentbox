@@ -53,6 +53,16 @@ export async function addProjectAction(absPath: string): Promise<ActionResult> {
   return res;
 }
 
+// Unregister a project (by id) from the hub. The backend refuses if it still has
+// boxes; on success the project drops off the dashboard + sidebar.
+export async function removeProjectAction(projectId: string): Promise<ActionResult> {
+  const backend = globalThis.__AGENTBOX_HUB_BACKEND;
+  if (!backend) return { ok: false, error: 'hub backend unavailable (run the hub server)' };
+  const res = await backend.removeProject(projectId);
+  if (res.ok) revalidatePath('/', 'layout');
+  return res;
+}
+
 // Read-only: list a directory on the hub host for the folder picker. No
 // revalidate (nothing mutates).
 export async function browseDirAction(dir?: string): Promise<BrowseDirResult> {

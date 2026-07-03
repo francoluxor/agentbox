@@ -63,6 +63,9 @@ export interface HubBackend {
   create(input: CreateBoxInput): Promise<CreateBoxResult>;
   // Register a folder (absolute path) as a project so it can host boxes.
   addProject(absPath: string): Promise<ActionResult>;
+  // Unregister a project by id (hash). Refuses if the project still has boxes or
+  // in-flight create jobs — only an empty project can be removed.
+  removeProject(projectId: string): Promise<ActionResult>;
   // List a directory on the hub host for the folder picker. `dir` defaults to the
   // user's home; entries are the immediate subdirectories.
   browseDir(dir?: string): Promise<BrowseDirResult>;

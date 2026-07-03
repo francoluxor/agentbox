@@ -7,6 +7,7 @@ import {
   isProviderKind,
   listProjectsConfigured,
   registerProject,
+  unregisterProject,
   type ProviderKind,
 } from '@agentbox/config';
 import { normalizeLastAgent, type BoxRecord, type Provider } from '@agentbox/core';
@@ -375,6 +376,27 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
         // matching how create resolves the workspace.
         const root = (await findProjectRoot(absPath)).root;
         await registerProject(root);
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    async removeProject(projectId: string): Promise<ActionResult> {
+      try {
+        // Empty-only: refuse if any live box OR in-flight create job belongs to
+        // this project. listProjects() self-heals from live box roots, so a
+        // project with boxes would just reappear — deletion is meaningless there.
+        const [boxes, jobs] = await Promise.all([listBoxes(), loadQueue()]);
+        const hasBox = boxes.some((b) => hashProjectPath(projectRootOf(b)) === projectId);
+        const hasJob = jobs.some(
+          (j) =>
+            (j.status === 'queued' || j.status === 'running') &&
+            hashProjectPath(j.createOpts.workspace) === projectId,
+        );
+        if (hasBox || hasJob) return { ok: false, error: 'project has boxes; delete them first' };
+        // Idempotent: unregisterProject returns false when already gone — still ok,
+        // the goal state is "not registered".
+        await unregisterProject(projectId);
         return { ok: true };
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
