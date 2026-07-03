@@ -6,7 +6,7 @@ import { chmod, mkdir, rm, writeFile } from 'node:fs/promises';
 import { hostname, homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { loadEffectiveConfig, setConfigValue } from '@agentbox/config';
+import { loadEffectiveConfig, setConfigValue, unsetConfigValue } from '@agentbox/config';
 import {
   drainCreateJobs,
   GitHubAppLeaser,
@@ -233,6 +233,39 @@ const setUrlSub = new Command('set-url')
     }
   });
 
+const unsetUrlSub = new Command('unset-url')
+  .description('Stop using a control plane on this machine (removes relay.controlPlaneUrl)')
+  .option('--purge', "also delete this machine's local App metadata + admin token (~/.agentbox/control-plane)")
+  .action(async (opts: { purge?: boolean }) => {
+    try {
+      // set-url writes the global scope; also clear a per-project override if one
+      // exists. A cwd with no project config just yields `existed:false` (the
+      // project unset never throws for that) — real I/O/write errors from either
+      // scope propagate to handleLifecycleError rather than being masked.
+      const g = await unsetConfigValue('global', 'relay.controlPlaneUrl', process.cwd());
+      const p = await unsetConfigValue('project', 'relay.controlPlaneUrl', process.cwd());
+      if (!g.existed && !p.existed) {
+        log.info('No control plane was configured (relay.controlPlaneUrl not set).');
+      } else {
+        const where = [g.existed ? 'global' : null, p.existed ? 'project' : null].filter(Boolean).join(' + ');
+        log.success(
+          `Removed relay.controlPlaneUrl (${where}). New cloud boxes now push through the host relay ` +
+            '(your laptop must be on), and the GitHub-App repo-authorization prompt no longer fires.',
+        );
+      }
+      if (existsSync(CP_DIR)) {
+        if (opts.purge) {
+          await rm(CP_DIR, { recursive: true, force: true });
+          log.success(`Purged this machine's control-plane credentials (${CP_DIR}).`);
+        } else {
+          log.info(`This machine's App metadata + admin token remain in ${CP_DIR} (use --purge to delete).`);
+        }
+      }
+    } catch (err) {
+      handleLifecycleError(err);
+    }
+  });
+
 interface StatusOpts {
   url?: string;
   json?: boolean;
@@ -413,5 +446,6 @@ export const controlPlaneCommand = new Command('control-plane')
   .addCommand(statusSub, { isDefault: true })
   .addCommand(setupSub)
   .addCommand(setUrlSub)
+  .addCommand(unsetUrlSub)
   .addCommand(addSub)
   .addCommand(workerSub);
