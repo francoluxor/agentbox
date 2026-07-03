@@ -19,6 +19,21 @@ export interface CreateBoxInput {
 // detached queue worker; progress streams over the per-job log SSE.
 export type CreateBoxResult = { ok: true; jobId: string } | { ok: false; error: string };
 
+// One subdirectory in the server-side folder browser. `isProject` flags a folder
+// that already looks like a project root (has a .git or agentbox.yaml) so the UI
+// can hint which folders are ready to host a box.
+export interface DirEntry {
+  name: string;
+  path: string;
+  isProject: boolean;
+}
+
+// Listing of one directory on the hub host: the resolved absolute path, its
+// parent (null at the filesystem root), and its immediate subdirectories.
+export type BrowseDirResult =
+  | { ok: true; path: string; parent: string | null; entries: DirEntry[] }
+  | { ok: false; error: string };
+
 // Minimal job view for the log-stream route: the log file to tail, the terminal
 // status (so the SSE knows when to stop), and the box id once the worker writes
 // it back. Status is a plain string to keep this module free of relay imports.
@@ -48,6 +63,9 @@ export interface HubBackend {
   create(input: CreateBoxInput): Promise<CreateBoxResult>;
   // Register a folder (absolute path) as a project so it can host boxes.
   addProject(absPath: string): Promise<ActionResult>;
+  // List a directory on the hub host for the folder picker. `dir` defaults to the
+  // user's home; entries are the immediate subdirectories.
+  browseDir(dir?: string): Promise<BrowseDirResult>;
   // Read a background job (log path + status) for the per-job log SSE. null when
   // the manifest is gone.
   getJob(id: string): Promise<JobView | null>;

@@ -1,4 +1,4 @@
-import { stat } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -24,8 +24,10 @@ import { readState } from '@agentbox/sandbox-core';
 import { listBoxes, type ListedBox } from '@agentbox/sandbox-docker';
 import type {
   ActionResult,
+  BrowseDirResult,
   CreateBoxInput,
   CreateBoxResult,
+  DirEntry,
   HubBackend,
 } from './boxes/backend-types';
 import type { Approval, Box, BoxStatus, GithubState, HubState, Project, User } from './boxes/types';
@@ -241,6 +243,46 @@ function mapApproval(p: PendingApproval): Approval {
   };
 }
 
+// A folder "looks like a project" if it already carries a git repo or an
+// agentbox.yaml — the same signals `findProjectRoot` walks up to.
+async function looksLikeProject(dir: string): Promise<boolean> {
+  const [git, yaml] = await Promise.all([
+    stat(path.join(dir, '.git')).then(() => true).catch(() => false),
+    stat(path.join(dir, 'agentbox.yaml')).then(() => true).catch(() => false),
+  ]);
+  return git || yaml;
+}
+
+// List the immediate subdirectories of `dir` (defaulting to the user's home) for
+// the folder picker. Hidden dirs (dotfiles) are skipped to keep the list to real
+// project candidates; symlinks are followed only when they resolve to a directory.
+async function browseDirHost(dir?: string): Promise<BrowseDirResult> {
+  try {
+    const target = dir && dir.trim() ? dir.trim() : os.homedir();
+    if (!path.isAbsolute(target)) return { ok: false, error: 'an absolute path is required' };
+    const st = await stat(target).catch(() => null);
+    if (!st || !st.isDirectory()) return { ok: false, error: `not a directory: ${target}` };
+
+    const dirents = await readdir(target, { withFileTypes: true });
+    const entries: DirEntry[] = [];
+    for (const d of dirents) {
+      if (d.name.startsWith('.')) continue;
+      if (!d.isDirectory() && !d.isSymbolicLink()) continue;
+      const full = path.join(target, d.name);
+      if (d.isSymbolicLink()) {
+        const ls = await stat(full).catch(() => null);
+        if (!ls || !ls.isDirectory()) continue;
+      }
+      entries.push({ name: d.name, path: full, isProject: await looksLikeProject(full) });
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    const parent = path.dirname(target);
+    return { ok: true, path: target, parent: parent === target ? null : parent, entries };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 async function runLifecycle(id: string, op: (box: BoxRecord, provider: Provider) => Promise<void>): Promise<ActionResult> {
   try {
     const { boxes } = await readState();
@@ -338,6 +380,7 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
+    browseDir: (dir) => browseDirHost(dir),
     async getJob(id): Promise<{ status: string; logPath: string; boxId?: string } | null> {
       const job = await readJob(id);
       if (!job) return null;
