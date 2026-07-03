@@ -557,6 +557,10 @@ export const opencodeCommand = new Command('opencode')
           useBranch,
           resyncOnStart: opts.resync,
           projectRoot,
+          // Control-plane topology + git push routing — mirror `agentbox create`
+          // so cloud boxes from the agent commands honor the same config.
+          controlPlaneUrl: cfg.effective.relay.controlPlaneUrl,
+          gitPushMode: cfg.effective.git.pushMode,
           // Per-provider session-lifetime (e2b/vercel timeout); mirrors create.
           providerOptions: cloudSizingProviderOptions(provider.name, cfg.effective),
         },
