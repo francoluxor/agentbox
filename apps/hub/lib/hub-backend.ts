@@ -154,6 +154,27 @@ async function listProjects(boxes: ListedBox[]): Promise<Project[]> {
   return [...byId.values()].sort((a, b) => b.createdAt - a.createdAt);
 }
 
+/**
+ * Resolve a client-supplied projectId to its absolute host path. Mirrors what
+ * `listProjects` shows: the on-disk registry first, then live box roots (a
+ * project can surface from a box root even if its registry registration failed).
+ * Registering the healed root keeps it resolvable next time. Returns null only
+ * when no project the UI could display matches — so `create` never rejects a
+ * project the user can actually see on the dashboard.
+ */
+async function resolveProjectPath(projectId: string): Promise<string | null> {
+  const entry = (await listProjectsConfigured()).find((e) => e.hash === projectId);
+  if (entry) return entry.originalPath;
+  for (const b of await listBoxes()) {
+    const root = projectRootOf(b);
+    if (hashProjectPath(root) === projectId) {
+      await registerProject(root).catch(() => {});
+      return root;
+    }
+  }
+  return null;
+}
+
 // Map QueueAgentKind ('claude-code') to the UI agent label ('claude').
 const AGENT_LABEL: Record<QueueAgentKind, string> = {
   'claude-code': 'claude',
@@ -277,19 +298,23 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
     async create(input: CreateBoxInput): Promise<CreateBoxResult> {
       try {
         // Resolve the project by id server-side — never trust a client path.
-        const entry = (await listProjectsConfigured()).find((e) => e.hash === input.projectId);
-        if (!entry) return { ok: false, error: `unknown project ${input.projectId}` };
+        // Accepts any project the dashboard shows (registry or live box root).
+        const workspace = await resolveProjectPath(input.projectId);
+        if (!workspace) return { ok: false, error: `unknown project ${input.projectId}` };
         const agent: QueueAgentKind = input.agent === 'claude' ? 'claude-code' : input.agent;
+        const name = input.name?.trim() || undefined;
         // Enqueue a detached create job (the same pipeline as `agentbox <agent>
         // -i`): the worker runs createBox() — including the full sync layer —
         // then starts the agent in a detached tmux session. It never attaches.
+        // The worker names the box from `createOpts.name` (like the CLI's
+        // pickCreateOpts), so the typed name must go there, not only on boxName.
         const { job } = await enqueueQueueJob({
           agent,
-          boxName: input.name ?? '',
+          boxName: name ?? '',
           providerName: 'docker',
           prompt: input.prompt ?? '',
           agentArgs: [],
-          createOpts: { workspace: entry.originalPath },
+          createOpts: { workspace, name },
         });
         handle.pokeQueue();
         return { ok: true, jobId: job.id };

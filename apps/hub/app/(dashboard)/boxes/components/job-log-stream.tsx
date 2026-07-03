@@ -8,6 +8,13 @@ export function JobLogStream({ jobId, onDone }: { jobId: string; onDone?: (statu
   const [lines, setLines] = useState<string[]>([]);
   const [status, setStatus] = useState<string>('streaming');
   const preRef = useRef<HTMLPreElement>(null);
+  // Keep the latest onDone in a ref so the EventSource effect depends ONLY on
+  // jobId. Callers pass a fresh `() => router.refresh()` each render, and
+  // dashboard refreshes (LiveRefresh / queue onStatusChange) re-render this
+  // component mid-stream — if onDone were an effect dep, the stream would tear
+  // down and reopen from offset 0, replaying and duplicating the whole tail.
+  const onDoneRef = useRef(onDone);
+  onDoneRef.current = onDone;
 
   useEffect(() => {
     const es = new EventSource(`/api/jobs/${encodeURIComponent(jobId)}/logs`);
@@ -18,12 +25,12 @@ export function JobLogStream({ jobId, onDone }: { jobId: string; onDone?: (statu
     es.addEventListener('end', (e) => {
       const payload = JSON.parse((e as MessageEvent).data) as { status: string };
       setStatus(payload.status);
-      onDone?.(payload.status);
+      onDoneRef.current?.(payload.status);
       es.close();
     });
     // EventSource auto-reconnects on transient errors; nothing to do here.
     return () => es.close();
-  }, [jobId, onDone]);
+  }, [jobId]);
 
   useEffect(() => {
     const el = preRef.current;
