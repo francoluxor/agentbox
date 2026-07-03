@@ -27,7 +27,7 @@ streaming), before the full `--protocol json` interaction bus.
 
 - [x] **1. Project registry** (`packages/config`): export `registerProject(absPath)`
   + `ProjectEntry`; call it on CLI create. (wraps `touchProjectMeta`, `write.ts:321`)
-- [ ] **2. Hub reads registry** (`apps/hub/lib/hub-backend.ts`): `listProjects()`
+- [x] **2. Hub reads registry** (`apps/hub/lib/hub-backend.ts`): `listProjects()`
   unions `listProjectsConfigured()` with box-derived roots; self-heal registers box
   roots; unify project id on `hashProjectPath`.
 - [x] **3. Shared enqueue core in `@agentbox/relay`.** Refinement: relocating
@@ -36,10 +36,12 @@ streaming), before the full `--protocol json` interaction bus.
   `enqueueQueueJob(input)` (manifest build + `writeJob`, no transport) into
   `queue.ts`; CLI `submitQueueJob` now wraps it (+ `ensureRelay`/poke). Reused the
   existing `loadQueue()` instead of adding `listJobs()`.
-- [ ] **4. Hub `create` + `addProject` backend methods** (`backend-types.ts`,
-  `hub-backend.ts`): `create` resolves workspace from the registry **by projectId**;
-  surface in-flight jobs as synthetic `creating` boxes in `getData()`.
-- [ ] **5. `onStatusChange → hubNotifier`** wired in `daemon.ts` (Phase A bit).
+- [x] **4. Hub `create` + `addProject` backend methods** (`backend-types.ts`,
+  `hub-backend.ts`, `actions.ts`): `create` resolves workspace from the registry
+  **by projectId** → `enqueueQueueJob` + `handle.pokeQueue()`; in-flight jobs
+  surface as synthetic `creating`/`error` boxes in `getData()`. Added
+  `handle.pokeQueue()` to the relay handle for in-process scheduler kicks.
+- [x] **5. `onStatusChange → hubNotifier`** wired in `daemon.ts` (Phase A bit).
 - [ ] **6. Per-job log SSE** (`apps/hub/app/(dashboard)/api/jobs/[id]/logs/route.ts`)
   tailing `queueLogPath(id)`; gated by `proxy.ts`.
 - [ ] **7. Server actions + UI**: `createBoxAction`/`addProjectAction`
