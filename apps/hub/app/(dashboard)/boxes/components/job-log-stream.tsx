@@ -19,11 +19,16 @@ export interface JobLoginState {
 // banner (clickable sign-in link + code input) above the verbatim log.
 export function JobLogStream({
   jobId,
+  endpoint,
   onDone,
   onStatus,
   onLogin,
 }: {
   jobId: string;
+  // SSE route to tail. Defaults to the internal same-origin route (used by the
+  // create modal). The Providers settings UI passes the public `/api/v1/...`
+  // route so it stays a pure REST client (works unchanged when the hub is remote).
+  endpoint?: string;
   onDone?: (status: string) => void;
   // Fired with 'streaming' on (re)connect and the terminal status on end, so the
   // parent can render a live working/done indicator in the modal header.
@@ -48,7 +53,8 @@ export function JobLogStream({
 
   useEffect(() => {
     onStatusRef.current?.('streaming');
-    const es = new EventSource(`/api/jobs/${encodeURIComponent(jobId)}/logs`);
+    const url = endpoint ?? `/api/jobs/${encodeURIComponent(jobId)}/logs`;
+    const es = new EventSource(url);
     es.addEventListener('log', (e) => {
       const line = JSON.parse((e as MessageEvent).data) as string;
       setLines((prev) => [...prev, line]);
@@ -66,7 +72,7 @@ export function JobLogStream({
     });
     // EventSource auto-reconnects on transient errors; nothing to do here.
     return () => es.close();
-  }, [jobId]);
+  }, [jobId, endpoint]);
 
   useEffect(() => {
     const el = preRef.current;
