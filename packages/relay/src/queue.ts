@@ -79,6 +79,12 @@ export interface QueueJob {
    * `agent` still holds a value (required by the type) but is ignored.
    */
   noAgent?: boolean;
+  /**
+   * Seed the agent's first turn with the setup-wizard prompt (generate
+   * `agentbox.yaml`) — set by the hub when the project has no `agentbox.yaml`
+   * and no default snapshot. Inert when `noAgent` (no agent to run it).
+   */
+  setupWizard?: boolean;
   /** Workspace + create-time options the worker reconstructs from. */
   createOpts: QueueJobCreateOpts;
   /** Per-job concurrency ceiling (--max-running override, else the global). */
@@ -112,6 +118,33 @@ export interface QueueJob {
   reason?: string;
   /** Exit code of the worker process (only set on done/failed). */
   exitCode?: number;
+  /**
+   * Interactive Claude re-login sub-state. Set by the worker when it detects an
+   * expired/dead Claude login during create and drives a browser re-login in a
+   * throwaway docker container (job stays `running` meanwhile). The hub API/UI
+   * read `phase`/`url`/`error` to surface the flow; the code endpoint writes
+   * `code` back, which the worker consumes and clears. Absent for the normal
+   * (creds-OK) path.
+   */
+  login?: QueueJobLogin;
+}
+
+/**
+ * Claude re-login sub-state carried on a create job. `phase`/`url`/`error` flow
+ * worker → UI; `code` flows UI → worker (the pasted OAuth approval code, consumed
+ * and cleared once delivered).
+ */
+export interface QueueJobLogin {
+  required: boolean;
+  phase: 'starting' | 'awaiting-code' | 'exchanging' | 'done' | 'error';
+  /** OAuth approval URL the user must open; present from `awaiting-code` onward. */
+  url?: string;
+  /** Terminal failure reason (with `phase: 'error'`). */
+  error?: string;
+  /** A recoverable note (e.g. a rejected code) — the flow stays usable. */
+  lastError?: string;
+  /** UI → worker: the pasted approval code. Cleared by the worker once delivered. */
+  code?: string;
 }
 
 /**
@@ -124,6 +157,9 @@ export interface QueueJobCreateOpts {
   name?: string;
   hostSnapshot?: boolean;
   snapshot?: string;
+  /** Base ref the box's per-box `agentbox/<name>` branch forks from (branch / tag
+   *  / SHA). Absent → the host's HEAD. Mirrors the CLI's `--from-branch`. */
+  fromBranch?: string;
   image?: string;
   withPlaywright?: boolean;
   withEnv?: boolean;
@@ -205,6 +241,8 @@ export interface EnqueueQueueJobInput {
    * required by the type but is ignored by the worker when this is set.
    */
   noAgent?: boolean;
+  /** Seed the setup-wizard prompt as the agent's first turn (hub create path). */
+  setupWizard?: boolean;
   /** Per-invocation override of queue.maxConcurrent. */
   maxRunningOverride?: number;
   /** Per-invocation override of queue.maxWorking. */
@@ -253,6 +291,7 @@ export async function enqueueQueueJob(
     prompt: input.prompt,
     agentArgs: input.agentArgs,
     ...(input.noAgent ? { noAgent: true } : {}),
+    ...(input.setupWizard ? { setupWizard: true } : {}),
     createOpts: input.createOpts,
     maxConcurrent: ceiling,
     ...(maxWorking !== undefined ? { maxWorking } : {}),

@@ -1,14 +1,18 @@
+import { execFile } from 'node:child_process';
 import { readdir, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import {
   findProjectRoot,
   hashProjectPath,
   isProviderKind,
   listProjectsConfigured,
+  loadEffectiveConfig,
   PROVIDER_NAMES,
   providerMeta,
   registerProject,
+  resolveDefaultCheckpoint,
   unregisterProject,
   type ProviderKind,
 } from '@agentbox/config';
@@ -20,9 +24,11 @@ import {
   isValidBoxStatus,
   loadQueue,
   readJob,
+  writeJob,
   type PendingApproval,
   type QueueAgentKind,
   type QueueJob,
+  type QueueJobLogin,
   type RelayServerHandle,
 } from '@agentbox/relay';
 import type { BoxGitDeps, ProviderModule } from '@agentbox/sandbox-core';
@@ -43,6 +49,7 @@ import { listBoxes, mintHostInitiatedToken, type ListedBox } from '@agentbox/san
 import type {
   ActionResult,
   BoxOpResult,
+  BranchList,
   BrowseDirResult,
   CreateBoxInput,
   CreateBoxResult,
@@ -59,6 +66,8 @@ import type { Approval, Box, BoxStatus, GithubState, HubState, Project, Provider
  * it — it reaches these methods through globalThis.__AGENTBOX_HUB_BACKEND — so
  * the docker/ssh/cloud-SDK graph never enters Next's bundle.
  */
+
+const execFileAsync = promisify(execFile);
 
 // ── provider resolution (mirrors apps/cli/src/provider/loaders.ts) ──
 const IMPORTERS: Record<ProviderKind, () => Promise<{ providerModule: ProviderModule }>> = {
@@ -109,6 +118,7 @@ function mapBox(b: ListedBox): Box {
   const root = projectRootOf(b);
   const createdAt = Date.parse(b.createdAt) || Date.now();
   const status = mapStatus(b);
+  const eps = b.endpoints?.endpoints ?? [];
   return {
     id: b.id,
     projectId: hashProjectPath(root),
@@ -124,7 +134,41 @@ function mapBox(b: ListedBox): Box {
     commits: null,
     filesTouched: null,
     error: status === 'error' ? (b.claudeSessionTitle ?? 'Agent reported an error') : null,
+    webUrl: eps.find((e) => e.kind === 'web')?.url ?? null,
+    vncUrl: eps.find((e) => e.kind === 'vnc')?.url ?? null,
   };
+}
+
+/**
+ * A host repo's current branch (`git rev-parse --abbrev-ref HEAD`). Returns null when
+ * HEAD is detached (git prints the literal `HEAD`), the path isn't a repo, or git fails.
+ * Uses node's built-in execFile to avoid pulling execa into the Next-adjacent module.
+ */
+async function hostBranchOf(repo: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', repo, 'rev-parse', '--abbrev-ref', 'HEAD']);
+    const branch = stdout.trim();
+    return !branch || branch === 'HEAD' ? null : branch;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether a new box in this project would want the setup wizard: the host repo
+ * has no `agentbox.yaml` AND no default snapshot (per-provider or global). A
+ * snapshot carries the yaml, so a project with one doesn't need setup even
+ * without a host file. Best-effort — any error means "don't offer setup". One
+ * `loadEffectiveConfig` per project (few of them), so cheap enough for getData().
+ */
+async function computeNeedsSetup(root: string, provider: string): Promise<boolean> {
+  try {
+    const cfg = await loadEffectiveConfig(root);
+    if (cfg.hasAgentboxYaml) return false;
+    return resolveDefaultCheckpoint(cfg.effective, provider).length === 0;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -148,6 +192,8 @@ async function listProjects(boxes: ListedBox[]): Promise<Project[]> {
   await Promise.all([...boxByRoot.keys()].map((r) => registerProject(r).catch(() => {})));
 
   const byId = new Map<string, Project>();
+  // The host path per project id, so we can read each repo's current branch below.
+  const pathById = new Map<string, string>();
   // Registry entries (incl. zero-box projects).
   for (const e of await listProjectsConfigured()) {
     const box = boxByRoot.get(e.originalPath);
@@ -159,6 +205,7 @@ async function listProjects(boxes: ListedBox[]): Promise<Project[]> {
       provider: box?.provider ?? 'docker',
       createdAt: box?.createdAt ?? (e.createdAt ? Date.parse(e.createdAt) || Date.now() : Date.now()),
     });
+    pathById.set(e.hash, e.originalPath);
   }
   // Belt-and-suspenders: any box root that failed to register still shows up.
   for (const p of boxByRoot.values()) {
@@ -172,8 +219,21 @@ async function listProjects(boxes: ListedBox[]): Promise<Project[]> {
         provider: p.provider,
         createdAt: p.createdAt,
       });
+      pathById.set(id, p.root);
     }
   }
+  // Read each host repo's current branch (the base a new box forks from). Runs on every
+  // state read, so keep it a single cheap `rev-parse` per project, in parallel.
+  await Promise.all(
+    [...byId.entries()].map(async ([id, proj]) => {
+      const repo = pathById.get(id);
+      if (!repo) return;
+      [proj.currentBranch, proj.needsSetup] = await Promise.all([
+        hostBranchOf(repo),
+        computeNeedsSetup(repo, proj.provider),
+      ]);
+    }),
+  );
   return [...byId.values()].sort((a, b) => b.createdAt - a.createdAt);
 }
 
@@ -333,6 +393,62 @@ async function browseDirHost(dir?: string): Promise<BrowseDirResult> {
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+const SHA_RE = /^[0-9a-f]{7,40}$/i;
+/** Cap on-demand git network calls so a private-remote credential prompt can't hang the request. */
+const GIT_NET_TIMEOUT_MS = 15_000;
+
+/**
+ * List a host repo's branches (local heads + remote-tracking) plus the current
+ * HEAD, for the create-box base-branch picker. Best-effort `fetch --all` first
+ * so remote tips are current; `origin/HEAD` (a symref) is dropped. All via node
+ * execFile (no execa in this Next-adjacent module), mirroring `hostBranchOf`.
+ */
+async function branchListHost(repo: string): Promise<BranchList> {
+  try {
+    await execFileAsync('git', ['-C', repo, 'fetch', '--quiet', '--all'], {
+      timeout: GIT_NET_TIMEOUT_MS,
+    }).catch(() => {});
+    const { stdout } = await execFileAsync('git', [
+      '-C',
+      repo,
+      'for-each-ref',
+      '--format=%(refname:short)',
+      'refs/heads',
+      'refs/remotes',
+    ]);
+    const seen = new Set<string>();
+    const branches: string[] = [];
+    for (const raw of stdout.split('\n')) {
+      const b = raw.trim();
+      if (!b || b.endsWith('/HEAD')) continue;
+      if (seen.has(b)) continue;
+      seen.add(b);
+      branches.push(b);
+    }
+    return { ok: true, current: await hostBranchOf(repo), branches };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Validate a `--from-branch` ref against the host repo before enqueuing a create
+ * job — a typo shouldn't leave a half-built box. Mirrors `resolveFromBranch`
+ * (apps/cli): fetch branch/tag names first (SHAs skip the fetch), then
+ * `rev-parse --verify <ref>^{commit}`. Node execFile, not execa.
+ */
+async function verifyFromBranch(repo: string, ref: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!SHA_RE.test(ref)) {
+    await execFileAsync('git', ['-C', repo, 'fetch', '--quiet', 'origin', ref], {
+      timeout: GIT_NET_TIMEOUT_MS,
+    }).catch(() => {});
+  }
+  const ok = await execFileAsync('git', ['-C', repo, 'rev-parse', '--verify', `${ref}^{commit}`])
+    .then(() => true)
+    .catch(() => false);
+  return ok ? { ok: true } : { ok: false, error: `unknown base ref "${ref}" (not found in the project repo)` };
 }
 
 async function runLifecycle(id: string, op: (box: BoxRecord, provider: Provider) => Promise<void>): Promise<ActionResult> {
@@ -523,6 +639,16 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
         const agent: QueueAgentKind =
           input.agent === 'claude' || input.agent === 'none' ? 'claude-code' : input.agent;
         const name = input.name?.trim() || undefined;
+        // Base ref for the box's per-box branch (else HEAD). Validate against the
+        // host repo up front so a typo fails here, not mid-build.
+        const fromBranch = input.fromBranch?.trim() || undefined;
+        if (fromBranch) {
+          const v = await verifyFromBranch(workspace, fromBranch);
+          if (!v.ok) return { ok: false, error: v.error };
+        }
+        // Setup wizard: seed the agent's first turn to generate agentbox.yaml.
+        // Inert for a no-agent box (nothing to run it).
+        const setupWizard = !noAgent && input.setupWizard === true;
         // Enqueue a detached create job (the same pipeline as `agentbox <agent>
         // -i`): the worker runs createBox() — including the full sync layer —
         // then starts the agent in a detached tmux session (unless noAgent, which
@@ -536,13 +662,19 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
           prompt: noAgent ? '' : (input.prompt ?? ''),
           agentArgs: [],
           ...(noAgent ? { noAgent: true } : {}),
-          createOpts: { workspace, name },
+          ...(setupWizard ? { setupWizard: true } : {}),
+          createOpts: { workspace, name, fromBranch },
         });
         handle.pokeQueue();
         return { ok: true, jobId: job.id };
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }
+    },
+    async listBranches(projectId: string): Promise<BranchList> {
+      const repo = await resolveProjectPath(projectId);
+      if (!repo) return { ok: false, error: `unknown project ${projectId}` };
+      return branchListHost(repo);
     },
     async addProject(absPath: string): Promise<ActionResult> {
       try {
@@ -587,10 +719,27 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
       }
     },
     browseDir: (dir) => browseDirHost(dir),
-    async getJob(id): Promise<{ status: string; logPath: string; boxId?: string } | null> {
+    async getJob(id) {
       const job = await readJob(id);
       if (!job) return null;
-      return { status: job.status, logPath: job.logPath, boxId: job.boxId };
+      // Surface the login sub-state (minus the inbound `code`, which is worker-only).
+      const login = job.login
+        ? {
+            required: job.login.required,
+            phase: job.login.phase,
+            url: job.login.url,
+            error: job.login.error,
+            lastError: job.login.lastError,
+          }
+        : undefined;
+      return { status: job.status, logPath: job.logPath, boxId: job.boxId, login };
+    },
+    async submitLoginCode(id, code) {
+      const job = await readJob(id);
+      if (!job) return { ok: false, error: `job not found: ${id}` };
+      const cur: QueueJobLogin = job.login ?? { required: true, phase: 'starting' };
+      await writeJob({ ...job, login: { ...cur, code: code.trim() } });
+      return { ok: true };
     },
 
     // ── box git operations (delegate to the shared, provider-agnostic helpers) ──

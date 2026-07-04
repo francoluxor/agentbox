@@ -13,6 +13,8 @@
  */
 
 import { Command } from 'commander';
+import { stat } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   findProjectRoot,
   loadEffectiveConfig,
@@ -21,6 +23,9 @@ import {
 } from '@agentbox/config';
 import {
   createBox,
+  DEFAULT_BOX_IMAGE,
+  ensureImage,
+  hostBackupHasCredentials,
   rebuildPluginNativeDeps,
   recordLastAgent,
   SHARED_CLAUDE_VOLUME,
@@ -29,10 +34,13 @@ import {
   startOpencodeSession,
   ensureCodexInstalled,
   ensureOpencodeInstalled,
+  volumeClaudeCredentials,
 } from '@agentbox/sandbox-docker';
-import { readJob, writeJob, type QueueAgentKind, type QueueJob } from '@agentbox/relay';
+import { readJob, writeJob, type QueueAgentKind, type QueueJob, type QueueJobLogin } from '@agentbox/relay';
 import { toSyncKind } from '@agentbox/core';
 import { resolveClaudeAuth } from '../auth.js';
+import { claudeCredStatus } from '../lib/queue/assert-creds.js';
+import { runClaudeLogin } from '../lib/claude-login-run.js';
 import { resolveLimits } from '../limits.js';
 import { openCommandLog } from '../lib/log-file.js';
 import { buildPromptArgs } from '../lib/queue/build-prompt-args.js';
@@ -41,6 +49,122 @@ import { applyClaudeSkipPermissions, applyCodexSkipPermissions } from '../lib/sk
 import { providerForCreate } from '../provider/registry.js';
 import { cloudAgentStartDetached } from './_cloud-attach.js';
 import { spawnQueuedOpenTerminal } from '../terminal/queue-open.js';
+import { buildSetupInitialPrompt } from '../wizard.js';
+
+/**
+ * Seed the setup-wizard prompt when the hub requested it (`job.setupWizard`):
+ * the box's first agent turn asks the agent to explore the workspace and
+ * generate `agentbox.yaml`. Mirrors what the CLI wizard does for a fresh,
+ * unconfigured project — but here it's decided on the host (the hub knew the
+ * project had no `agentbox.yaml` + no default snapshot) and carried on the job.
+ * A user-typed prompt still runs, after the setup guidance.
+ */
+async function applySetupWizardPrompt(job: QueueJob, workspace: string, basePrompt: string): Promise<string> {
+  if (!job.setupWizard) return basePrompt;
+  const hasYaml = await stat(join(workspace, 'agentbox.yaml'))
+    .then(() => true)
+    .catch(() => false);
+  const setup = buildSetupInitialPrompt(workspace, hasYaml);
+  const rest = basePrompt.trim();
+  return rest ? `${setup}\n\nThen, once the setup is done: ${rest}` : setup;
+}
+
+/** Merge a login sub-state patch onto the on-disk manifest, preserving the rest. */
+async function patchJobLogin(id: string, patch: Partial<QueueJobLogin>): Promise<void> {
+  const j = await readJob(id);
+  if (!j) return;
+  const cur: QueueJobLogin = j.login ?? { required: true, phase: 'starting' };
+  const next: QueueJobLogin = { ...cur, ...patch };
+  if ('code' in patch && patch.code === undefined) delete next.code;
+  await writeJob({ ...j, login: next });
+}
+
+/**
+ * True when the box needs a fresh Claude browser login before it can be created.
+ * A forwarded host-env token short-circuits (it's mounted straight in). Cloud
+ * rides the host backup (login when missing or the cloud-only expiry fires);
+ * docker boots from the shared volume and self-refreshes a present token in-box,
+ * so it only needs login when neither the volume nor the host backup holds a
+ * usable refresh token.
+ */
+async function needsClaudeLogin(image: string, isCloud: boolean): Promise<boolean> {
+  const resolved = await resolveClaudeAuth(process.env);
+  if (resolved.source !== 'none') return false;
+  if (isCloud) return (await claudeCredStatus(process.env, true)) !== 'ok';
+  const vol = await volumeClaudeCredentials(SHARED_CLAUDE_VOLUME, image);
+  if (vol.hasRefreshToken) return false;
+  return !(await hostBackupHasCredentials());
+}
+
+/**
+ * Before creating a claude box, detect an expired/dead Claude login and, if so,
+ * drive a browser re-login in a throwaway docker container. Surfaces the state
+ * (phase/url/error) + verbatim transcript on the job manifest / create log so the
+ * hub UI can show the flow and POST back the pasted code. Blocks (the job stays
+ * `running`) until login completes; throws on failure so the job fails with the
+ * reason. The login always writes the shared volume + host backup, which then
+ * seeds/refreshes both docker (volume) and cloud (backup push) creates.
+ */
+async function ensureClaudeLoginFresh(args: {
+  id: string;
+  log: ReturnType<typeof openCommandLog>;
+  image: string;
+  isCloud: boolean;
+}): Promise<void> {
+  const { id, log, image, isCloud } = args;
+  if (!(await needsClaudeLogin(image, isCloud))) return;
+
+  log.write('claude login is expired or missing — starting browser re-login');
+  await patchJobLogin(id, { required: true, phase: 'starting' });
+  await ensureImage(image, { onProgress: (line) => log.write(line) });
+
+  // Bridge the manifest `login.code` (written by the hub endpoint) to the
+  // synchronous getCode the login core polls: read it off disk, clear it, hand
+  // it over once.
+  let pendingCode: string | null = null;
+  const codeWatcher = setInterval(() => {
+    void (async () => {
+      if (pendingCode) return;
+      const j = await readJob(id);
+      const c = j?.login?.code;
+      if (c && c.trim().length > 0) {
+        pendingCode = c.trim();
+        await patchJobLogin(id, { code: undefined });
+      }
+    })();
+  }, 500);
+
+  // Serialize our own manifest writes so phase transitions can't reorder.
+  let chain: Promise<void> = Promise.resolve();
+  const enqueue = (patch: Partial<QueueJobLogin>): void => {
+    chain = chain.then(() => patchJobLogin(id, patch)).catch(() => {});
+  };
+
+  try {
+    const result = await runClaudeLogin({
+      image,
+      writeRaw: (chunk) => log.raw(chunk),
+      writeLog: (line) => log.write(line),
+      onPhase: (phase, u) => {
+        const patch: Partial<QueueJobLogin> = { phase };
+        if (u?.url) patch.url = u.url;
+        if (u?.error !== undefined) patch.error = u.error;
+        if (u?.lastError !== undefined) patch.lastError = u.lastError;
+        enqueue(patch);
+      },
+      getCode: () => {
+        const c = pendingCode;
+        pendingCode = null;
+        return c;
+      },
+    });
+    await chain;
+    if (!result.ok) throw new Error(result.error ?? 'claude login failed');
+    log.write('claude login refreshed');
+  } finally {
+    clearInterval(codeWatcher);
+  }
+}
 
 export const runQueuedJobCommand = new Command('_run-queued-job')
   .description('internal: run a queued background agent job (do not invoke directly)')
@@ -143,10 +267,18 @@ async function runDockerJob(
   const withPlaywright =
     cfg.effective.box.withPlaywright || cfg.effective.browser.default !== 'agent-browser';
 
+  // Re-login in a browser if the box's Claude credentials are dead (surfaced on
+  // the job so the hub UI can drive it), before we create the box on them.
+  if (!job.noAgent && job.agent === 'claude-code') {
+    await ensureClaudeLoginFresh({ id: job.id, log, image: cfg.effective.box.image, isCloud: false });
+  }
+
   log.write(`creating box for agent=${job.noAgent ? 'none' : job.agent}`);
   const result = await createBox({
     workspacePath: opts.workspace,
     name: opts.name && opts.name.length > 0 ? opts.name : undefined,
+    // Base ref the box's per-box branch forks from (hub `--from-branch`); absent → HEAD.
+    fromBranch: opts.fromBranch,
     useSnapshot,
     checkpointRef,
     image: cfg.effective.box.image,
@@ -203,7 +335,8 @@ async function runDockerJob(
   // the queued prompt so the background agent opens on it.
   const resyncWarning = result.resync ? buildResyncWarning(result.resync) : null;
   if (resyncWarning) log.write(resyncWarning);
-  const prompt = prependResyncWarning(resyncWarning, job.prompt);
+  const seeded = await applySetupWizardPrompt(job, opts.workspace, job.prompt);
+  const prompt = prependResyncWarning(resyncWarning, seeded);
   const promptedArgs = buildPromptArgs(job.agent, prompt, job.agentArgs);
 
   if (job.agent === 'claude-code') {
@@ -292,8 +425,9 @@ async function maybeOpenQueuedTerminal(
  * credential-volume seed, git-bundle workspace seed, and ctl daemon. We then
  * pre-start a detached agent tmux session seeded with the same prompt+args the
  * docker path bakes into `tmux new-session`. carry: rides the job (resolved +
- * approved on the host at submit) and is applied here; env-file import / explicit
- * branch selection are still omitted (the docker `-i` worker omits them too).
+ * approved on the host at submit) and is applied here; `fromBranch` is honored
+ * (clone `--branch`), env-file import is still omitted (the docker `-i` worker
+ * omits it too).
  */
 async function runCloudJob(
   job: QueueJob,
@@ -321,10 +455,21 @@ async function runCloudJob(
   const withPlaywright =
     cfg.effective.box.withPlaywright || cfg.effective.browser.default !== 'agent-browser';
 
+  // Re-login in a browser if the host's Claude credentials are expired (surfaced
+  // on the job so the hub UI can drive it), before we push them to the cloud box.
+  // Cloud's box.image may be a non-docker snapshot id, so the login container
+  // (host docker) uses the default box image.
+  if (!job.noAgent && job.agent === 'claude-code') {
+    await ensureClaudeLoginFresh({ id: job.id, log, image: DEFAULT_BOX_IMAGE, isCloud: true });
+  }
+
   log.write(`creating cloud box (${providerName}) for agent=${job.noAgent ? 'none' : job.agent}`);
   const result = await provider.create({
     workspacePath: opts.workspace,
     name: opts.name && opts.name.length > 0 ? opts.name : undefined,
+    // Base ref to seed the box's branch from (hub `--from-branch`). Cloud clone
+    // `--branch` accepts branch/tag names but not SHAs; absent → HEAD.
+    fromBranch: opts.fromBranch,
     checkpointRef,
     image: cfg.effective.box.image,
     withPlaywright,
@@ -351,7 +496,8 @@ async function runCloudJob(
     return;
   }
 
-  const promptedArgs = buildPromptArgs(job.agent, job.prompt, job.agentArgs);
+  const seeded = await applySetupWizardPrompt(job, opts.workspace, job.prompt);
+  const promptedArgs = buildPromptArgs(job.agent, seeded, job.agentArgs);
 
   let binary: string;
   let sessionName: string;

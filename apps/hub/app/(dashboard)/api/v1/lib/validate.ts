@@ -20,7 +20,7 @@ function isObject(v: unknown): v is Record<string, unknown> {
 
 export function parseCreateBox(body: unknown): Parsed<CreateBoxInput> {
   if (!isObject(body)) return { ok: false, message: 'body must be a JSON object' };
-  const { projectId, agent, provider, name, prompt } = body;
+  const { projectId, agent, provider, name, prompt, fromBranch, setupWizard } = body;
   if (typeof projectId !== 'string' || projectId.length === 0) {
     return { ok: false, message: 'projectId is required (string)' };
   }
@@ -32,6 +32,10 @@ export function parseCreateBox(body: unknown): Parsed<CreateBoxInput> {
   }
   if (name !== undefined && typeof name !== 'string') return { ok: false, message: 'name must be a string' };
   if (prompt !== undefined && typeof prompt !== 'string') return { ok: false, message: 'prompt must be a string' };
+  const fb = optionalString(fromBranch, 'fromBranch');
+  if (!fb.ok) return fb;
+  const sw = optionalBool(setupWizard, 'setupWizard');
+  if (!sw.ok) return sw;
   return {
     ok: true,
     value: {
@@ -40,6 +44,8 @@ export function parseCreateBox(body: unknown): Parsed<CreateBoxInput> {
       provider: provider as CreateBoxInput['provider'],
       name,
       prompt,
+      fromBranch: fb.value,
+      setupWizard: sw.value,
     },
   };
 }
@@ -49,6 +55,15 @@ export function parseAnswer(body: unknown): Parsed<'y' | 'n'> {
   const { answer } = body;
   if (answer !== 'y' && answer !== 'n') return { ok: false, message: "answer must be 'y' or 'n'" };
   return { ok: true, value: answer };
+}
+
+export function parseLoginCode(body: unknown): Parsed<{ code: string }> {
+  if (!isObject(body)) return { ok: false, message: 'body must be a JSON object' };
+  const { code } = body;
+  if (typeof code !== 'string' || code.trim().length === 0) {
+    return { ok: false, message: 'code is required (non-empty string)' };
+  }
+  return { ok: true, value: { code: code.trim() } };
 }
 
 export function parseProject(body: unknown): Parsed<{ path: string }> {

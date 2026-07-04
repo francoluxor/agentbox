@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useState, useTransition, type ReactNode } from 'react';
+import { useEffect, useState, useTransition, type ReactNode } from 'react';
 import { Icons } from '@/components/icons';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -17,11 +17,12 @@ import {
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { createBoxAction } from '@/lib/boxes/actions';
+import { createBoxAction, listBranchesAction } from '@/lib/boxes/actions';
 import type { CreateBoxInput } from '@/lib/boxes/backend-types';
 import { useStore } from '@/lib/boxes/store';
 import type { Project, ProviderOption } from '@/lib/boxes/types';
-import { JobLogStream } from './job-log-stream';
+import { cn } from '@/lib/utils';
+import { JobLogStream, type JobLoginState } from './job-log-stream';
 
 type Agent = CreateBoxInput['agent'];
 
@@ -80,11 +81,41 @@ function CreateBoxModal({
   const [provider, setProvider] = useState<CreateBoxInput['provider']>('docker');
   const [name, setName] = useState('');
   const [prompt, setPrompt] = useState('');
+  const [fromBranch, setFromBranch] = useState('');
+  const [branches, setBranches] = useState<string[] | null>(null);
+  const [runSetup, setRunSetup] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<string>('streaming');
+  const [loginPhase, setLoginPhase] = useState<JobLoginState['phase'] | null>(null);
 
   const selected = projects.find((p) => p.id === projectId) ?? project;
+
+  // Load the selected project's branches for the base-branch picker, and default
+  // the base + setup-wizard toggle from the project. Re-runs when the project
+  // changes. Ignored once the build job has started (the form is gone).
+  useEffect(() => {
+    if (!projectId || jobId) return;
+    setRunSetup(selected?.needsSetup ?? false);
+    let cancelled = false;
+    setBranches(null);
+    setFromBranch(selected?.currentBranch ?? '');
+    void listBranchesAction(projectId).then((res) => {
+      if (cancelled || !res.ok) {
+        if (!cancelled && !res.ok) setBranches([]);
+        return;
+      }
+      setBranches(res.branches);
+      // Default to the repo's current HEAD when it's in the list.
+      if (res.current && res.branches.includes(res.current)) setFromBranch(res.current);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // `selected` is derived from projectId (+ the static projects prop), so keying
+    // the effect on projectId/jobId is sufficient.
+  }, [projectId, jobId]);
 
   const submit = () => {
     setError(null);
@@ -99,6 +130,12 @@ function CreateBoxModal({
         provider,
         name: name.trim() || undefined,
         prompt: agent === 'none' ? undefined : prompt.trim() || undefined,
+        // Only pin an explicit base when it differs from the current branch; leaving the current
+        // branch selected bases the box on the host's literal HEAD (like `agentbox create` with no
+        // --from-branch) and skips a redundant fetch. Uncommitted + untracked files carry over either way.
+        fromBranch:
+          fromBranch.trim() && fromBranch.trim() !== selected?.currentBranch ? fromBranch.trim() : undefined,
+        setupWizard: agent !== 'none' && runSetup,
       });
       if (!res.ok) {
         setError(res.error);
@@ -123,13 +160,18 @@ function CreateBoxModal({
         {/* Live job state next to the close button: pulsating while working, a pill when settled. */}
         {jobId ? (
           <div className="ml-auto mr-8 flex-none pt-0.5">
-            <JobStatusBadge status={jobStatus} />
+            <JobStatusBadge status={jobStatus} loginPhase={loginPhase} />
           </div>
         ) : null}
       </DialogHeader>
       <DialogBody className="flex flex-col gap-4">
         {jobId ? (
-          <JobLogStream jobId={jobId} onStatus={setJobStatus} onDone={() => router.refresh()} />
+          <JobLogStream
+            jobId={jobId}
+            onStatus={setJobStatus}
+            onDone={() => router.refresh()}
+            onLogin={(l) => setLoginPhase(l?.phase ?? null)}
+          />
         ) : (
           <>
             {!project ? (
@@ -165,21 +207,78 @@ function CreateBoxModal({
             <Field label="Name (optional)">
               <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="auto" />
             </Field>
+            {selected?.needsSetup && agent !== 'none' ? (
+              <label className="flex items-start gap-2.5">
+                <input
+                  type="checkbox"
+                  checked={runSetup}
+                  onChange={(e) => setRunSetup(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 flex-none accent-primary"
+                />
+                <span className="flex flex-col gap-0.5">
+                  <span className="text-xs font-medium text-secondary-foreground">Run setup wizard</span>
+                  <span className="font-mono text-xs text-muted-foreground">
+                    This project has no agentbox.yaml — the agent explores the repo and proposes one on its first
+                    turn.
+                  </span>
+                </span>
+              </label>
+            ) : null}
             {agent === 'none' ? (
               <p className="font-mono text-xs text-muted-foreground">
                 The box is created and left running with no agent — attach later from a terminal or SSH
                 (<span className="text-secondary-foreground">agentbox shell</span>).
               </p>
-            ) : (
-              <Field label="Initial prompt (optional)">
-                <Textarea
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  rows={3}
-                  placeholder="Leave empty to just start the agent — attach later from a terminal or SSH."
-                />
-              </Field>
-            )}
+            ) : null}
+            {/* Advanced: base branch + initial prompt, collapsed to keep the form lean. */}
+            <div className="flex flex-col gap-4">
+              <button
+                type="button"
+                onClick={() => setShowAdvanced((v) => !v)}
+                className="flex cursor-pointer items-center gap-1.5 self-start text-xs font-medium text-secondary-foreground transition-colors hover:text-foreground"
+              >
+                <Icons.chevR className={cn('size-3.5 transition-transform', showAdvanced && 'rotate-90')} />
+                Advanced
+              </button>
+              {showAdvanced ? (
+                <>
+                  {/* Base branch picker: the box forks its per-box branch from this ref.
+                      Hidden on the hosted path (no local repo → empty branch list). */}
+                  {branches === null ? (
+                    <Field label="Base branch">
+                      <Select value="" disabled>
+                        <option value="">Loading branches…</option>
+                      </Select>
+                    </Field>
+                  ) : branches.length > 0 ? (
+                    <Field label="Base branch">
+                      <Select value={fromBranch} onChange={(e) => setFromBranch(e.target.value)}>
+                        {/* Empty = the repo's current HEAD when it isn't a named ref. */}
+                        {selected?.currentBranch && !branches.includes(selected.currentBranch) ? (
+                          <option value="">{selected.currentBranch} (current)</option>
+                        ) : null}
+                        {branches.map((b) => (
+                          <option key={b} value={b}>
+                            {b}
+                            {b === selected?.currentBranch ? ' (current)' : ''}
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+                  ) : null}
+                  {agent !== 'none' ? (
+                    <Field label="Initial prompt (optional)">
+                      <Textarea
+                        value={prompt}
+                        onChange={(e) => setPrompt(e.target.value)}
+                        rows={3}
+                        placeholder="Leave empty to just start the agent — attach later from a terminal or SSH."
+                      />
+                    </Field>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
             {error ? <div className="font-mono text-xs text-destructive">{error}</div> : null}
           </>
         )}
@@ -211,7 +310,17 @@ function CreateBoxModal({
 
 // The build-job state, shown as a status pill in the modal header. `badge-create`
 // pulses (working); `badge-run` is the settled green (done); `badge-err` is red.
-function JobStatusBadge({ status }: { status: string }) {
+// A pending Claude re-login takes over the pill (amber "Login required") until the
+// user finishes it, since the create is blocked on that.
+function JobStatusBadge({ status, loginPhase }: { status: string; loginPhase?: JobLoginState['phase'] | null }) {
+  if (loginPhase === 'awaiting-code' || loginPhase === 'starting' || loginPhase === 'exchanging') {
+    return (
+      <Badge className="badge-create">
+        <span className="badge-dot" />
+        Login required
+      </Badge>
+    );
+  }
   if (status === 'done') {
     return (
       <Badge className="badge-run">

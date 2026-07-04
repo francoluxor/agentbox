@@ -183,6 +183,7 @@ export {
   type QueueConfig,
   type QueueJob,
   type QueueJobCreateOpts,
+  type QueueJobLogin,
   type QueueJobOpenTerminal,
   type QueueJobStatus,
   type QueueLoopDeps,

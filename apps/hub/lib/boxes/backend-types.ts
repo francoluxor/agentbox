@@ -68,7 +68,21 @@ export interface CreateBoxInput {
   provider?: ProviderKind;
   name?: string;
   prompt?: string;
+  // Base ref the box's per-box branch forks from (branch / tag / SHA), instead
+  // of the project's current HEAD. Mirrors the CLI's `--from-branch`. The
+  // backend validates it against the host repo before enqueuing.
+  fromBranch?: string;
+  // Seed the agent's first turn with the setup-wizard prompt (generate
+  // `agentbox.yaml`). The UI defaults this on for projects that need setup
+  // (no `agentbox.yaml` + no default snapshot). Inert for agent === 'none'.
+  setupWizard?: boolean;
 }
+
+// Branch listing for a project's create-box base-branch picker: the current
+// HEAD (the default base) plus local + remote branch names.
+export type BranchList =
+  | { ok: true; current: string | null; branches: string[] }
+  | { ok: false; error: string };
 
 // Create returns immediately with the background job id — the box is built by a
 // detached queue worker; progress streams over the per-job log SSE.
@@ -89,13 +103,25 @@ export type BrowseDirResult =
   | { ok: true; path: string; parent: string | null; entries: DirEntry[] }
   | { ok: false; error: string };
 
+// Claude re-login sub-state surfaced from the job manifest (see QueueJobLogin).
+// worker → UI: phase/url/error; UI → worker: the code (via submitLoginCode).
+export interface JobLoginView {
+  required: boolean;
+  phase: 'starting' | 'awaiting-code' | 'exchanging' | 'done' | 'error';
+  url?: string;
+  error?: string;
+  lastError?: string;
+}
+
 // Minimal job view for the log-stream route: the log file to tail, the terminal
-// status (so the SSE knows when to stop), and the box id once the worker writes
-// it back. Status is a plain string to keep this module free of relay imports.
+// status (so the SSE knows when to stop), the box id once the worker writes it
+// back, and (when a re-login is in flight) the login sub-state. Status is a plain
+// string to keep this module free of relay imports.
 export interface JobView {
   status: string;
   logPath: string;
   boxId?: string;
+  login?: JobLoginView;
 }
 
 // The host-facing backend. Implemented in lib/hub-backend.ts (Node-only, imports
@@ -116,6 +142,9 @@ export interface HubBackend {
   answerApproval(id: string, answer: 'y' | 'n'): Promise<ActionResult>;
   // Enqueue a background create job for a registered project; returns the jobId.
   create(input: CreateBoxInput): Promise<CreateBoxResult>;
+  // List a project's branches (local + remote) + its current HEAD, for the
+  // create-box base-branch picker. Resolves the project by id server-side.
+  listBranches(projectId: string): Promise<BranchList>;
   // Register a folder (absolute path) as a project so it can host boxes.
   addProject(absPath: string): Promise<ActionResult>;
   // Unregister a project by id (hash). Refuses if the project still has boxes or
@@ -124,9 +153,12 @@ export interface HubBackend {
   // List a directory on the hub host for the folder picker. `dir` defaults to the
   // user's home; entries are the immediate subdirectories.
   browseDir(dir?: string): Promise<BrowseDirResult>;
-  // Read a background job (log path + status) for the per-job log SSE. null when
-  // the manifest is gone.
+  // Read a background job (log path + status + login sub-state) for the per-job
+  // log SSE. null when the manifest is gone.
   getJob(id: string): Promise<JobView | null>;
+  // Deliver a pasted OAuth code to a create job that is awaiting a Claude
+  // re-login (writes it onto the manifest for the worker to consume).
+  submitLoginCode(id: string, code: string): Promise<ActionResult>;
 
   // ── box git operations ──
   // Change the box's working branch (git checkout, local to the worktree).
