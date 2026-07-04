@@ -137,10 +137,13 @@ async function ensureClaudeLoginFresh(args: {
   // login core polls: read+consume it off disk and hand it over once. This is a
   // separate channel from the manifest `login` (worker → UI), so the hub and the
   // worker never write the same object.
+  // Poll the hub's code file; the newest paste always wins. We don't gate on a
+  // buffered `pendingCode`, so a corrected paste supersedes an earlier one instead
+  // of queueing behind it (takeQueueLoginCode deletes the file, so an empty read is
+  // a cheap no-op).
   let pendingCode: string | null = null;
   const codeWatcher = setInterval(() => {
     void (async () => {
-      if (pendingCode) return;
       const c = await takeQueueLoginCode(id);
       if (c) pendingCode = c;
     })();

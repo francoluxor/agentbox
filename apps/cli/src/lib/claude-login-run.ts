@@ -109,7 +109,11 @@ export async function runClaudeLogin(opts: RunClaudeLoginOptions): Promise<RunCl
     let finished = false;
     const disposers: Array<() => void> = [];
 
+    // Never emit a phase after the login has finished (e.g. an abort or timeout
+    // that already resolved). Otherwise the post-exit warm-up continuation could
+    // race in and publish `done` after the caller already treated login as failed.
     const setPhase = (next: LoginPhase, update?: LoginPhaseUpdate): void => {
+      if (finished) return;
       phase = next;
       opts.onPhase(next, update);
     };
