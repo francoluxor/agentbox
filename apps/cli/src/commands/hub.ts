@@ -1,10 +1,25 @@
 import { spawn } from 'node:child_process';
 import { log, spinner } from '@clack/prompts';
+import { loadEffectiveConfig } from '@agentbox/config';
 import { ensureHub, getHubStatus, stopHub, type HubStatus } from '@agentbox/sandbox-docker';
 import { hostOpenCommand } from '@agentbox/sandbox-core';
 import { Command } from 'commander';
 import { handleLifecycleError } from './_errors.js';
 import { rehydrateFromState } from './relay.js';
+
+/**
+ * Effective `portless.enabled` for the hub's `agentbox.localhost` alias. The hub
+ * is host-wide, so we resolve against the cwd (picks up the global layer). Best
+ * effort — a config read failure just leaves it undefined (register best-effort).
+ */
+async function resolvePortlessEnabled(): Promise<boolean | undefined> {
+  try {
+    const cfg = await loadEffectiveConfig(process.cwd());
+    return cfg.effective.portless.enabled;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Best-effort: open the hub URL in the host browser (never throws). */
 function openInBrowser(url: string): void {
@@ -63,7 +78,10 @@ const startSub = new Command('start')
     try {
       const s = spinner();
       s.start('starting hub');
-      const ep = await ensureHub({ onLog: (line) => s.message(line) });
+      const ep = await ensureHub({
+        onLog: (line) => s.message(line),
+        portlessEnabled: await resolvePortlessEnabled(),
+      });
       await rehydrateFromState();
       s.stop(`hub running on ${ep.hostUrl}`);
       process.stdout.write(`\n  Open: ${ep.openUrl}\n\n`);
@@ -98,7 +116,10 @@ const restartSub = new Command('restart')
       const s2 = spinner();
       s2.start('starting hub');
       try {
-        const ep = await ensureHub({ onLog: (line) => s2.message(line) });
+        const ep = await ensureHub({
+          onLog: (line) => s2.message(line),
+          portlessEnabled: await resolvePortlessEnabled(),
+        });
         await rehydrateFromState();
         s2.stop(`hub running on ${ep.hostUrl}`);
         process.stdout.write(`\n  Open: ${ep.openUrl}\n\n`);
@@ -114,7 +135,10 @@ const restartSub = new Command('restart')
   });
 
 export const hubCommand = new Command('hub')
-  .description('Run the AgentBox hub — the relay + Web UI on http://127.0.0.1:8787')
+  .description(
+    'Run the AgentBox hub — the relay + Web UI on http://127.0.0.1:8787 ' +
+      '(also https://agentbox.localhost when Portless is installed)',
+  )
   .addCommand(startSub, { isDefault: true })
   .addCommand(statusSub)
   .addCommand(stopSub)

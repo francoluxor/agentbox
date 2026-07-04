@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_RELAY_PORT } from '@agentbox/relay';
+import { detectPortless, portlessAlias, portlessGetUrl, portlessUnalias } from './portless.js';
 import {
   fetchHealthz,
   killPid,
@@ -14,6 +15,7 @@ import {
   resolveCliEntry,
   shouldReclaimForVersion,
 } from './relay.js';
+import { detectEngine } from './sync/host-export.js';
 
 /**
  * `agentbox hub` lifecycle. The hub is the embedded relay + Next UI in ONE
@@ -36,6 +38,18 @@ const HUB_TOKEN_FILE = join(STATE_DIR, 'hub', 'token');
 const PORT = DEFAULT_RELAY_PORT;
 const HOST = '127.0.0.1';
 
+/**
+ * Portless alias for the hub itself. Unlike a box (a container that OrbStack can
+ * reach at `<container>.orb.local`), the hub is a host loopback process, so
+ * Portless is the only way to give it a friendly host URL. Fixed name → the URL
+ * is always `https://agentbox.localhost` (kept static so the Next server-actions
+ * origin allowlist can hard-code it). The resolved URL is cached to
+ * `HUB_PORTLESS_FILE` so `getHubStatus` (read-only) knows the alias is actually
+ * live — `portlessGetUrl` alone returns the deterministic fallback either way.
+ */
+const HUB_PORTLESS_ALIAS = 'agentbox';
+const HUB_PORTLESS_FILE = join(STATE_DIR, 'hub', 'portless-url');
+
 /** Minimum Node for the hub server (node:sqlite in password mode + Next 16). */
 const NODE_MIN = { major: 22, minor: 5 };
 
@@ -51,6 +65,12 @@ export interface HubEndpoint {
 
 export interface EnsureHubOptions {
   onLog?: (line: string) => void;
+  /**
+   * Effective `portless.enabled`. When not `false` (and Portless is installed on
+   * a non-OrbStack host) the hub registers `https://agentbox.localhost`. Pass
+   * `false` to force teardown. Undefined → register best-effort.
+   */
+  portlessEnabled?: boolean | undefined;
 }
 
 function nodeVersion(): { major: number; minor: number } {
@@ -96,15 +116,58 @@ async function readToken(): Promise<string | null> {
   }
 }
 
-async function endpointFor(): Promise<HubEndpoint> {
+async function endpointFor(portlessUrl?: string): Promise<HubEndpoint> {
   const token = await readToken();
-  const hostUrl = `http://${HOST}:${String(PORT)}`;
+  // Prefer the friendly Portless URL when one is registered; else the loopback.
+  const hostUrl = portlessUrl ?? `http://${HOST}:${String(PORT)}`;
   return {
     hostUrl,
     openUrl: token ? `${hostUrl}/?token=${token}` : hostUrl,
     port: PORT,
     token,
   };
+}
+
+/** The Portless URL cached by a prior `syncHubPortless`, or null when unregistered. */
+async function readHubPortlessUrl(): Promise<string | null> {
+  try {
+    const u = (await readFile(HUB_PORTLESS_FILE, 'utf8')).trim();
+    return u.length > 0 ? u : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Register (or tear down) the hub's `agentbox.localhost` Portless alias and
+ * return its resolved URL. Best-effort and never throws — a Portless failure
+ * just leaves the hub on its loopback URL, exactly like the box path.
+ *
+ * Registers whenever Portless is installed and the engine isn't OrbStack, unless
+ * `enabled === false` (explicit opt-out). `undefined` (never prompted) still
+ * registers — the hub URL is a pure host-side convenience.
+ */
+async function syncHubPortless(enabled: boolean | undefined): Promise<string | undefined> {
+  const teardown = async (): Promise<undefined> => {
+    await portlessUnalias(HUB_PORTLESS_ALIAS).catch(() => {});
+    await unlink(HUB_PORTLESS_FILE).catch(() => {});
+    return undefined;
+  };
+  try {
+    if (enabled === false) return await teardown();
+    // The hub is a host process, so OrbStack's container-only .orb.local can't
+    // reach it — and OrbStack users typically run no Portless proxy. Skip.
+    if ((await detectEngine()) === 'orbstack') return await teardown();
+    const portless = await detectPortless();
+    if (!portless.installed) return await teardown();
+    await portlessAlias(HUB_PORTLESS_ALIAS, PORT);
+    const url = await portlessGetUrl(HUB_PORTLESS_ALIAS);
+    await mkdir(dirname(HUB_PORTLESS_FILE), { recursive: true });
+    await writeFile(HUB_PORTLESS_FILE, url, 'utf8');
+    return url;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -166,7 +229,7 @@ export async function ensureHub(opts: EnsureHubOptions = {}): Promise<HubEndpoin
   const health = await fetchHealthz(500);
   if (health !== null) {
     if (health.ui === true && !shouldReclaimForVersion(health, currentVersion)) {
-      return endpointFor(); // a hub already runs here
+      return endpointFor(await syncHubPortless(opts.portlessEnabled)); // a hub already runs here
     }
     log(
       health.ui === true
@@ -181,7 +244,7 @@ export async function ensureHub(opts: EnsureHubOptions = {}): Promise<HubEndpoin
       // A hub process exists but isn't answering /healthz yet — give startup a
       // beat before deciding it's wedged.
       for (let i = 0; i < 10; i++) {
-        if (await pingHealthz(300)) return endpointFor();
+        if (await pingHealthz(300)) return endpointFor(await syncHubPortless(opts.portlessEnabled));
         await delay(200);
       }
       // Still unresponsive after ~2s: replace it rather than report a false
@@ -202,10 +265,15 @@ export async function ensureHub(opts: EnsureHubOptions = {}): Promise<HubEndpoin
         'Set AGENTBOX_CLI_ENTRY to override.',
     );
   }
-  return spawnHub(hubServer, cliEntry, log);
+  return spawnHub(hubServer, cliEntry, log, opts.portlessEnabled);
 }
 
-async function spawnHub(hubServer: string, cliEntry: string, log: (line: string) => void): Promise<HubEndpoint> {
+async function spawnHub(
+  hubServer: string,
+  cliEntry: string,
+  log: (line: string) => void,
+  portlessEnabled: boolean | undefined,
+): Promise<HubEndpoint> {
   const logFd = openSync(HUB_LOG_FILE, 'a');
   const child = spawn(process.execPath, [...nodeFlags(), hubServer], {
     detached: true,
@@ -230,7 +298,9 @@ async function spawnHub(hubServer: string, cliEntry: string, log: (line: string)
   for (let i = 0; i < 50; i++) {
     if (await pingHealthz(300)) {
       log(`hub reachable on http://${HOST}:${String(PORT)}`);
-      return endpointFor();
+      const purl = await syncHubPortless(portlessEnabled);
+      if (purl) log(`hub also reachable on ${purl}`);
+      return endpointFor(purl);
     }
     await delay(200);
   }
@@ -242,16 +312,27 @@ export interface StopHubResult {
   pid: number | null;
 }
 
+/** Best-effort teardown of the hub's Portless alias + its cached URL file. */
+async function unregisterHubPortless(): Promise<void> {
+  await portlessUnalias(HUB_PORTLESS_ALIAS).catch(() => {});
+  await unlink(HUB_PORTLESS_FILE).catch(() => {});
+}
+
 /** Stop the hub process + clear its pidfile. SIGTERM then SIGKILL. Idempotent. */
 export async function stopHub(): Promise<StopHubResult> {
   const pid = await readPid(HUB_PID_FILE);
-  if (pid === null) return { stopped: false, pid: null };
+  if (pid === null) {
+    await unregisterHubPortless();
+    return { stopped: false, pid: null };
+  }
   if (!(await processAlive(pid))) {
     await unlink(HUB_PID_FILE).catch(() => {});
+    await unregisterHubPortless();
     return { stopped: false, pid };
   }
   await killPid(pid);
   await unlink(HUB_PID_FILE).catch(() => {});
+  await unregisterHubPortless();
   return { stopped: true, pid };
 }
 
@@ -275,7 +356,7 @@ export async function getHubStatus(): Promise<HubStatus> {
   const pid = await readPid(HUB_PID_FILE);
   const pidAlive = pid !== null && (await processAlive(pid));
   const health = await fetchHealthz(300);
-  const ep = await endpointFor();
+  const ep = await endpointFor((await readHubPortlessUrl()) ?? undefined);
   return {
     running: health !== null,
     ui: health?.ui === true,
