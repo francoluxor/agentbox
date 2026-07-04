@@ -92,6 +92,12 @@ export interface ProviderOption {
   id: string;
   label: string;
   configured: boolean;
+  // Whether the provider has credentials on this host (docker: always true). A
+  // cloud provider can have credentials but not yet be `configured` (baked).
+  hasCredentials?: boolean;
+  // Id of an in-flight bake (prepare) job for this provider, if any — lets the
+  // settings UI resume the streamed progress.
+  jobId?: string;
   reason?: string;
 }
 

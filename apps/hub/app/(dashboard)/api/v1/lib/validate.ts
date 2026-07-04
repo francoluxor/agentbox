@@ -79,6 +79,45 @@ export function isLifecycleAction(v: string): v is LifecycleAction {
   return (LIFECYCLE_ACTIONS as readonly string[]).includes(v);
 }
 
+// ── provider install / bake ──
+export function isProviderId(v: string): boolean {
+  return (PROVIDERS as readonly string[]).includes(v);
+}
+
+// Credential fields are a provider-specific record of string values (e.g.
+// { apiKey }, { token }, { token, teamId?, projectId? }). We only enforce the
+// generic shape here; each provider's setter validates the specific fields.
+export function parseProviderCredentials(body: unknown): Parsed<Record<string, string>> {
+  if (!isObject(body)) return { ok: false, message: 'body must be a JSON object' };
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(body)) {
+    if (typeof v !== 'string') return { ok: false, message: `field ${k} must be a string` };
+    out[k] = v;
+  }
+  if (Object.keys(out).length === 0) {
+    return { ok: false, message: 'at least one credential field is required' };
+  }
+  return { ok: true, value: out };
+}
+
+export function parseProviderPrepare(
+  body: unknown,
+): Parsed<{ force?: boolean; claudeInstall?: 'native' | 'npm' }> {
+  // An empty/absent body is valid (bake with defaults).
+  if (body === undefined || body === null) return { ok: true, value: {} };
+  if (!isObject(body)) return { ok: false, message: 'body must be a JSON object' };
+  const { force, claudeInstall } = body;
+  const fb = optionalBool(force, 'force');
+  if (!fb.ok) return fb;
+  if (claudeInstall !== undefined && claudeInstall !== 'native' && claudeInstall !== 'npm') {
+    return { ok: false, message: "claudeInstall must be 'native' or 'npm'" };
+  }
+  return {
+    ok: true,
+    value: { force: fb.value, claudeInstall: claudeInstall as 'native' | 'npm' | undefined },
+  };
+}
+
 // ── git operations ──
 export const GIT_OPS = ['checkout', 'branch', 'pull', 'push', 'push-host'] as const;
 export type GitOp = (typeof GIT_OPS)[number];
