@@ -204,11 +204,15 @@ export const runQueuedJobCommand = new Command('_run-queued-job')
         await runCloudJob(job, log, onBoxCreated);
       }
 
+      // Re-read to preserve any `login` sub-state a re-login wrote (the in-memory
+      // `job` predates it); a bare replace would drop the terminal login phase.
+      const persisted = await readJob(id);
       const done: QueueJob = {
         ...job,
         status: 'done',
         finishedAt: new Date().toISOString(),
         exitCode: 0,
+        login: persisted?.login,
       };
       await writeJob(done);
       log.write(`done`);
@@ -219,12 +223,14 @@ export const runQueuedJobCommand = new Command('_run-queued-job')
       log.write(`FAIL: ${msg}`);
       if (job) {
         try {
+          const persisted = await readJob(id);
           const failed: QueueJob = {
             ...job,
             status: 'failed',
             finishedAt: new Date().toISOString(),
             reason: err instanceof Error ? err.message : String(err),
             exitCode: 1,
+            login: persisted?.login,
           };
           await writeJob(failed);
         } catch {
@@ -327,7 +333,11 @@ async function runDockerJob(
   // still attributable to a box.
   onBoxCreated(result.record.id);
   if (!job.noAgent) await recordLastAgent(result.record.id, toSyncKind(job.agent)).catch(() => {});
-  await writeJob({ ...job, boxId: result.record.id });
+  // Preserve any `login` sub-state a re-login wrote to the manifest: the in-memory
+  // `job` predates it, so a bare replace would wipe it mid-stream and the hub could
+  // lose the OAuth phase/url or leave the create modal stuck on "Login required".
+  const persisted = await readJob(job.id);
+  await writeJob({ ...job, boxId: result.record.id, login: persisted?.login });
 
   // "Just create the box" (like `agentbox create`): the box is up with its ctl
   // supervisor running; skip the agent session entirely. The user attaches later
@@ -494,7 +504,11 @@ async function runCloudJob(
   // attributable to a box and the working-agent gate can join it to its box.
   onBoxCreated(result.record.id);
   if (!job.noAgent) await recordLastAgent(result.record.id, toSyncKind(job.agent)).catch(() => {});
-  await writeJob({ ...job, boxId: result.record.id });
+  // Preserve any `login` sub-state a re-login wrote to the manifest: the in-memory
+  // `job` predates it, so a bare replace would wipe it mid-stream and the hub could
+  // lose the OAuth phase/url or leave the create modal stuck on "Login required".
+  const persisted = await readJob(job.id);
+  await writeJob({ ...job, boxId: result.record.id, login: persisted?.login });
 
   // "Just create the box": skip the detached agent session (see runDockerJob).
   if (job.noAgent) {
