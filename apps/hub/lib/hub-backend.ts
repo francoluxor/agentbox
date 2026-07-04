@@ -24,11 +24,10 @@ import {
   isValidBoxStatus,
   loadQueue,
   readJob,
-  writeJob,
+  writeQueueLoginCode,
   type PendingApproval,
   type QueueAgentKind,
   type QueueJob,
-  type QueueJobLogin,
   type RelayServerHandle,
 } from '@agentbox/relay';
 import type { BoxGitDeps, ProviderModule } from '@agentbox/sandbox-core';
@@ -722,7 +721,8 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
     async getJob(id) {
       const job = await readJob(id);
       if (!job) return null;
-      // Surface the login sub-state (minus the inbound `code`, which is worker-only).
+      // Surface the worker-written login sub-state (the inbound code rides a
+      // separate file, never the manifest).
       const login = job.login
         ? {
             required: job.login.required,
@@ -737,8 +737,9 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
     async submitLoginCode(id, code) {
       const job = await readJob(id);
       if (!job) return { ok: false, error: `job not found: ${id}` };
-      const cur: QueueJobLogin = job.login ?? { required: true, phase: 'starting' };
-      await writeJob({ ...job, login: { ...cur, code: code.trim() } });
+      // Deliver via the dedicated code file (worker reads+consumes it) — never a
+      // manifest write, so it can't race the worker's `login` phase/url updates.
+      await writeQueueLoginCode(id, code);
       return { ok: true };
     },
 

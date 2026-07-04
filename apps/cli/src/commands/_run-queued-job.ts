@@ -36,7 +36,14 @@ import {
   ensureOpencodeInstalled,
   volumeClaudeCredentials,
 } from '@agentbox/sandbox-docker';
-import { readJob, writeJob, type QueueAgentKind, type QueueJob, type QueueJobLogin } from '@agentbox/relay';
+import {
+  readJob,
+  takeQueueLoginCode,
+  writeJob,
+  type QueueAgentKind,
+  type QueueJob,
+  type QueueJobLogin,
+} from '@agentbox/relay';
 import { toSyncKind } from '@agentbox/core';
 import { resolveClaudeAuth } from '../auth.js';
 import { claudeCredStatus } from '../lib/queue/assert-creds.js';
@@ -74,9 +81,7 @@ async function patchJobLogin(id: string, patch: Partial<QueueJobLogin>): Promise
   const j = await readJob(id);
   if (!j) return;
   const cur: QueueJobLogin = j.login ?? { required: true, phase: 'starting' };
-  const next: QueueJobLogin = { ...cur, ...patch };
-  if ('code' in patch && patch.code === undefined) delete next.code;
-  await writeJob({ ...j, login: next });
+  await writeJob({ ...j, login: { ...cur, ...patch } });
 }
 
 /**
@@ -128,19 +133,16 @@ async function ensureClaudeLoginFresh(args: {
       .catch((err) => log.write(`login manifest write failed: ${err instanceof Error ? err.message : String(err)}`));
   };
 
-  // Bridge the manifest `login.code` (written by the hub endpoint) to the
-  // synchronous getCode the login core polls: read it off disk, clear it (through
-  // the same write chain), and hand it over once.
+  // Bridge the hub's login-code file (UI → worker) to the synchronous getCode the
+  // login core polls: read+consume it off disk and hand it over once. This is a
+  // separate channel from the manifest `login` (worker → UI), so the hub and the
+  // worker never write the same object.
   let pendingCode: string | null = null;
   const codeWatcher = setInterval(() => {
     void (async () => {
       if (pendingCode) return;
-      const j = await readJob(id);
-      const c = j?.login?.code;
-      if (c && c.trim().length > 0) {
-        pendingCode = c.trim();
-        enqueue({ code: undefined });
-      }
+      const c = await takeQueueLoginCode(id);
+      if (c) pendingCode = c;
     })();
   }, 500);
 

@@ -130,9 +130,11 @@ export interface QueueJob {
 }
 
 /**
- * Claude re-login sub-state carried on a create job. `phase`/`url`/`error` flow
- * worker → UI; `code` flows UI → worker (the pasted OAuth approval code, consumed
- * and cleared once delivered).
+ * Claude re-login sub-state carried on a create job. Written **only by the create
+ * worker** (worker → UI): `phase`/`url`/`error`/`lastError`. The reverse channel
+ * (the pasted OAuth code, UI → worker) rides a separate file — see
+ * {@link queueLoginCodePath} — so the two sides never read-modify-write the same
+ * object and can't lose each other's updates.
  */
 export interface QueueJobLogin {
   required: boolean;
@@ -143,8 +145,6 @@ export interface QueueJobLogin {
   error?: string;
   /** A recoverable note (e.g. a rejected code) — the flow stays usable. */
   lastError?: string;
-  /** UI → worker: the pasted approval code. Cleared by the worker once delivered. */
-  code?: string;
 }
 
 /**
@@ -973,6 +973,37 @@ export const QUEUE_LOGS_DIR = join(STATE_DIR, 'logs');
 /** Build the per-job log path. Kept here so submit + worker agree on layout. */
 export function queueLogPath(id: string): string {
   return join(QUEUE_LOGS_DIR, `queue-${id}.log`);
+}
+
+/**
+ * The UI → worker channel for a Claude re-login code: a dedicated file next to
+ * the manifest. Only the hub writes it ({@link writeQueueLoginCode}); only the
+ * worker reads+consumes it ({@link takeQueueLoginCode}). Keeping it out of the
+ * job manifest avoids a cross-process read-modify-write race with the worker's
+ * `login` (phase/url) writes.
+ */
+export function queueLoginCodePath(id: string): string {
+  return join(QUEUE_DIR, `${id}.login-code`);
+}
+
+/** Hub side: deliver the pasted OAuth approval code to a job, written atomically. */
+export async function writeQueueLoginCode(id: string, code: string): Promise<void> {
+  await mkdir(QUEUE_DIR, { recursive: true });
+  const final = queueLoginCodePath(id);
+  const tmp = `${final}.tmp.${String(process.pid)}.${String(Date.now())}`;
+  await writeFile(tmp, code.trim(), { mode: 0o600 });
+  await rename(tmp, final);
+}
+
+/** Worker side: read + consume the pending code (deleting it); null when none. */
+export async function takeQueueLoginCode(id: string): Promise<string | null> {
+  try {
+    const code = (await readFile(queueLoginCodePath(id), 'utf8')).trim();
+    await unlink(queueLoginCodePath(id)).catch(() => {});
+    return code.length > 0 ? code : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Wait briefly for a file to appear (queue manifest after enqueue HTTP). */
