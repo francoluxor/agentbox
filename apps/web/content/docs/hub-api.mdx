@@ -54,13 +54,18 @@ with an HTTP status that matches the `code` (`400 invalid_request`,
 | `GET /health` | Liveness + API version (no auth). |
 | `GET /boxes` | List every box (normalized view). |
 | `GET /boxes/{id}` | One box. |
-| `POST /boxes` | Create a box — returns `202 { jobId }`. Body: `{ projectId, agent, provider?, name?, prompt? }`. `agent: "none"` just creates the box without starting an agent (`prompt` ignored). `provider` defaults to `docker`; a cloud provider must be configured on the host (see `GET /providers`). |
+| `POST /boxes` | Create a box — returns `202 { jobId }`. Body: `{ projectId, agent, provider?, name?, prompt?, fromBranch?, setupWizard? }`. `agent: "none"` just creates the box without starting an agent (`prompt` ignored). `provider` defaults to `docker`; a cloud provider must be configured on the host (see `GET /providers`). `fromBranch` bases the box's per-box branch on a chosen ref (branch/tag/SHA) instead of the project's HEAD — validated against the host repo. `setupWizard: true` seeds the agent's first turn to generate an `agentbox.yaml` (for projects that have none); inert for `agent: "none"`. |
 | `POST /boxes/{id}/pause` | Pause a running box. |
 | `POST /boxes/{id}/resume` | Resume a paused box. |
 | `POST /boxes/{id}/stop` | Stop a box. |
 | `POST /boxes/{id}/destroy` | Destroy a box (container + volumes). |
-| `GET /projects` | Registered projects (create targets). |
+| `GET /boxes/{id}/git` | Live git summary of the box's worktree: `{ ok, branch, dirty, ahead, behind }`. |
+| `POST /boxes/{id}/git/{op}` | Git op on the box branch (`checkout`, `branch`, `pull`, `push`, `push-host`). Body per op: `checkout {branch}`; `branch {name, from?}` (create+switch a new `agentbox/*` branch); `pull {remote?, ffOnly?}`; `push {remote?, force?}`; `push-host {as?, force?}` (land in the host repo only — publishes nothing). Returns `{ ok, stdout, stderr }`. |
+| `GET /boxes/{id}/services` | The box's `agentbox.yaml` service/task/port status (`source: live \| persisted \| unavailable`). |
+| `POST /boxes/{id}/services/restart` | Restart one service (`{ name }`) or every service (empty body). |
+| `GET /projects` | Registered projects (create targets). Each carries `currentBranch` (the default base) and `needsSetup` (no `agentbox.yaml` + no default snapshot). |
 | `POST /projects` | Register a folder as a project. Body: `{ path }` (absolute). |
+| `GET /projects/{id}/branches` | The project's branches (local + remote) and current HEAD, for the create base-branch picker: `{ current, branches }`. |
 | `DELETE /projects/{id}` | Unregister an **empty** project (0 boxes). Folder/files on disk are untouched; `409` if it still has boxes. |
 | `GET /providers` | Sandbox providers + whether each is configured (baked) on this host: `{ id, label, configured, reason? }`. |
 | `GET /approvals` | Pending host-action approvals. |

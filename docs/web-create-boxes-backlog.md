@@ -130,6 +130,38 @@ status. Thin facade over the already-shipped backend seam — no new box logic.
   `POST /jobs/:id/answer` interaction stream (needs Phases A–C). Dedicated API-key
   management + hosted-plane **writes** land with the hosted-remote phase below.
 
+## Phase D.1 — Box git + service operations (detail page + API + CLI) — DONE
+Beyond create/lifecycle: common box ops on the detail page, `/api/v1`, and the CLI.
+- [x] Shared provider-agnostic `@agentbox/sandbox-core/box-git.ts` (checkout, new-branch,
+  push, pull, push-host, service status/restart argv). Token minting injected → no relay
+  import (cycle-safe). CLI `git.ts` refactored onto it; new `agentbox git branch` +
+  `agentbox services [list|restart]`.
+- [x] Hub backend methods (`gitCheckout/gitNewBranch/gitPush/gitPull/gitPushHost/getGit/
+  getServices/restartService`) + server actions + REST routes
+  (`/boxes/{id}/git`, `/boxes/{id}/git/{op}`, `/boxes/{id}/services`,
+  `/boxes/{id}/services/restart`) + OpenAPI + `git-actions.tsx`/`services-panel.tsx`.
+- [x] Docker E2E green (CLI ground-truth + REST envelopes + UI render). See
+  `docs/hub-webui-plan.md` Phase 8. Deferred: hosted/Postgres write path (503).
+
+## Phase D.2 — Create options: base branch + setup wizard — DONE
+Parity with two CLI create capabilities the web/API path lacked.
+- [x] **Base branch** (`--from-branch`): thread `fromBranch` through
+  `CreateBoxInput` → `hub-backend.create()` (validated against the host repo via a
+  node-execFile `rev-parse --verify`, no execa) → `QueueJobCreateOpts.fromBranch`
+  (`queue.ts`) → the worker's `createBox()` / `provider.create()`
+  (`_run-queued-job.ts`, both docker + cloud). `createBox` already accepted it.
+- [x] **Branch picker**: `HubBackend.listBranches(projectId)` (`for-each-ref`
+  local+remote, best-effort `fetch --all`) + `GET /api/v1/projects/{id}/branches`
+  + a `<Select>` in the create modal defaulting to the project's current HEAD.
+- [x] **Setup wizard**: `Project.needsSetup` computed in `listProjects` (no host
+  `agentbox.yaml` + no default checkpoint via `loadEffectiveConfig`/
+  `resolveDefaultCheckpoint`); a "Run setup wizard" toggle (default ON) in the
+  modal seeds `job.setupWizard`; the worker builds `buildSetupInitialPrompt()` as
+  the agent's first turn (user prompt appended after). Any agent allowed.
+- [x] REST `parseCreateBox` accepts `fromBranch`/`setupWizard`; OpenAPI gains the
+  two props, the `/projects/{id}/branches` path, and a `BranchList` schema.
+- [x] Docs: `hub.mdx`, `hub-api.mdx`, this backlog, `hub-webui-plan.md`.
+
 ## Phase E — Web UI + docs
 - [ ] Generalized prompt/link surface (extend Approvals for job origin + links).
 - [ ] Management views (bake, provider install) streaming `/jobs/:id/events`.

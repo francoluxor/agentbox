@@ -9,6 +9,17 @@ const standalone = process.env.AGENTBOX_HUB_STANDALONE === '1';
 /** @type {import('next').NextConfig} */
 const config = {
   reactStrictMode: true,
+  // When the hub is served through the Portless proxy at https://agentbox.localhost
+  // (see `agentbox hub`), the browser's Origin is agentbox.localhost while the
+  // proxy forwards to 127.0.0.1:8787. Next's default Server-Actions CSRF check
+  // compares Origin to Host and would 403 the dashboard's `use server` actions;
+  // allowlist the proxied origin so they work over both the loopback and the
+  // friendly URL. (Fixed hostname → static entry.)
+  experimental: {
+    serverActions: {
+      allowedOrigins: ['agentbox.localhost'],
+    },
+  },
   ...(standalone
     ? { output: 'standalone', outputFileTracingRoot: path.join(import.meta.dirname, '..', '..') }
     : {}),

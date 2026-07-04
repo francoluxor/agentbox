@@ -12,5 +12,10 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   if (!backend) return fail('backend_unavailable', 'hub backend unavailable (run the hub server)');
   const job = await backend.getJob(id);
   if (!job) return fail('not_found', `job not found: ${id}`);
-  return ok({ id, status: job.status, ...(job.boxId ? { boxId: job.boxId } : {}) });
+  return ok({
+    id,
+    status: job.status,
+    ...(job.boxId ? { boxId: job.boxId } : {}),
+    ...(job.login ? { login: job.login } : {}),
+  });
 }

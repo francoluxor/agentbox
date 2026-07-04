@@ -65,10 +65,18 @@ export function streamJobLog(req: Request, id: string, backend: HubBackend, logP
       };
 
       emit('open', { id });
+      let lastLogin = '';
       const timer = setInterval(() => {
         void (async () => {
           await drain().catch(() => {});
           const cur = await backend.getJob(id).catch(() => null);
+          // Surface the Claude re-login sub-state (phase/url/error) on change so the
+          // UI can show the login banner + clickable link while the job is running.
+          const loginJson = cur?.login ? JSON.stringify(cur.login) : '';
+          if (loginJson !== lastLogin) {
+            lastLogin = loginJson;
+            if (cur?.login) emit('login', cur.login);
+          }
           if (!cur || TERMINAL.has(cur.status)) await finish(cur?.status ?? 'gone');
         })();
       }, POLL_MS);

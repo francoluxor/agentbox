@@ -15,6 +15,8 @@ agentbox hub
 That starts the hub (if it isn't already running) and opens it in your browser at
 `http://127.0.0.1:8787/?token=<secret>`.
 
+<Callout type="info" title="Friendly URL with Portless">When [Portless](https://portless.sh) is installed (the same proxy AgentBox uses for box web apps), the hub also registers a stable `https://agentbox.localhost` alias and opens that instead — no port to remember. It falls back to the loopback URL on OrbStack or when Portless isn't installed, and respects `portless.enabled: false`.</Callout>
+
 <Figure caption="The hub dashboard — boxes grouped by project, with live status and lifecycle controls." />
 
 ## What's in it
@@ -22,7 +24,12 @@ That starts the hub (if it isn't already running) and opens it in your browser a
 - **Dashboard** — every box on this machine, grouped by project, with live status
   (running / paused / stopped / error) and per-box **pause / resume / stop /
   destroy** controls.
-- **Box detail** — a box's task, agent, branch, host, and timestamps.
+- **Box detail** — a box's task, agent, branch, host, and timestamps, plus common
+  box operations: **Git** (pull, push, [push to the host repo only](/docs/sync-and-git),
+  change branch, create a new `agentbox/*` branch) and **Services** (live state of the
+  box's [`agentbox.yaml` services](/docs/services-and-tasks), with restart-one and
+  restart-all). The same operations are on the [hub API](/docs/hub-api) and the
+  [CLI](/docs/cli) (`agentbox git`, `agentbox services`).
 - **Approvals** — the host-action requests a box is blocked on (a `git push` to a
   protected branch, `cp`, `download`, gh/integration writes). **Approve** unblocks
   the box; **Deny** returns an error to it. This is the same gate the relay prompts
@@ -38,7 +45,11 @@ That starts the hub (if it isn't already running) and opens it in your browser a
   `agentbox create`); attach later with `agentbox shell`. The **Provider** picker
   offers docker plus any cloud provider set up on this host — providers you haven't
   configured (`agentbox <provider> login` + `agentbox prepare --provider <provider>`)
-  show up disabled.
+  show up disabled. Pick a **Base branch** to fork the box from a ref other than
+  the project's current HEAD (like `--from-branch`). When a project has no
+  `agentbox.yaml` and no default snapshot, a **Run setup wizard** toggle (on by
+  default) seeds the agent's first turn to explore the repo and propose an
+  `agentbox.yaml`.
 
 - **Manage projects** — register a folder as a project (a folder picker browses
   your machine), and remove an **empty** project (0 boxes) with the **Delete**

@@ -20,6 +20,10 @@ export interface Box {
   commits: number | null;
   filesTouched: number | null;
   error?: string | null;
+  // Host-openable URLs for the box's web service / VNC desktop. Null when the
+  // box has no such endpoint or it isn't reachable (e.g. paused/stopped).
+  webUrl?: string | null;
+  vncUrl?: string | null;
 }
 
 export interface Project {
@@ -27,6 +31,19 @@ export interface Project {
   name: string;
   repo: string;
   defaultBranch: string;
+  /**
+   * The host repo's currently checked-out branch (`git rev-parse --abbrev-ref HEAD`),
+   * i.e. the base a new box would fork from. `null` when detached, unavailable, or on
+   * the hosted/Postgres path (no local host repo). Only the localhost hub populates it.
+   */
+  currentBranch?: string | null;
+  /**
+   * The host project has no `agentbox.yaml` and no default snapshot, so a new
+   * box starts from a bare base. The create modal offers the setup wizard (seed
+   * the agent's first turn to generate `agentbox.yaml`) when this is true. Only
+   * the localhost hub populates it; undefined on the hosted/Postgres path.
+   */
+  needsSetup?: boolean;
   provider: string;
   createdAt: number;
 }

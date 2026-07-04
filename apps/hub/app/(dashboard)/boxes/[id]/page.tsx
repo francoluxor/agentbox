@@ -7,11 +7,15 @@ import { StatusBadge } from '@/components/status-badge';
 import { Alert } from '@/components/ui/alert';
 import { Card } from '@/components/ui/card';
 import { useStore } from '@/lib/boxes/store';
+import { BoxApprovals } from '../../approvals/components/box-approvals';
+import { Access } from '../components/access';
 import { BackLink } from '../components/back-link';
 import { BoxActions } from '../components/box-actions';
 import { DRow } from '../components/d-row';
 import { EmptyBox } from '../components/empty-box';
+import { GitActions } from '../components/git-actions';
 import { SectionLabel } from '../components/section-label';
+import { ServicesPanel } from '../components/services-panel';
 import { Stat, StatGrid } from '../components/stat-grid';
 
 export default function BoxDetailPage() {
@@ -56,6 +60,8 @@ export default function BoxDetailPage() {
         </Alert>
       ) : null}
 
+      <BoxApprovals boxId={box.id} />
+
       <SectionLabel>Overview</SectionLabel>
       <StatGrid>
         <Stat k="Status" v={<StatusBadge status={box.status} />} />
@@ -64,6 +70,18 @@ export default function BoxDetailPage() {
         <Stat k="Files touched" v={box.filesTouched ?? '—'} icon={Icons.file} />
         <Stat k="Last activity" v={<Ago ms={box.lastActivity} />} mono />
       </StatGrid>
+
+      {box.webUrl || box.vncUrl ? (
+        <>
+          <SectionLabel>Access</SectionLabel>
+          <Access webUrl={box.webUrl} vncUrl={box.vncUrl} />
+        </>
+      ) : null}
+
+      <SectionLabel>Git operations</SectionLabel>
+      <GitActions box={box} />
+
+      <ServicesPanel id={box.id} running={box.status === 'running'} />
 
       <SectionLabel>Details</SectionLabel>
       <Card className="divide-y divide-border/60 overflow-hidden">
