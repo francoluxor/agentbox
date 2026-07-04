@@ -1,7 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import type { ActionResult, BoxOpResult, BrowseDirResult, CreateBoxInput, CreateBoxResult } from './backend-types';
+import type { ActionResult, BoxOpResult, BranchList, BrowseDirResult, CreateBoxInput, CreateBoxResult } from './backend-types';
 
 // Thin server actions. The lifecycle work runs in the Node-only backend on
 // globalThis (set by the custom server); here we just dispatch and revalidate.
@@ -42,6 +42,14 @@ export async function createBoxAction(input: CreateBoxInput): Promise<CreateBoxR
   const res = await backend.create(input);
   if (res.ok) revalidatePath('/', 'layout');
   return res;
+}
+
+// Read-only: list a project's branches for the create-box base-branch picker.
+// No revalidate (nothing mutates).
+export async function listBranchesAction(projectId: string): Promise<BranchList> {
+  const backend = globalThis.__AGENTBOX_HUB_BACKEND;
+  if (!backend) return { ok: false, error: 'hub backend unavailable (run the hub server)' };
+  return backend.listBranches(projectId);
 }
 
 // Register a folder (absolute path) as a project so boxes can be created in it.

@@ -191,6 +191,19 @@ export function buildOpenApi(): Record<string, unknown> {
           },
         },
       },
+      '/projects/{id}/branches': {
+        get: {
+          summary: "List a project's branches (local + remote) and its current HEAD, for the create-box base-branch picker",
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: {
+            '200': { description: 'Branches', content: { 'application/json': { schema: { $ref: '#/components/schemas/BranchList' } } } },
+            '400': errorResponse,
+            '401': errorResponse,
+            '404': errorResponse,
+            '503': errorResponse,
+          },
+        },
+      },
       '/providers': {
         get: {
           summary: 'List sandbox providers and whether each is configured (baked) on this host',
@@ -295,10 +308,20 @@ export function buildOpenApi(): Record<string, unknown> {
             name: { type: 'string' },
             repo: { type: 'string' },
             defaultBranch: { type: 'string' },
+            currentBranch: { type: 'string', nullable: true },
+            needsSetup: { type: 'boolean', description: 'No agentbox.yaml + no default snapshot — the create form offers the setup wizard' },
             provider: { type: 'string' },
             createdAt: { type: 'number' },
           },
           required: ['id', 'name'],
+        },
+        BranchList: {
+          type: 'object',
+          properties: {
+            current: { type: 'string', nullable: true, description: 'The repo\'s current HEAD (the default base ref)' },
+            branches: { type: 'array', items: { type: 'string' }, description: 'Local + remote-tracking branch names' },
+          },
+          required: ['branches'],
         },
         Approval: {
           type: 'object',
@@ -332,6 +355,8 @@ export function buildOpenApi(): Record<string, unknown> {
             provider: { type: 'string', enum: ['docker', 'daytona', 'hetzner', 'vercel', 'e2b'], default: 'docker' },
             name: { type: 'string' },
             prompt: { type: 'string' },
+            fromBranch: { type: 'string', description: "Base ref the box's per-box branch forks from (branch / tag / SHA); default the project's HEAD" },
+            setupWizard: { type: 'boolean', description: 'Seed the agent\'s first turn to generate agentbox.yaml (for projects with none). Inert for agent "none".' },
           },
           required: ['projectId', 'agent'],
         },

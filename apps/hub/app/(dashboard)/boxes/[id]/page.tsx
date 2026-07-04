@@ -7,6 +7,8 @@ import { StatusBadge } from '@/components/status-badge';
 import { Alert } from '@/components/ui/alert';
 import { Card } from '@/components/ui/card';
 import { useStore } from '@/lib/boxes/store';
+import { BoxApprovals } from '../../approvals/components/box-approvals';
+import { Access } from '../components/access';
 import { BackLink } from '../components/back-link';
 import { BoxActions } from '../components/box-actions';
 import { DRow } from '../components/d-row';
@@ -58,6 +60,8 @@ export default function BoxDetailPage() {
         </Alert>
       ) : null}
 
+      <BoxApprovals boxId={box.id} />
+
       <SectionLabel>Overview</SectionLabel>
       <StatGrid>
         <Stat k="Status" v={<StatusBadge status={box.status} />} />
@@ -66,6 +70,13 @@ export default function BoxDetailPage() {
         <Stat k="Files touched" v={box.filesTouched ?? '—'} icon={Icons.file} />
         <Stat k="Last activity" v={<Ago ms={box.lastActivity} />} mono />
       </StatGrid>
+
+      {box.webUrl || box.vncUrl ? (
+        <>
+          <SectionLabel>Access</SectionLabel>
+          <Access webUrl={box.webUrl} vncUrl={box.vncUrl} />
+        </>
+      ) : null}
 
       <SectionLabel>Git operations</SectionLabel>
       <GitActions box={box} />

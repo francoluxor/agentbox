@@ -84,6 +84,9 @@ function mapBox(r: Registration, s: Snapshot | undefined): Box {
     commits: null,
     filesTouched: null,
     error: deriveStatus(s) === 'error' ? (claude?.sessionTitle ?? 'Agent reported an error') : null,
+    // Hosted source has no endpoint data yet — cloud preview URLs are a follow-up.
+    webUrl: null,
+    vncUrl: null,
   };
 }
 

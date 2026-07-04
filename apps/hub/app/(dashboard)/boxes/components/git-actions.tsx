@@ -184,7 +184,7 @@ export function GitActions({ box }: { box: Box }) {
             Push
           </OpButton>
           <OpButton
-            icon={Icons.server}
+            icon={Icons.host}
             disabled={offline}
             onRun={() => runOp('Pushed to host', () => gitPushHostAction(box.id))}
           >

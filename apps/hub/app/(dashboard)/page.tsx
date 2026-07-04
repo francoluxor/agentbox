@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { Icons } from '@/components/icons';
 import { useStore } from '@/lib/boxes/store';
+import { ApprovalBanner } from './approvals/components/approval-banner';
 import { AddProjectButton } from './boxes/components/add-project-modal';
 import { BoxTable } from './boxes/components/box-table';
 import { CreateBoxButton } from './boxes/components/create-box-modal';
@@ -12,11 +13,15 @@ import { SectionLabel } from './boxes/components/section-label';
 
 export default function DashboardPage() {
   const { state, boxesFor } = useStore();
-  const grouped = state.projects.map((p) => ({ p, boxes: boxesFor(p.id) }));
+  const grouped = state.projects
+    .map((p) => ({ p, boxes: boxesFor(p.id) }))
+    // Projects with boxes first; keep the source order within each group.
+    .sort((a, b) => (a.boxes.length > 0 ? 0 : 1) - (b.boxes.length > 0 ? 0 : 1));
   const totalRunning = state.boxes.filter((b) => b.status === 'running').length;
 
   return (
     <div className="mx-auto w-full max-w-[1080px] px-8 pb-16 pt-8 max-sm:px-4">
+      <ApprovalBanner />
       <div className="flex items-start gap-4">
         <div className="min-w-0">
           <h1 className="text-[25px] font-semibold leading-tight tracking-[-0.025em]">Boxes</h1>

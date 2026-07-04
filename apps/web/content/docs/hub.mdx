@@ -45,7 +45,11 @@ That starts the hub (if it isn't already running) and opens it in your browser a
   `agentbox create`); attach later with `agentbox shell`. The **Provider** picker
   offers docker plus any cloud provider set up on this host — providers you haven't
   configured (`agentbox <provider> login` + `agentbox prepare --provider <provider>`)
-  show up disabled.
+  show up disabled. Pick a **Base branch** to fork the box from a ref other than
+  the project's current HEAD (like `--from-branch`). When a project has no
+  `agentbox.yaml` and no default snapshot, a **Run setup wizard** toggle (on by
+  default) seeds the agent's first turn to explore the repo and propose an
+  `agentbox.yaml`.
 
 - **Manage projects** — register a folder as a project (a folder picker browses
   your machine), and remove an **empty** project (0 boxes) with the **Delete**

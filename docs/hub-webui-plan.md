@@ -580,6 +580,27 @@ push-to-host-only, and `agentbox.yaml` service status + restart-one/all.
   params contract) + the validators. Deferred: hosted/Postgres write path (503, same as
   the existing lifecycle actions).
 
+### Phase 9 — Create options: base branch + setup wizard — DONE
+The web/API create form gained two CLI-parity options (docker/localhost first;
+cloud honored too through the shared worker).
+- **Base branch** (`--from-branch`): `fromBranch` threads `CreateBoxInput` →
+  `hub-backend.create()` (validated against the host repo up front, node execFile
+  not execa) → `QueueJobCreateOpts.fromBranch` → the worker's `createBox()` /
+  `provider.create()`. `createBox` already supported it — the queue path just
+  never forwarded it. A **branch `<Select>`** in the modal (defaults to the
+  project's current HEAD) is fed by `HubBackend.listBranches` +
+  `GET /api/v1/projects/{id}/branches`.
+- **Setup wizard**: `Project.needsSetup` (no host `agentbox.yaml` + no default
+  checkpoint) drives a "Run setup wizard" toggle (default ON). Keeping it on sets
+  `job.setupWizard`; the worker seeds `buildSetupInitialPrompt()` as the agent's
+  first turn so the in-box agent generates `agentbox.yaml` (any agent, user prompt
+  appended after). Inert for the no-agent option.
+- **New:** `api/v1/projects/[id]/branches/route.ts`, `listBranches`/`BranchList`
+  in the hub backend, `listBranchesAction`. **Modified:** `queue.ts`
+  (`fromBranch`/`setupWizard`), `_run-queued-job.ts` (forward + seed),
+  `create-box-modal.tsx`, `validate.ts`/`openapi.ts`, `types.ts`/`backend-types.ts`.
+  Tracked in `docs/web-create-boxes-backlog.md` (Phase D.2).
+
 ---
 
 ## Docs to update (in the phase that changes the behavior)
