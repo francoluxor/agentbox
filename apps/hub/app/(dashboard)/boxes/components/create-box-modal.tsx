@@ -333,6 +333,16 @@ function JobStatusBadge({ status, loginPhase }: { status: string; loginPhase?: J
       </Badge>
     );
   }
+  // A failed re-login is terminal for the create too — show red immediately rather
+  // than "Working…" during the brief window before the job status flips to failed.
+  if (loginPhase === 'error') {
+    return (
+      <Badge className="badge-err">
+        <span className="badge-dot" />
+        Login failed
+      </Badge>
+    );
+  }
   if (loginPhase === 'awaiting-code' || loginPhase === 'starting' || loginPhase === 'exchanging') {
     return (
       <Badge className="badge-create">
