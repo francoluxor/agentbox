@@ -48,6 +48,7 @@ export {
 export {
   CLOUD_CHECKPOINTS_ROOT,
   CLOUD_SNAPSHOT_NAME_PREFIX,
+  baseFreshnessFromFingerprints,
   cloudSnapshotName,
   currentCloudBaseFingerprint,
   listAllCloudCheckpoints,
@@ -56,6 +57,7 @@ export {
   removeCloudCheckpointDir,
   resolveCloudCheckpoint,
   writeCloudCheckpointManifest,
+  type BaseStatus,
   type CloudCheckpointInfo,
   type CloudCheckpointManifest,
   type CloudCheckpointProjectGroup,
@@ -104,6 +106,7 @@ export {
   portlessGetUrl,
   portlessInstallHint,
   portlessStartHint,
+  portlessDoctorRow,
   portlessUnalias,
   resetPortlessCache,
   resolvePortlessHostStateDir,

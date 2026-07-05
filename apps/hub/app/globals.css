@@ -132,6 +132,11 @@ button {
 .badge-stop .badge-dot {
   background: var(--faint);
 }
+.badge-warn {
+  color: var(--amber);
+  border-color: var(--amber-line);
+  background: var(--amber-soft);
+}
 .badge-create {
   color: var(--blue);
   border-color: var(--blue-line);

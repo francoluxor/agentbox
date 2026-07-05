@@ -6,7 +6,7 @@
 // the hub runs remotely (see docs/hub-provider-install-plan.md). Bake progress
 // streams over the same per-job SSE the create modal uses, via JobLogStream.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -40,10 +40,39 @@ const CRED_FIELDS: Record<string, CredField[]> = {
 
 export function ProvidersSection() {
   const { state } = useStore();
+  // Base freshness (`baseStatus`) is off the getData()/SSE hot path — fetch it
+  // once here via the opt-in endpoint and merge onto the store providers, so a
+  // baked-but-stale provider can nag "needs re-bake". A refresh (after a bake)
+  // re-runs this effect since `state.providers` changes identity.
+  const [freshness, setFreshness] = useState<Record<string, Pick<ProviderOption, 'baseStatus' | 'baseStaleReason'>>>(
+    {},
+  );
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch('/api/v1/providers?freshness=1', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        // The success envelope returns the collection directly (see api/v1/lib/envelope.ok).
+        const j = (await res.json()) as { providers?: ProviderOption[] };
+        if (cancelled) return;
+        const map: Record<string, Pick<ProviderOption, 'baseStatus' | 'baseStaleReason'>> = {};
+        for (const p of j.providers ?? []) {
+          map[p.id] = { baseStatus: p.baseStatus, baseStaleReason: p.baseStaleReason };
+        }
+        setFreshness(map);
+      } catch {
+        // Freshness is best-effort; leave the badge on its non-stale state.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [state.providers]);
   return (
     <Card className="divide-y divide-border/60 overflow-hidden">
       {state.providers.map((p) => (
-        <ProviderRow key={p.id} provider={p} />
+        <ProviderRow key={p.id} provider={{ ...p, ...freshness[p.id] }} />
       ))}
     </Card>
   );
@@ -51,6 +80,14 @@ export function ProvidersSection() {
 
 function statusBadge(p: ProviderOption) {
   if (p.configured) {
+    // Baked but the runtime build context has changed since — surface a re-bake nag.
+    if (p.baseStatus === 'stale') {
+      return (
+        <Badge className="badge-warn gap-1.5 normal-case" title={p.baseStaleReason}>
+          stale — re-bake
+        </Badge>
+      );
+    }
     return (
       <Badge className="badge-run gap-1.5 normal-case">
         <span className="badge-dot" />
