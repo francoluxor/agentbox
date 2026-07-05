@@ -80,6 +80,13 @@ const IMPORTERS: Record<ProviderKind, () => Promise<{ providerModule: ProviderMo
   e2b: () => import('@agentbox/sandbox-e2b'),
 };
 
+// Per-provider serialization of prepare-enqueue: `prepareProvider` reads the
+// queue then enqueues, which isn't atomic across two concurrent POSTs (both could
+// miss an existing job and queue duplicates). Chaining per provider makes the
+// check+enqueue effectively atomic within this single-process backend — the
+// second call waits, then finds the first's job and returns the same jobId.
+const prepareEnqueueChain = new Map<string, Promise<unknown>>();
+
 async function providerForBox(box: BoxRecord): Promise<Provider> {
   const name = box.provider ?? 'docker';
   if (!isProviderKind(name)) {
@@ -787,29 +794,37 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
-    async prepareProvider(id, opts): Promise<CreateBoxResult> {
-      try {
-        if (!isProviderKind(id)) return { ok: false, error: `unknown provider ${id}` };
-        // One bake per provider at a time — reuse the in-flight job if present.
-        const existing = (await loadQueue()).find(
-          (j) =>
-            j.kind === 'prepare' &&
-            j.providerName === id &&
-            (j.status === 'queued' || j.status === 'running'),
-        );
-        if (existing) return { ok: true, jobId: existing.id };
-        const precheck = await preparePrecheck(id);
-        if (precheck) return { ok: false, error: precheck };
-        const { job } = await enqueuePrepareJob({
-          providerName: id,
-          force: opts?.force,
-          claudeInstall: opts?.claudeInstall,
-        });
-        handle.pokeQueue();
-        return { ok: true, jobId: job.id };
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
-      }
+    prepareProvider(id, opts): Promise<CreateBoxResult> {
+      if (!isProviderKind(id)) return Promise.resolve({ ok: false, error: `unknown provider ${id}` });
+      // Serialize per provider so concurrent POSTs can't both miss the in-flight
+      // job and enqueue duplicates (the check+enqueue below isn't atomic on its own).
+      const prev = prepareEnqueueChain.get(id) ?? Promise.resolve();
+      const run = prev.then(async (): Promise<CreateBoxResult> => {
+        try {
+          // One bake per provider at a time — reuse the in-flight job if present.
+          const existing = (await loadQueue()).find(
+            (j) =>
+              j.kind === 'prepare' &&
+              j.providerName === id &&
+              (j.status === 'queued' || j.status === 'running'),
+          );
+          if (existing) return { ok: true, jobId: existing.id };
+          const precheck = await preparePrecheck(id);
+          if (precheck) return { ok: false, error: precheck };
+          const { job } = await enqueuePrepareJob({
+            providerName: id,
+            force: opts?.force,
+            claudeInstall: opts?.claudeInstall,
+          });
+          handle.pokeQueue();
+          return { ok: true, jobId: job.id };
+        } catch (err) {
+          return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      });
+      // Keep the chain alive for the next call without letting a rejection break it.
+      prepareEnqueueChain.set(id, run.catch(() => {}));
+      return run;
     },
     async listBranches(projectId: string): Promise<BranchList> {
       const repo = await resolveProjectPath(projectId);

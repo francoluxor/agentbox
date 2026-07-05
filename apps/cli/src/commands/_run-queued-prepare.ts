@@ -14,7 +14,7 @@
  */
 
 import { Command } from 'commander';
-import { loadEffectiveConfig } from '@agentbox/config';
+import { boxImageConfigKey, isProviderKind, loadEffectiveConfig, setConfigValue } from '@agentbox/config';
 import { readJob, writeJob, type QueueJob } from '@agentbox/relay';
 import { openCommandLog } from '../lib/log-file.js';
 import { getProvider, isKnownProvider } from '../provider/registry.js';
@@ -100,4 +100,22 @@ async function runPrepareJob(
       ? `prepared ${providerName}: ${result.snapshotName}`
       : `prepared ${providerName}`,
   );
+
+  // Pin the baked snapshot so create actually boots from it. Some providers
+  // (daytona) resolve their base from the `box.image<Provider>` config key, not
+  // from `<provider>-prepared.json` — so a bake that only wrote the marker would
+  // leave create using the default Dockerfile path. Mirrors `runPrepare`'s pin,
+  // but at GLOBAL scope: a hub bake is host-wide, not tied to a project dir (the
+  // per-provider key is safe host-wide; the generic `box.image` is never touched).
+  if (result.snapshotName !== undefined && isProviderKind(providerName)) {
+    const key = boxImageConfigKey(providerName);
+    try {
+      await setConfigValue('global', key, result.snapshotName, cwd);
+      log.write(`pinned ${key}=${result.snapshotName} (global)`);
+    } catch (err) {
+      log.write(
+        `warning: baked ${result.snapshotName} but failed to pin ${key}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 }
