@@ -47,6 +47,11 @@ import {
   readState,
   secretsEnvPath,
 } from '@agentbox/sandbox-core';
+import {
+  baseFreshnessFromFingerprints,
+  currentCloudBaseFingerprint,
+  type BaseStatus,
+} from '@agentbox/sandbox-cloud';
 import { listBoxes, mintHostInitiatedToken, type ListedBox } from '@agentbox/sandbox-docker';
 import type {
   ActionResult,
@@ -418,6 +423,70 @@ function listProviders(jobs: QueueJob[]): ProviderOption[] {
   });
 }
 
+// ── base-image freshness (opt-in; kept OFF the getData() hot path) ──
+// Computing a provider's live fingerprint loads its module and hashes the
+// runtime build context (~15 small files) — cheap but not free, and pointless
+// on every poll. We memoize per provider with a short TTL and invalidate when a
+// bake completes, so the frequently-read `GET /api/v1/providers` stays fast and
+// only the explicit `?freshness=1` request pays the cost.
+const FRESHNESS_TTL_MS = 60_000;
+const freshnessCache = new Map<ProviderKind, { at: number; status: BaseStatus }>();
+
+/** Drop a provider's cached freshness so the next request recomputes it. */
+function invalidateFreshness(id: ProviderKind): void {
+  freshnessCache.delete(id);
+}
+
+/**
+ * Live base-image/snapshot freshness for one provider, mirroring the CLI's
+ * `evaluateBaseFreshness` (apps/cli/src/checkpoint-lookup.ts) but reusing the
+ * hub's own provider `IMPORTERS`. Docker self-heals → always fresh. Any failure
+ * to compute the live fingerprint degrades to 'unknown' (never a false 'stale').
+ */
+async function providerBaseFreshness(id: ProviderKind, claudeInstall?: 'native' | 'npm'): Promise<BaseStatus> {
+  if (id === 'docker') return { state: 'fresh' };
+  const cached = freshnessCache.get(id);
+  if (cached && Date.now() - cached.at < FRESHNESS_TTL_MS) return cached.status;
+  const stored = currentCloudBaseFingerprint(id);
+  let live: string | undefined;
+  try {
+    const mod = (await IMPORTERS[id]()).providerModule;
+    live = await mod.currentBaseFingerprintLive?.(claudeInstall);
+  } catch {
+    live = undefined;
+  }
+  const status = baseFreshnessFromFingerprints(stored, live);
+  freshnessCache.set(id, { at: Date.now(), status });
+  return status;
+}
+
+/**
+ * Enrich the provider list with base-image freshness (`baseStatus`/
+ * `baseStaleReason`). Global-scoped `claudeInstall` (staleness is approximate
+ * nagging; `listProviders` is project-independent) resolved from the global
+ * effective config, defaulting to 'native'.
+ */
+async function listProvidersWithFreshness(base: ProviderOption[]): Promise<ProviderOption[]> {
+  let claudeInstall: 'native' | 'npm' = 'native';
+  try {
+    const cfg = await loadEffectiveConfig(os.homedir());
+    if (cfg.effective.box.claudeInstall === 'npm') claudeInstall = 'npm';
+  } catch {
+    // keep the default
+  }
+  return Promise.all(
+    base.map(async (p) => {
+      if (!isProviderKind(p.id) || p.id === 'docker') return p;
+      const fresh = await providerBaseFreshness(p.id, claudeInstall);
+      return {
+        ...p,
+        baseStatus: fresh.state,
+        baseStaleReason: fresh.state === 'stale' ? fresh.reason : undefined,
+      };
+    }),
+  );
+}
+
 function currentUser(): User {
   let login = 'user';
   try {
@@ -703,6 +772,9 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
         providers: listProviders(jobs),
       };
     },
+    async providersWithFreshness(): Promise<ProviderOption[]> {
+      return listProvidersWithFreshness(listProviders(await loadQueue()));
+    },
     pause: (id) => runLifecycle(id, (box, provider) => provider.pause(box)),
     resume: (id) => runLifecycle(id, (box, provider) => provider.resume(box)),
     stop: (id) => runLifecycle(id, (box, provider) => provider.stop(box)),
@@ -816,6 +888,10 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
             force: opts?.force,
             claudeInstall: opts?.claudeInstall,
           });
+          // Drop any cached freshness so it recomputes once the bake rewrites
+          // <provider>-prepared.json (the short TTL is the backstop for the
+          // minutes-long bake, which outlasts any pre-bake cache entry anyway).
+          invalidateFreshness(id);
           handle.pokeQueue();
           return { ok: true, jobId: job.id };
         } catch (err) {

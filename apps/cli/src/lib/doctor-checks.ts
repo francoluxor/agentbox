@@ -14,6 +14,7 @@ import { loadEffectiveConfig, type ProviderKind } from '@agentbox/config';
 import { errSummary, firstLine, type CheckResult, type CheckStatus } from '@agentbox/sandbox-core';
 import { ALL_CONNECTORS, type IntegrationConnector } from '@agentbox/integrations';
 import { getRuntimeProviderNames, loadProviderModule } from '../provider/loaders.js';
+import { evaluateBaseFreshness } from '../checkpoint-lookup.js';
 
 // The per-provider health probes live in each `@agentbox/sandbox-<name>`
 // package (`providerModule.doctorChecks`); this module just aggregates them
@@ -273,10 +274,54 @@ async function checkOneIntegration(
   return { label: svc, status: 'ok', detail: `${versionLine} · authed` };
 }
 
+// `box.claudeInstall` folds into the base-image fingerprint, so freshness must
+// compare against the variant the user would actually bake with. Resolve it once
+// per doctor run (memoized) from the effective config at cwd; default 'native'.
+let claudeInstallOnce: Promise<'native' | 'npm'> | undefined;
+function resolveClaudeInstall(): Promise<'native' | 'npm'> {
+  claudeInstallOnce ??= loadEffectiveConfig(process.cwd())
+    .then((cfg): 'native' | 'npm' => (cfg.effective.box.claudeInstall === 'npm' ? 'npm' : 'native'))
+    .catch((): 'native' | 'npm' => 'native');
+  return claudeInstallOnce;
+}
+
+/**
+ * A "base freshness" row for baked cloud providers — warns when the baked
+ * snapshot's build-context fingerprint no longer matches the current runtime
+ * (a CLI upgrade changed a baked file), which is the same staleness the wizard
+ * nags about at create time. Returns null for docker (self-heals), for
+ * not-yet-baked providers (the provider's own "base snapshot" row already says
+ * so), and when the live fingerprint can't be computed (a dev tree without a
+ * built runtime) — never a false 'stale'. Local + offline (just file hashing),
+ * so it honours this module's offline-safe contract.
+ */
+async function baseFreshnessRow(name: ProviderName): Promise<CheckResult | null> {
+  if (name === 'docker') return null;
+  const status = await evaluateBaseFreshness(name, await resolveClaudeInstall()).catch(() => null);
+  if (!status) return null;
+  switch (status.state) {
+    case 'stale':
+      return {
+        label: 'base freshness',
+        status: 'warn',
+        detail: status.reason,
+        hint: `agentbox prepare --provider ${name}`,
+      };
+    case 'fresh':
+      return { label: 'base freshness', status: 'ok', detail: 'up to date' };
+    default:
+      // 'unprepared' (covered by the provider's base-snapshot row) / 'unknown'
+      // (unverifiable) — stay silent rather than add an inert row.
+      return null;
+  }
+}
+
 export async function runProviderChecks(name: ProviderName): Promise<CheckGroup> {
   try {
     const mod = await loadProviderModule(name);
-    return { title: name, results: await mod.doctorChecks() };
+    const results = await mod.doctorChecks();
+    const fresh = await baseFreshnessRow(name);
+    return { title: name, results: fresh ? [...results, fresh] : results };
   } catch (err) {
     // A broken/incompatible plugin must not crash `doctor` — surface it as a warn.
     return {

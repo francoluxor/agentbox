@@ -23,6 +23,7 @@
     "@agentbox/core": "workspace:*",
     "@agentbox/ctl": "workspace:*",
     "@agentbox/relay": "workspace:*",
+    "@agentbox/sandbox-cloud": "workspace:*",
     "@agentbox/sandbox-core": "workspace:*",
     "@agentbox/sandbox-daytona": "workspace:*",
     "@agentbox/sandbox-docker": "workspace:*",

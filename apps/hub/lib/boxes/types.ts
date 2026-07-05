@@ -99,6 +99,16 @@ export interface ProviderOption {
   // settings UI resume the streamed progress.
   jobId?: string;
   reason?: string;
+  // Freshness of an already-baked base image/snapshot vs the current runtime
+  // build context. Only populated when the client asks (GET /api/v1/providers
+  // ?freshness=1) — computing it loads provider code + hashes the build context,
+  // so it stays OFF the default fast path. 'stale' means `agentbox prepare
+  // --provider <id>` should be re-run; 'unknown' = couldn't verify (e.g. a dev
+  // tree without a built runtime); absent = not requested or docker. Never set
+  // for docker (its base self-heals).
+  baseStatus?: 'fresh' | 'stale' | 'unprepared' | 'unknown';
+  // Human-readable reason when baseStatus === 'stale' (the fingerprint delta).
+  baseStaleReason?: string;
 }
 
 export interface HubState {

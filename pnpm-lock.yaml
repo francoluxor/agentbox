@@ -145,6 +145,9 @@ importers:
       '@agentbox/relay':
         specifier: workspace:*
         version: link:../../packages/relay
+      '@agentbox/sandbox-cloud':
+        specifier: workspace:*
+        version: link:../../packages/sandbox-cloud
       '@agentbox/sandbox-core':
         specifier: workspace:*
         version: link:../../packages/sandbox-core

@@ -1,5 +1,5 @@
 import type { ProviderKind } from '@agentbox/config';
-import type { HubState } from './types';
+import type { HubState, ProviderOption } from './types';
 
 // Result of a lifecycle server action.
 export type ActionResult = { ok: true } | { ok: false; error: string };
@@ -140,6 +140,11 @@ export interface HubBackend {
   destroy(id: string): Promise<ActionResult>;
   // Answer a pending host-action approval; resolves the parked in-box RPC.
   answerApproval(id: string, answer: 'y' | 'n'): Promise<ActionResult>;
+  // Provider list enriched with base-image freshness (`baseStatus`/
+  // `baseStaleReason`). Off the getData() hot path — computing it loads provider
+  // code + hashes the runtime build context (memoized with a short TTL). Backs
+  // GET /api/v1/providers?freshness=1 so the default endpoint stays fast.
+  providersWithFreshness(): Promise<ProviderOption[]>;
   // Enqueue a background create job for a registered project; returns the jobId.
   create(input: CreateBoxInput): Promise<CreateBoxResult>;
   // Persist a provider's credentials (validated against the cloud, then written
