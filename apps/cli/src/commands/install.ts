@@ -47,6 +47,7 @@ import { maybePromptStar } from '../lib/star-prompt.js';
 import { installCmuxCommand } from './install-cmux.js';
 import { installHerdrCommand } from './install-herdr.js';
 import { installCodexCommand, installCodexPlugin } from './install-codex.js';
+import { installTray, installTrayCommand, resolveTrayZip } from './install-tray.js';
 import { runPrepare } from './prepare.js';
 
 /** Marker on the line after the frontmatter of every skill we ship. Its
@@ -591,6 +592,24 @@ export async function runInstallWizard(opts: RunInstallWizardOptions = {}): Prom
   const providerGroup = await runProviderChecks(providerName);
   process.stdout.write('  ' + formatCompact([sysGroup, providerGroup]) + '\n');
 
+  // 6b) Offer the macOS menu-bar app (only when it's bundled in this CLI build).
+  if (process.platform === 'darwin' && resolveTrayZip()) {
+    const wantTray = opts.yes
+      ? true
+      : await confirm({ message: 'Install the AgentBox menu-bar app?', initialValue: true });
+    if (wantTray === true) {
+      const sp = spinner();
+      sp.start('Installing menu-bar app');
+      try {
+        await installTray({ quiet: true });
+        sp.stop('Menu-bar app: installed');
+      } catch (err) {
+        sp.stop('Menu-bar app: failed');
+        log.warn(err instanceof Error ? err.message : String(err));
+      }
+    }
+  }
+
   // 7) Tutorial outro.
   note(tutorialBody(providerName), 'Next steps');
 
@@ -672,3 +691,4 @@ installCommand.enablePositionalOptions();
 installCommand.addCommand(installCmuxCommand);
 installCommand.addCommand(installHerdrCommand);
 installCommand.addCommand(installCodexCommand);
+installCommand.addCommand(installTrayCommand);

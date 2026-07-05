@@ -243,6 +243,26 @@ function stageReadme() {
 }
 stageReadme();
 
+// Tray app — the macOS menu-bar companion (separate repo `madarco/agentbox-tray`). Its
+// `scripts/release.sh` produces a signed+notarized `dist/AgentBoxTray.zip`; we copy that into
+// `runtime/tray/` so `agentbox install tray` can unpack it. Built by `build-tray.mjs` in
+// prepublishOnly; absent in a plain dev rebuild (warn + skip, macOS-only).
+function stageTray() {
+  const trayDir = process.env.AGENTBOX_TRAY_DIR
+    ? resolve(process.env.AGENTBOX_TRAY_DIR)
+    : resolve(repoRoot, '..', 'agentbox-tray');
+  const zip = join(trayDir, 'dist', 'AgentBoxTray.zip');
+  if (!existsSync(zip)) {
+    console.warn('[stage-runtime] WARN missing source (skipped): AgentBoxTray.zip (run build-tray.mjs)');
+    missing++;
+    return;
+  }
+  const dest = join(runtime, 'tray', 'AgentBoxTray.zip');
+  mkdirSync(dirname(dest), { recursive: true });
+  cpSync(zip, dest);
+}
+stageTray();
+
 if (missing > 0) {
   console.warn(
     `[stage-runtime] ${missing} asset(s) missing — fine in a partial dev rebuild, ` +
