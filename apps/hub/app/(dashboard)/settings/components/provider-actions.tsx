@@ -60,10 +60,22 @@ function statusBadge(p: ProviderOption) {
   return <Badge className="gap-1.5 normal-case">needs credentials</Badge>;
 }
 
+// A fixed-length dot mask shown in a field that already has a saved value — a
+// placeholder signal (the API never returns the real secret), never submitted.
+const MASK = '••••••••••••';
+
 function ProviderRow({ provider: p }: { provider: ProviderOption }) {
   const router = useRouter();
   const fields = CRED_FIELDS[p.id] ?? [];
+  // Required fields re-mask when emptied; optional ones (e.g. vercel team/project) don't.
+  const maskableKeys = new Set(fields.filter((f) => !f.optional).map((f) => f.key));
   const [values, setValues] = useState<Record<string, string>>({});
+  // Start required fields masked when the provider already has credentials.
+  const [masked, setMasked] = useState<Record<string, boolean>>(() =>
+    p.hasCredentials
+      ? Object.fromEntries(fields.filter((f) => !f.optional).map((f) => [f.key, true]))
+      : {},
+  );
   const [savingCreds, setSavingCreds] = useState(false);
   const [credError, setCredError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(!p.hasCredentials && fields.length > 0);
@@ -79,6 +91,7 @@ function ProviderRow({ provider: p }: { provider: ProviderOption }) {
     try {
       const body: Record<string, string> = {};
       for (const f of fields) {
+        if (masked[f.key]) continue; // the dot mask is a placeholder, not a value
         const v = (values[f.key] ?? '').trim();
         if (v) body[f.key] = v;
       }
@@ -94,6 +107,8 @@ function ProviderRow({ provider: p }: { provider: ProviderOption }) {
         return;
       }
       setValues({});
+      // Re-mask the required fields now that they have a saved value.
+      setMasked(Object.fromEntries([...maskableKeys].map((k) => [k, true])));
       setShowForm(false);
       router.refresh(); // hasCredentials flips in getData
     } catch (err) {
@@ -171,8 +186,21 @@ function ProviderRow({ provider: p }: { provider: ProviderOption }) {
               <Input
                 type="password"
                 autoComplete="off"
-                value={values[f.key] ?? ''}
+                value={masked[f.key] ? MASK : (values[f.key] ?? '')}
                 placeholder={f.placeholder}
+                onFocus={() => {
+                  // Clear the "already saved" mask on focus so a fresh value can be typed.
+                  if (masked[f.key]) {
+                    setMasked((m) => ({ ...m, [f.key]: false }));
+                    setValues((v) => ({ ...v, [f.key]: '' }));
+                  }
+                }}
+                onBlur={() => {
+                  // Restore the mask if a previously-saved field was left empty.
+                  if (maskableKeys.has(f.key) && !(values[f.key] ?? '').trim()) {
+                    setMasked((m) => ({ ...m, [f.key]: true }));
+                  }
+                }}
                 onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
                 className="font-mono text-xs"
               />
