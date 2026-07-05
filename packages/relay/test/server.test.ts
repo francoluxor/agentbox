@@ -339,6 +339,42 @@ describe('relay prompt flow', () => {
     expect(body.stderr).toMatch(/denied by user/);
   });
 
+  it('git.push to a non-scratch SANCTIONED branch still prompts under the strict flag', async () => {
+    // Regression: the docker gate must key "scratch bypass" on the branch it
+    // actually pushes (sanctionedBranch), not the immutable create-time branch.
+    // With autoApproveSafeHostActions:false and sanctionedBranch=main, the push
+    // targets main and MUST prompt (not silently bypass).
+    const reg = await fetchJson(handle, 'POST', '/admin/register-box', {
+      body: {
+        boxId: 'b1',
+        token: 't1',
+        name: 'box-one',
+        autoApproveSafeHostActions: false,
+        worktrees: [
+          { containerPath: '/workspace', hostMainRepo: '/tmp', branch: 'agentbox/box-one', sanctionedBranch: 'main' },
+        ],
+      },
+    });
+    expect(reg.status).toBe(204);
+    const rpcPromise = fetchJson(handle, 'POST', '/rpc', {
+      token: 't1',
+      body: { method: 'git.push', params: { path: '/workspace' } },
+    });
+    let pendingId: string | null = null;
+    for (let i = 0; i < 500 && pendingId === null; i++) {
+      const list = handle.prompts.forBox('b1');
+      if (list.length > 0) pendingId = list[0]!.id;
+      else await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(pendingId).not.toBeNull();
+    await fetchJson(handle, 'POST', '/admin/prompts/answer', {
+      body: { id: pendingId, answer: 'n' },
+    });
+    const rpc = await rpcPromise;
+    expect(rpc.status).toBe(500);
+    expect((rpc.body as { exitCode: number }).exitCode).toBe(10);
+  });
+
   it('GET /admin/prompts lists pending host-action approvals with their context', async () => {
     await register(handle, 'b1', 't1', 'box-one');
 

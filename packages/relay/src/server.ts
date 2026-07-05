@@ -13,8 +13,8 @@ import { HubNotifier } from './hub-notifier.js';
 import { BoxNotices } from './notices.js';
 import { hostOpenCommand } from '@agentbox/sandbox-core';
 import {
-  isScratchBranch,
   isSanctionedPushBranch,
+  isScratchBranch,
   landRefspec,
   parseDownloadKind,
   resolveLandDest,
@@ -555,18 +555,23 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
           const worktree = resolveWorktree(reg, params?.path ?? '/workspace');
           // The docker relay always pushes the worktree's host-selected branch
           // (`sanctionedBranch`, falling back to the create-time `branch`) — the
-          // in-box agent can't influence which branch is pushed — so that
-          // branch is inherently host-sanctioned. A scratch branch bypasses the
-          // gate unconditionally; a non-scratch sanctioned branch bypasses as
-          // part of the safe subset (honors `box.autoApproveSafeHostActions`)
-          // and leaves an audit trail.
+          // in-box agent can't influence which branch is pushed. Key the gate on
+          // THAT branch, not the immutable create-time `branch` (which is always
+          // `agentbox/*`): after a host `agentbox git checkout main`, the push
+          // target is `main`, so it must NOT be treated as a scratch bypass.
+          // A scratch target bypasses unconditionally; a non-scratch sanctioned
+          // target bypasses only as part of the safe subset (honors
+          // `box.autoApproveSafeHostActions`) and leaves an audit trail.
           const dockerPushBranch = worktree?.sanctionedBranch ?? worktree?.branch;
-          const isScratch = isScratchBranch(worktree?.branch);
+          const isScratch = isScratchBranch(dockerPushBranch);
           const safeApproveOn = reg.autoApproveSafeHostActions !== false;
+          // `isSanctionedPushBranch(dockerPushBranch, dockerPushBranch)` is true
+          // only for a resolved branch — so a box with no registered worktree
+          // (undefined branch) never bypasses and still prompts.
           const isSanctionedNonScratch =
             !isScratch &&
             safeApproveOn &&
-            isSanctionedPushBranch(dockerPushBranch, worktree?.sanctionedBranch ?? worktree?.branch);
+            isSanctionedPushBranch(dockerPushBranch, dockerPushBranch);
           const bypassPushGate = isScratch || isSanctionedNonScratch;
           if (isSanctionedNonScratch) {
             prompts.noteAutoApprove(
