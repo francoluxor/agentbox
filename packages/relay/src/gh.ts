@@ -230,6 +230,17 @@ function hasHeadArg(args: string[]): boolean {
 }
 
 /**
+ * True when the caller passed an explicit `--head`/`-H` on a `gh pr create`.
+ * The safe-subset auto-approve only covers a `create` with NO explicit head:
+ * the relay then forces `--head` to the box's sanctioned branch, so the PR can
+ * only ever target the box's own work. An explicit head (which could name any
+ * branch, e.g. `main`) falls back to the confirm prompt.
+ */
+export function prCreateHasExplicitHead(op: GhPrOp, args: string[]): boolean {
+  return op === 'create' && hasHeadArg(args);
+}
+
+/**
  * True when a `gh pr create` would run with no `--head` — i.e. we couldn't
  * resolve the box's branch to inject and the caller didn't pass one. The
  * relay must refuse rather than let `gh` fall back to the host repo's

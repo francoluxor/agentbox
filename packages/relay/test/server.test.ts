@@ -553,6 +553,32 @@ exit 0
     expect(handle.prompts.size()).toBe(0);
   });
 
+  it('gh.pr.create with an explicit --head still prompts (outside the safe subset)', async () => {
+    // An explicit head can name any branch (e.g. main), so it is NOT auto —
+    // it parks a confirm prompt even under the default safe flag.
+    await registerWithWorktree();
+    const rpcPromise = fetchJson(handle, 'POST', '/rpc', {
+      token: 't1',
+      body: {
+        method: 'gh.pr.create',
+        params: { path: '/workspace', args: ['--head', 'main', '--title', 'T'] },
+      },
+    });
+    let pendingId: string | null = null;
+    for (let i = 0; i < 500 && pendingId === null; i++) {
+      const list = handle.prompts.forBox('b1');
+      if (list.length > 0) pendingId = list[0]!.id;
+      else await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(pendingId).not.toBeNull();
+    await fetchJson(handle, 'POST', '/admin/prompts/answer', {
+      body: { id: pendingId, answer: 'n' },
+    });
+    const rpc = await rpcPromise;
+    expect(rpc.status).toBe(500);
+    expect((rpc.body as { exitCode: number }).exitCode).toBe(10);
+  });
+
   it('gh.pr.create denial via /admin/prompts/answer returns exit 10 (strict flag)', async () => {
     // autoApproveSafeHostActions:false restores the always-prompt behavior.
     await registerWithWorktree({ autoApproveSafeHostActions: false });

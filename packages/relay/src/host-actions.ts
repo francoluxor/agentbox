@@ -53,6 +53,7 @@ import {
   isGhPrOp,
   isGhRunOp,
   PR_CREATE_NO_HEAD_REFUSAL,
+  prCreateHasExplicitHead,
   prCreateNeedsHead,
   refuseCheckoutByDefault,
   refuseGhApiCall,
@@ -371,7 +372,13 @@ async function runGhPrRpc(
   // Safe subset: opening a PR (relay forces `--head <box-branch>`) and PR
   // comments auto-approve under the flag, audited. merge/checkout/review/close
   // keep prompting.
-  const ghSafeAuto = GH_PR_SAFE_AUTO_APPROVE_OPS.has(op) && deps.autoApproveSafeHostActions !== false;
+  // A `create` with an EXPLICIT `--head` is excluded from the safe subset — that
+  // head could name any branch (e.g. `main`); it falls back to the prompt. A
+  // headless `create` has its head forced to the box's sanctioned branch below.
+  const ghSafeAuto =
+    GH_PR_SAFE_AUTO_APPROVE_OPS.has(op) &&
+    deps.autoApproveSafeHostActions !== false &&
+    !prCreateHasExplicitHead(op, args);
   if (ghSafeAuto && !hostInitiatedGhOk) {
     deps.prompts?.noteAutoApprove(
       deps.boxId,
@@ -448,7 +455,10 @@ async function runGhPrRpc(
       `git -C ${shellQuote(containerPath)} rev-parse --abbrev-ref HEAD`,
     );
     const branch = branchProbe.exitCode === 0 ? (branchProbe.stdout ?? '').trim() : '';
-    finalArgs = injectPrCreateHead(op, branch, finalArgs);
+    // Prefer the host-sanctioned branch so a headless PR targets the box's own
+    // work (and matches the safe-auto gate above), not whatever HEAD the agent
+    // may have switched to. Fall back to the probed HEAD when unknown.
+    finalArgs = injectPrCreateHead(op, lookup.sanctionedBranch ?? branch, finalArgs);
   }
   // Never let `gh` fall back to the host repo's checked-out branch.
   if (prCreateNeedsHead(op, finalArgs)) return PR_CREATE_NO_HEAD_REFUSAL;

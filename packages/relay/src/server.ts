@@ -36,6 +36,7 @@ import {
   isGhPrOp,
   isGhRunOp,
   PR_CREATE_NO_HEAD_REFUSAL,
+  prCreateHasExplicitHead,
   prCreateNeedsHead,
   refuseCheckoutByDefault,
   refuseMergeBypass,
@@ -1489,7 +1490,10 @@ async function handleGitSaveToHost(
       stderr: `no worktree registered for box ${reg.boxId} matching ${containerPath}`,
     };
   }
-  const src = worktree.branch;
+  // Land the branch the box is actually on (its host-sanctioned branch, updated
+  // by `agentbox git checkout`), matching what `git.push` publishes — not the
+  // stale create-time scratch ref.
+  const src = worktree.sanctionedBranch ?? worktree.branch;
   const dest = resolveLandDest(src, params?.as);
   if (dest === src) {
     return {
@@ -1614,7 +1618,15 @@ async function handleGhPrRpc(
     : [];
 
   if (op === 'checkout') {
-    const branches = (reg.worktrees ?? []).map((w) => w.branch);
+    // Guard against the host repo checking out onto ANY branch a box currently
+    // occupies — its create-time scratch ref AND its host-sanctioned branch
+    // (the box's live HEAD after `agentbox git checkout`), either of which the
+    // bind-mounted `.git/HEAD` would corrupt.
+    const branches = (reg.worktrees ?? []).flatMap((w) =>
+      w.sanctionedBranch && w.sanctionedBranch !== w.branch
+        ? [w.branch, w.sanctionedBranch]
+        : [w.branch],
+    );
     const guard = await checkoutGuards(worktree.hostMainRepo, branches);
     if (guard) return guard;
   }
@@ -1640,9 +1652,14 @@ async function handleGhPrRpc(
     };
   }
   // Safe subset: open-PR + PR comment auto-approve under the flag (audited);
-  // review/close/reopen/merge/checkout keep prompting.
+  // review/close/reopen/merge/checkout keep prompting. A `create` with an
+  // EXPLICIT `--head` is excluded — that head could name any branch (e.g.
+  // `main`), so it falls back to the prompt; a headless `create` has its head
+  // forced to the box's sanctioned branch below, so it stays scoped.
   const ghSafeAuto =
-    GH_PR_SAFE_AUTO_APPROVE_OPS.has(op) && reg.autoApproveSafeHostActions !== false;
+    GH_PR_SAFE_AUTO_APPROVE_OPS.has(op) &&
+    reg.autoApproveSafeHostActions !== false &&
+    !prCreateHasExplicitHead(op, args);
   if (ghSafeAuto && !hostInitiatedOk) {
     prompts.noteAutoApprove(
       reg.boxId,
@@ -1676,7 +1693,10 @@ async function handleGhPrRpc(
   // Default `--head` to the box's branch for `create` (the host repo cwd isn't
   // on the box branch, so gh can't infer it). Done after token validation —
   // which hashes the incoming `params`, not this post-injection argv.
-  const finalArgs = injectPrCreateHead(op, worktree.branch, args);
+  // Inject the box's SANCTIONED branch (updated by `agentbox git checkout`),
+  // matching what `git.push` publishes — so a headless PR targets the branch
+  // the box's work is actually on, not the stale create-time scratch ref.
+  const finalArgs = injectPrCreateHead(op, worktree.sanctionedBranch ?? worktree.branch, args);
   // Never let `gh` fall back to the host repo's checked-out branch.
   if (prCreateNeedsHead(op, finalArgs)) return PR_CREATE_NO_HEAD_REFUSAL;
   return runHostGh(['pr', op, ...finalArgs], worktree.hostMainRepo);
