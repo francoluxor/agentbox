@@ -93,9 +93,17 @@ async function sanctionBoxBranch(box: BoxRecord, branch: string): Promise<void> 
         autoApproveHostActions: box.autoApproveHostActions,
         autoApproveSafeHostActions: box.autoApproveSafeHostActions,
       });
-    } catch {
-      // best-effort — relay may be down; the persisted state re-registers on
-      // the next `relay` rehydrate.
+    } catch (err) {
+      // The new sanctioned branch is persisted to state.json but the running
+      // relay's in-memory registry still holds the old one — so its push /
+      // PR-head gate keeps following the stale branch until the relay
+      // re-registers (next `agentbox relay restart` / rehydrate reads
+      // state.json). Surface it rather than swallow: silent staleness would
+      // leave `git push` gated on the wrong branch with no signal.
+      process.stderr.write(
+        `agentbox git: warning — recorded ${branch} as the box's branch, but the relay did not pick it up ` +
+          `(${err instanceof Error ? err.message : String(err)}). Run \`agentbox relay restart\` so pushes to ${branch} are gated correctly.\n`,
+      );
     }
   }
 }
