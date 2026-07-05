@@ -304,7 +304,7 @@ async function baseFreshnessRow(name: ProviderName): Promise<CheckResult | null>
       return {
         label: 'base freshness',
         status: 'warn',
-        detail: status.reason,
+        detail: `stale — ${status.reason}`,
         hint: `agentbox prepare --provider ${name}`,
       };
     case 'fresh':
