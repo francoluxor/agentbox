@@ -426,16 +426,15 @@ function listProviders(jobs: QueueJob[]): ProviderOption[] {
 // ── base-image freshness (opt-in; kept OFF the getData() hot path) ──
 // Computing a provider's live fingerprint loads its module and hashes the
 // runtime build context (~15 small files) — cheap but not free, and pointless
-// on every poll. We memoize per provider with a short TTL and invalidate when a
-// bake completes, so the frequently-read `GET /api/v1/providers` stays fast and
-// only the explicit `?freshness=1` request pays the cost.
+// on every poll. We memoize the LIVE fingerprint per provider with a short TTL,
+// so the frequently-read `GET /api/v1/providers` stays fast and only the explicit
+// `?freshness=1` request pays the cost. The cache is keyed by the STORED
+// fingerprint (a cheap single-file read done every call): a completed bake
+// rewrites `<provider>-prepared.json` → the stored fingerprint changes → the
+// entry misses and recomputes, so a fresh bake is reflected immediately (no
+// stale window from a TTL that outlives the bake — Bugbot #151).
 const FRESHNESS_TTL_MS = 60_000;
-const freshnessCache = new Map<ProviderKind, { at: number; status: BaseStatus }>();
-
-/** Drop a provider's cached freshness so the next request recomputes it. */
-function invalidateFreshness(id: ProviderKind): void {
-  freshnessCache.delete(id);
-}
+const freshnessCache = new Map<ProviderKind, { at: number; stored: string; live: string | undefined }>();
 
 /**
  * Live base-image/snapshot freshness for one provider, mirroring the CLI's
@@ -445,19 +444,23 @@ function invalidateFreshness(id: ProviderKind): void {
  */
 async function providerBaseFreshness(id: ProviderKind, claudeInstall?: 'native' | 'npm'): Promise<BaseStatus> {
   if (id === 'docker') return { state: 'fresh' };
-  const cached = freshnessCache.get(id);
-  if (cached && Date.now() - cached.at < FRESHNESS_TTL_MS) return cached.status;
   const stored = currentCloudBaseFingerprint(id);
+  const cached = freshnessCache.get(id);
+  // Reuse the memoized LIVE fingerprint only while both the stored fingerprint
+  // and the TTL still hold — a re-bake changes `stored` and invalidates it.
   let live: string | undefined;
-  try {
-    const mod = (await IMPORTERS[id]()).providerModule;
-    live = await mod.currentBaseFingerprintLive?.(claudeInstall);
-  } catch {
-    live = undefined;
+  if (cached && cached.stored === (stored ?? '') && Date.now() - cached.at < FRESHNESS_TTL_MS) {
+    live = cached.live;
+  } else {
+    try {
+      const mod = (await IMPORTERS[id]()).providerModule;
+      live = await mod.currentBaseFingerprintLive?.(claudeInstall);
+    } catch {
+      live = undefined;
+    }
+    freshnessCache.set(id, { at: Date.now(), stored: stored ?? '', live });
   }
-  const status = baseFreshnessFromFingerprints(stored, live);
-  freshnessCache.set(id, { at: Date.now(), status });
-  return status;
+  return baseFreshnessFromFingerprints(stored, live);
 }
 
 /**
@@ -888,10 +891,6 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
             force: opts?.force,
             claudeInstall: opts?.claudeInstall,
           });
-          // Drop any cached freshness so it recomputes once the bake rewrites
-          // <provider>-prepared.json (the short TTL is the backstop for the
-          // minutes-long bake, which outlasts any pre-bake cache entry anyway).
-          invalidateFreshness(id);
           handle.pokeQueue();
           return { ok: true, jobId: job.id };
         } catch (err) {
