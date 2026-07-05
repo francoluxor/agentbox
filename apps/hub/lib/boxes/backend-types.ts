@@ -142,6 +142,17 @@ export interface HubBackend {
   answerApproval(id: string, answer: 'y' | 'n'): Promise<ActionResult>;
   // Enqueue a background create job for a registered project; returns the jobId.
   create(input: CreateBoxInput): Promise<CreateBoxResult>;
+  // Persist a provider's credentials (validated against the cloud, then written
+  // to ~/.agentbox/secrets.env). `fields` is provider-specific (e.g. { apiKey },
+  // { token }, { token, teamId?, projectId? }). Never returns secret values.
+  setProviderCredentials(id: string, fields: Record<string, string>): Promise<ActionResult>;
+  // Enqueue a background image-bake (prepare) job for a provider; returns the
+  // jobId (progress streams over the per-job log SSE, like create). Reuses an
+  // in-flight bake for the same provider if one exists.
+  prepareProvider(
+    id: string,
+    opts?: { force?: boolean; claudeInstall?: 'native' | 'npm' },
+  ): Promise<CreateBoxResult>;
   // List a project's branches (local + remote) + its current HEAD, for the
   // create-box base-branch picker. Resolves the project by id server-side.
   listBranches(projectId: string): Promise<BranchList>;

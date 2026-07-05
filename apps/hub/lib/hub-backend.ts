@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,6 +20,7 @@ import {
 import { normalizeLastAgent, type BoxRecord, type ExecResult, type Provider } from '@agentbox/core';
 import type { BoxStatus as CtlBoxStatus, StatusReply } from '@agentbox/ctl';
 import {
+  enqueuePrepareJob,
   enqueueQueueJob,
   hashRpcParams,
   isValidBoxStatus,
@@ -43,6 +45,7 @@ import {
   boxServicesStatusRaw,
   readPreparedStateRaw,
   readState,
+  secretsEnvPath,
 } from '@agentbox/sandbox-core';
 import { listBoxes, mintHostInitiatedToken, type ListedBox } from '@agentbox/sandbox-docker';
 import type {
@@ -76,6 +79,13 @@ const IMPORTERS: Record<ProviderKind, () => Promise<{ providerModule: ProviderMo
   vercel: () => import('@agentbox/sandbox-vercel'),
   e2b: () => import('@agentbox/sandbox-e2b'),
 };
+
+// Per-provider serialization of prepare-enqueue: `prepareProvider` reads the
+// queue then enqueues, which isn't atomic across two concurrent POSTs (both could
+// miss an existing job and queue duplicates). Chaining per provider makes the
+// check+enqueue effectively atomic within this single-process backend — the
+// second call waits, then finds the first's job and returns the same jobId.
+const prepareEnqueueChain = new Map<string, Promise<unknown>>();
 
 async function providerForBox(box: BoxRecord): Promise<Provider> {
   const name = box.provider ?? 'docker';
@@ -304,20 +314,107 @@ function isProviderConfigured(id: ProviderKind): boolean {
   return !!(raw && typeof raw === 'object' && (raw as { base?: unknown }).base);
 }
 
-function listProviders(): ProviderOption[] {
+// secrets.env key(s) whose presence means a provider has credentials. Checked by
+// name only (never the value) so credential status is cheap + SDK-free. docker
+// needs none.
+const PROVIDER_CRED_KEYS: Record<ProviderKind, readonly string[]> = {
+  docker: [],
+  e2b: ['E2B_API_KEY'],
+  daytona: ['DAYTONA_API_KEY', 'DAYTONA_JWT_TOKEN'],
+  hetzner: ['HCLOUD_TOKEN'],
+  vercel: ['VERCEL_TOKEN', 'VERCEL_OIDC_TOKEN', 'VERCEL_AUTH_SOURCE'],
+};
+
+/** Set of KEY names present in `~/.agentbox/secrets.env` (values ignored). */
+function readSecretsKeys(): Set<string> {
+  const out = new Set<string>();
+  let body = '';
+  try {
+    body = readFileSync(secretsEnvPath(), 'utf8');
+  } catch {
+    return out;
+  }
+  for (const line of body.split(/\r?\n/)) {
+    const stripped = line.startsWith('export ') ? line.slice('export '.length) : line;
+    const eq = stripped.indexOf('=');
+    if (eq > 0) out.add(stripped.slice(0, eq).trim());
+  }
+  return out;
+}
+
+/** Whether a provider has credentials configured (secrets.env or the shell env). */
+function hasProviderCredentials(id: ProviderKind, keys: Set<string>): boolean {
+  if (id === 'docker') return true;
+  return PROVIDER_CRED_KEYS[id].some((k) => keys.has(k) || !!process.env[k]);
+}
+
+/** Cheap `docker info` reachability probe (short timeout) for the bake precheck. */
+async function dockerDaemonReachable(): Promise<boolean> {
+  try {
+    await execFileAsync('docker', ['info'], { timeout: 8000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether an executable is on PATH (used to precheck hetzner's ssh/scp). */
+async function binOnPath(name: string): Promise<boolean> {
+  try {
+    await execFileAsync(process.platform === 'win32' ? 'where' : 'which', [name], { timeout: 4000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Host-side prechecks before enqueuing a bake, so an unmet prerequisite fails
+ * fast with a clear message instead of a confusing mid-bake error. Returns an
+ * error string when unmet, else null.
+ */
+async function preparePrecheck(id: ProviderKind): Promise<string | null> {
+  if (id === 'docker') {
+    return (await dockerDaemonReachable())
+      ? null
+      : 'Docker daemon is not reachable on this host — start Docker and try again.';
+  }
+  // Cloud providers need credentials first.
+  if (!hasProviderCredentials(id, readSecretsKeys())) {
+    return `No credentials for ${id} — add them before baking.`;
+  }
+  if (id === 'hetzner') {
+    const [ssh, scp] = await Promise.all([binOnPath('ssh'), binOnPath('scp')]);
+    if (!ssh || !scp) {
+      return 'Hetzner baking needs the OpenSSH client (`ssh`/`scp`) on the host — install it and retry.';
+    }
+  }
+  return null;
+}
+
+function listProviders(jobs: QueueJob[]): ProviderOption[] {
+  const keys = readSecretsKeys();
   return PROVIDER_NAMES.map((id) => {
     // Keep "Docker (local)" but drop the "(cloud …)" qualifier from cloud labels
     // — the picker just wants the provider name.
     const label = id === 'docker' ? providerMeta(id).label : providerMeta(id).label.replace(/\s*\(.*\)$/, '');
     const configured = isProviderConfigured(id);
-    return {
-      id,
-      label,
-      configured,
-      reason: configured
-        ? undefined
-        : `Not set up on this host — run \`agentbox ${id} login\` then \`agentbox prepare --provider ${id}\``,
-    };
+    const hasCredentials = hasProviderCredentials(id, keys);
+    // An in-flight bake for this provider (queued or running) — lets the UI show
+    // a live progress stream and disable a second bake.
+    const bake = jobs.find(
+      (j) =>
+        j.kind === 'prepare' &&
+        j.providerName === id &&
+        (j.status === 'queued' || j.status === 'running'),
+    );
+    let reason: string | undefined;
+    if (!configured) {
+      reason = hasCredentials
+        ? 'Credentials set — bake the base image to finish setup.'
+        : 'Not set up — add credentials, then bake the base image.';
+    }
+    return { id, label, configured, hasCredentials, jobId: bake?.id, reason };
   });
 }
 
@@ -589,6 +686,9 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
       const liveIds = new Set(listed.map((b) => b.id));
       const jobBoxes: Box[] = [];
       for (const j of jobs) {
+        // A prepare (image-bake) job produces an artifact, not a box — it never
+        // surfaces in the box list (its progress is provider status instead).
+        if (j.kind === 'prepare') continue;
         if (j.boxId && liveIds.has(j.boxId)) continue;
         if (j.status === 'queued' || j.status === 'running') jobBoxes.push(mapJobToBox(j, 'creating'));
         else if (j.status === 'failed') jobBoxes.push(mapJobToBox(j, 'error'));
@@ -600,7 +700,7 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
         boxes: [...jobBoxes, ...listed.map(mapBox)],
         // Block-mode approvals live in-process on the relay handle, not the Store.
         approvals: handle.prompts.all().map(mapApproval),
-        providers: listProviders(),
+        providers: listProviders(jobs),
       };
     },
     pause: (id) => runLifecycle(id, (box, provider) => provider.pause(box)),
@@ -679,6 +779,53 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
+    async setProviderCredentials(id, fields): Promise<ActionResult> {
+      try {
+        if (!isProviderKind(id)) return { ok: false, error: `unknown provider ${id}` };
+        if (id === 'docker') return { ok: true }; // docker needs no credentials
+        const mod = (await IMPORTERS[id]()).providerModule;
+        if (!mod.setCredentials) {
+          return { ok: false, error: `provider ${id} does not support credential setup` };
+        }
+        const res = await mod.setCredentials(fields);
+        // Never surface secret values; only ok/error.
+        return res.ok ? { ok: true } : { ok: false, error: res.error ?? 'invalid credentials' };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    prepareProvider(id, opts): Promise<CreateBoxResult> {
+      if (!isProviderKind(id)) return Promise.resolve({ ok: false, error: `unknown provider ${id}` });
+      // Serialize per provider so concurrent POSTs can't both miss the in-flight
+      // job and enqueue duplicates (the check+enqueue below isn't atomic on its own).
+      const prev = prepareEnqueueChain.get(id) ?? Promise.resolve();
+      const run = prev.then(async (): Promise<CreateBoxResult> => {
+        try {
+          // One bake per provider at a time — reuse the in-flight job if present.
+          const existing = (await loadQueue()).find(
+            (j) =>
+              j.kind === 'prepare' &&
+              j.providerName === id &&
+              (j.status === 'queued' || j.status === 'running'),
+          );
+          if (existing) return { ok: true, jobId: existing.id };
+          const precheck = await preparePrecheck(id);
+          if (precheck) return { ok: false, error: precheck };
+          const { job } = await enqueuePrepareJob({
+            providerName: id,
+            force: opts?.force,
+            claudeInstall: opts?.claudeInstall,
+          });
+          handle.pokeQueue();
+          return { ok: true, jobId: job.id };
+        } catch (err) {
+          return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      });
+      // Keep the chain alive for the next call without letting a rejection break it.
+      prepareEnqueueChain.set(id, run.catch(() => {}));
+      return run;
+    },
     async listBranches(projectId: string): Promise<BranchList> {
       const repo = await resolveProjectPath(projectId);
       if (!repo) return { ok: false, error: `unknown project ${projectId}` };
@@ -713,6 +860,7 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
         const liveIds = new Set(boxes.map((b) => b.id));
         const hasJob = jobs.some(
           (j) =>
+            j.kind !== 'prepare' && // a bake isn't a project box
             !(j.boxId && liveIds.has(j.boxId)) &&
             (j.status === 'queued' || j.status === 'running' || j.status === 'failed') &&
             hashProjectPath(j.createOpts.workspace) === projectId,

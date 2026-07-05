@@ -219,10 +219,37 @@ export function buildOpenApi(): Record<string, unknown> {
       },
       '/providers': {
         get: {
-          summary: 'List sandbox providers and whether each is configured (baked) on this host',
+          summary: 'List sandbox providers with credential + baked status on this host',
           responses: {
             '200': { description: 'Providers', content: { 'application/json': { schema: { type: 'object', properties: { providers: { type: 'array', items: { $ref: '#/components/schemas/Provider' } } }, required: ['providers'] } } } },
             '401': errorResponse,
+          },
+        },
+      },
+      '/providers/{id}/credentials': {
+        post: {
+          summary: 'Set a provider\'s credentials (API keys/tokens), validated then saved to secrets.env. Never echoes secret values.',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', enum: ['docker', 'daytona', 'hetzner', 'vercel', 'e2b'] } }],
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: { type: 'string' }, description: 'Provider-specific fields, e.g. { apiKey } (e2b), { token } (hetzner), { apiKey } or { jwtToken, organizationId } (daytona), { token, teamId?, projectId? } (vercel).' } } } },
+          responses: {
+            '200': { description: 'Saved', content: { 'application/json': { schema: { type: 'object', properties: { ok: { const: true } }, required: ['ok'] } } } },
+            '400': errorResponse,
+            '401': errorResponse,
+            '503': errorResponse,
+          },
+        },
+      },
+      '/providers/{id}/prepare': {
+        post: {
+          summary: 'Bake a provider\'s base image (async — returns a job id). Progress streams over GET /jobs/{id}/logs.',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', enum: ['docker', 'daytona', 'hetzner', 'vercel', 'e2b'] } }],
+          requestBody: { required: false, content: { 'application/json': { schema: { type: 'object', properties: { force: { type: 'boolean' }, claudeInstall: { type: 'string', enum: ['native', 'npm'] } } } } } },
+          responses: {
+            '202': { description: 'Bake enqueued', content: { 'application/json': { schema: { type: 'object', properties: { jobId: { type: 'string' } }, required: ['jobId'] } } } },
+            '400': errorResponse,
+            '401': errorResponse,
+            '409': errorResponse,
+            '503': errorResponse,
           },
         },
       },
@@ -378,7 +405,9 @@ export function buildOpenApi(): Record<string, unknown> {
           properties: {
             id: { type: 'string', enum: ['docker', 'daytona', 'hetzner', 'vercel', 'e2b'] },
             label: { type: 'string' },
-            configured: { type: 'boolean' },
+            configured: { type: 'boolean', description: 'Base image baked (usable for create) on this host.' },
+            hasCredentials: { type: 'boolean', description: 'Credentials present (docker: always true). Can be true while not yet configured (baked).' },
+            jobId: { type: 'string', description: 'Id of an in-flight bake (prepare) job for this provider, if any.' },
             reason: { type: 'string' },
           },
           required: ['id', 'label', 'configured'],
