@@ -1,6 +1,7 @@
 import { Command, Option } from 'commander';
+import { resolveRemote, type GitRpcParams } from '@agentbox/core';
 import { spawn } from 'node:child_process';
-import { postRpcAndExit } from '../relay-rpc.js';
+import { postRpcAndExit, postRpcAwait } from '../relay-rpc.js';
 import { buildPrCommand } from './pr-subcommands.js';
 
 /**
@@ -34,16 +35,6 @@ export interface PushOptions extends CommonOptions {
   as?: string;
   /** With --host-only: allow a non-fast-forward overwrite of the destination. */
   force?: boolean;
-}
-
-interface GitRpcParams {
-  path: string;
-  remote?: string;
-  args?: string[];
-  hostOnly?: boolean;
-  as?: string;
-  force?: boolean;
-  hostInitiated?: string;
 }
 
 interface GitCloneRpcParams {
@@ -88,6 +79,61 @@ function runLocalGit(args: string[], cwd: string): Promise<number> {
   });
 }
 
+/** Run a local `git` command and capture its trimmed stdout ('' on failure). */
+function captureGit(args: string[], cwd: string): Promise<string> {
+  return new Promise((resolve) => {
+    const child = spawn('git', args, { cwd, stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = '';
+    child.stdout.on('data', (c: Buffer) => (out += c.toString('utf8')));
+    child.on('close', () => resolve(out.trim()));
+    child.on('error', () => resolve(''));
+  });
+}
+
+/**
+ * Control-plane push: instead of the relay pushing host-side, the box leases a
+ * repo-scoped GitHub-App token from the control plane and pushes directly.
+ * Used when AGENTBOX_GIT_LEASE=1. The host writes that flag into
+ * /etc/agentbox/box.env at create/resume when a control-plane URL is configured
+ * (the daemon's own env isn't inherited by the login shell that runs `git
+ * push`, so the flag must live in box.env). The token lives in the remote URL
+ * config for the push only and is scrubbed (origin restored) in `finally` —
+ * never in the push argv.
+ */
+async function leaseAndPush(opts: CommonOptions, extra: string[]): Promise<number> {
+  const prefix = 'agentbox-ctl git';
+  const cwd = opts.cwd ?? process.cwd();
+  const lease = await postRpcAwait('git.lease-token', buildParams(opts, []), { errorPrefix: prefix });
+  if (lease.exitCode !== 0) {
+    if (lease.stderr) process.stderr.write(lease.stderr);
+    return lease.exitCode;
+  }
+  let remoteUrl = '';
+  try {
+    const parsed = JSON.parse(lease.stdout) as { remoteUrl?: unknown };
+    if (typeof parsed.remoteUrl === 'string') remoteUrl = parsed.remoteUrl;
+  } catch {
+    /* handled below */
+  }
+  if (!remoteUrl) {
+    process.stderr.write(`${prefix}: lease response missing remoteUrl\n`);
+    return 1;
+  }
+  const remote = resolveRemote(opts.remote);
+  const branch = await captureGit(['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+  if (!branch) {
+    process.stderr.write(`${prefix}: could not resolve current branch\n`);
+    return 1;
+  }
+  const originalUrl = await captureGit(['remote', 'get-url', remote], cwd);
+  await runLocalGit(['remote', 'set-url', remote, remoteUrl], cwd);
+  try {
+    return await runLocalGit(['push', remote, branch, ...extra], cwd);
+  } finally {
+    if (originalUrl) await runLocalGit(['remote', 'set-url', remote, originalUrl], cwd);
+  }
+}
+
 /**
  * True when the box has a git committer identity configured (`user.email`).
  * Docker boxes bind-mount the host `~/.gitconfig`, so they do; cloud boxes
@@ -129,9 +175,14 @@ export const gitCommand = new Command('git')
           process.stderr.write('agentbox-ctl git push: --host-only does not use a remote; drop --remote\n');
           process.exit(64);
         }
-        const code = await postRpcAndExit('git.push', buildParams(opts, args), {
-          errorPrefix: 'agentbox-ctl git',
-        });
+        // Control-plane boxes lease a token and push directly; everyone else
+        // routes the push through the relay (host creds / cloud poller).
+        const code =
+          process.env.AGENTBOX_GIT_LEASE === '1'
+            ? await leaseAndPush(opts, args)
+            : await postRpcAndExit('git.push', buildParams(opts, args), {
+                errorPrefix: 'agentbox-ctl git',
+              });
         process.exit(code);
       }),
   )
@@ -180,7 +231,7 @@ export const gitCommand = new Command('git')
           if (fetchCode !== 0) process.exit(fetchCode);
           // Merge happens in the container, where the working tree lives. No
           // creds needed; refs are already in the shared .git from the fetch.
-          const remote = opts.remote ?? 'origin';
+          const remote = resolveRemote(opts.remote);
           // Resolve branch via the current HEAD's upstream, falling back to
           // `<remote>/HEAD` so a freshly cloned worktree still pulls.
           const cwd = opts.cwd ?? process.cwd();

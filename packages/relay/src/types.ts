@@ -1,3 +1,8 @@
+// DownloadKind's canonical decision home is `@agentbox/core`'s sync/files.ts;
+// imported here so DownloadRpcParams below can reference it, re-exported below
+// so existing `./types.js` importers stay unchanged.
+import type { DownloadKind } from '@agentbox/core';
+
 export const DEFAULT_RELAY_PORT = 8787;
 /**
  * In-box relay port — distinct from {@link DEFAULT_RELAY_PORT} so a nested
@@ -75,6 +80,21 @@ export interface BoxRegistration {
    * relay event so the bypass is auditable.
    */
   autoApproveHostActions?: boolean;
+  /**
+   * Mirrors `box.autoApproveSafeHostActions` (default true). When not `false`,
+   * the SAFE subset of host actions (open PR, PR/review comments,
+   * sanctioned-branch push, contained non-secret file copy/download, CI rerun,
+   * checkpoint, integration writes) auto-resolves without a prompt — each
+   * still emits a `host-action-auto-approved` event. Absent → enabled.
+   */
+  autoApproveSafeHostActions?: boolean;
+  /**
+   * The box repo's origin remote URL (any git URL shape). The hosted control
+   * plane resolves owner/repo from THIS registered value when leasing a
+   * GitHub-App token (never from box-supplied RPC params). Absent for boxes
+   * without a git origin.
+   */
+  originUrl?: string;
 }
 
 export interface BoxWorktree {
@@ -90,6 +110,13 @@ export interface BoxWorktree {
   hostMainRepo: string;
   /** Branch the in-container worktree was created on (`agentbox/<box-name>`). */
   branch: string;
+  /**
+   * Last branch the HOST sanctioned for this box (create-time `branch`, updated
+   * by host `agentbox git checkout`/`branch`/`pull <branch>`). The push gate
+   * auto-approves only a scratch branch or this value; absent → treated as
+   * `branch`.
+   */
+  sanctionedBranch?: string;
 }
 
 export interface RelayEvent {
@@ -146,6 +173,10 @@ export interface RegisterBoxBody {
    * prompts auto-resolve to `y` (audited via a relay event).
    */
   autoApproveHostActions?: boolean;
+  /** Mirrors `box.autoApproveSafeHostActions` (default true; absent → enabled). */
+  autoApproveSafeHostActions?: boolean;
+  /** The box repo's origin remote URL (for GitHub-App lease repo resolution). */
+  originUrl?: string;
 }
 
 /**
@@ -192,37 +223,9 @@ export interface BridgeActionResultBody {
   stderr: string;
 }
 
-export interface GitRpcParams {
-  /** Container path identifying which worktree to run against. Defaults to /workspace. */
-  path?: string;
-  /** Remote name; defaults to 'origin'. */
-  remote?: string;
-  /** Extra argv tail appended after the standard args (e.g. ['--set-upstream', 'origin', 'branch']). */
-  args?: string[];
-  /**
-   * git.push only: land the box's branch in the host's *local* repo instead of
-   * pushing to the remote. Nothing is published online; the relay skips the
-   * host-initiated-token / confirm-prompt gate (that gate guards remote pushes).
-   */
-  hostOnly?: boolean;
-  /**
-   * git.push --host-only only: destination branch name in the host repo.
-   * Defaults to the box's current branch name when omitted.
-   */
-  as?: string;
-  /** git.push --host-only only: allow a non-fast-forward overwrite of the destination branch. */
-  force?: boolean;
-  /**
-   * One-time token minted by the host CLI via `/admin/host-initiated/mint`
-   * before invoking this RPC through `agentbox-ctl`. The relay validates the
-   * token against its in-memory store, scoped to `(boxId, method)`; on
-   * match, the token is consumed and the confirm prompt is skipped. Boxes
-   * cannot mint these (the admin endpoint is loopback-only), so a malicious
-   * agent cannot forge "host-initiated" calls. Invalid/expired tokens fall
-   * through to the normal prompt path.
-   */
-  hostInitiated?: string;
-}
+// GitRpcParams's canonical wire-type home is `@agentbox/core`'s sync/git-refs.ts
+// (shared with the in-box ctl); re-exported here so `./types.js` importers stay unchanged.
+export type { GitRpcParams } from '@agentbox/core';
 
 export interface GitRpcResult {
   exitCode: number;
@@ -360,7 +363,7 @@ export interface BrowserOpenRpcParams {
   url: string;
 }
 
-export type DownloadKind = 'workspace' | 'env' | 'config' | 'claude';
+export type { DownloadKind };
 
 export interface DownloadRpcParams {
   kind: DownloadKind;

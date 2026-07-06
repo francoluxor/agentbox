@@ -23,7 +23,10 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, resolve as pathResolve } from 'node:path';
 
-export type PreparedProviderKind = 'docker' | 'daytona' | 'hetzner' | 'vercel' | 'e2b';
+import type { ProviderKind } from '@agentbox/config';
+
+/** Providers that bake a `~/.agentbox/<provider>-prepared.json` artifact. Same set as the config `ProviderKind` (the single source of truth). */
+export type PreparedProviderKind = ProviderKind;
 
 /**
  * The cross-provider record. `TImage` is the provider's opaque image
@@ -126,6 +129,17 @@ export async function computeContextSha256(files: ContextFile[]): Promise<string
 /** Short form for log lines — first 12 hex chars of a sha256. */
 export function shortFingerprint(sha: string): string {
   return sha.slice(0, 12);
+}
+
+/**
+ * Fold the Claude install method into a base context fingerprint so switching
+ * `box.claudeInstall` native↔npm forces a re-bake. `native` returns the base
+ * hash unchanged — existing native snapshots keep their fingerprint and never
+ * spuriously rebuild; only `npm` derives a distinct hash.
+ */
+export function claudeInstallFingerprint(baseSha: string, mode: 'native' | 'npm'): string {
+  if (mode === 'native') return baseSha;
+  return createHash('sha256').update(`${baseSha}\0claude-install=npm`).digest('hex');
 }
 
 /**

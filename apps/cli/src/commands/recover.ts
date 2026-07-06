@@ -28,6 +28,7 @@ import { access } from 'node:fs/promises';
 import { isCancel, log, select } from '@clack/prompts';
 import {
   generateBoxId,
+  normalizeLastAgent,
   type BoxRecord,
   type CloudBackend,
   type CloudSandboxSummary,
@@ -125,15 +126,18 @@ async function recoverKnownBox(
   // to resume, else start it fresh (adopted box / cleared pointer; the only
   // path for OpenCode). When `lastAgent` is unknown (a box created before the
   // field existed), fall back to resuming whatever was actually running.
+  // Read-time normalization keeps a legacy/forked record that stored the wire
+  // spelling `'claude-code'` resolving to the canonical `'claude'` here.
+  const lastAgent = normalizeLastAgent(record.lastAgent);
   await restoreAgentSessions(record, provider, {
-    restoreOnly: record.lastAgent,
+    restoreOnly: lastAgent,
     onLog: (line) => log.info(line),
   });
   if (opts.attach) {
     const result = await attachToRunningAgent(record, {});
     if (result === 'none') {
       log.warn(
-        `${record.name} reconnected but no agent session came up${record.lastAgent ? ` (last agent: ${record.lastAgent})` : ''}. Start one with: agentbox ${record.lastAgent ?? 'claude'} ${record.name}`,
+        `${record.name} reconnected but no agent session came up${lastAgent ? ` (last agent: ${lastAgent})` : ''}. Start one with: agentbox ${lastAgent ?? 'claude'} ${record.name}`,
       );
     }
   }

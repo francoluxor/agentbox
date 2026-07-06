@@ -16,7 +16,7 @@
  * only runs when the caller pre-resolved a non-docker provider.
  */
 
-import type { AgentKind, BoxRecord, CreateBoxRequest, Provider } from '@agentbox/core';
+import { toQueueKind, type BoxRecord, type CreateBoxRequest, type Provider } from '@agentbox/core';
 import type { AttachOpenIn } from '@agentbox/config';
 import { log } from '@clack/prompts';
 import { makeProgressReporter } from '../lib/progress.js';
@@ -66,11 +66,6 @@ export interface CloudAgentCreateArgs {
   hasSeedPrompt?: boolean;
 }
 
-/** Agent CLI launcher kind for the prompt-arg builder. */
-function agentKindFor(mode: 'claude' | 'codex' | 'opencode'): AgentKind {
-  return mode === 'claude' ? 'claude-code' : mode;
-}
-
 /**
  * Provision a cloud box and attach the requested agent. Calls process.exit
  * via `cloudAgentAttach` → `runWrappedAttach`; this function does not return
@@ -106,7 +101,7 @@ export async function cloudAgentCreate(args: CloudAgentCreateArgs): Promise<void
     const resyncWarning = result.resync ? buildResyncWarning(result.resync) : null;
     if (resyncWarning) {
       if (args.hasSeedPrompt) log.warn(resyncWarning);
-      else extraArgs = buildPromptArgs(agentKindFor(args.mode), resyncWarning, extraArgs ?? []);
+      else extraArgs = buildPromptArgs(toQueueKind(args.mode), resyncWarning, extraArgs ?? []);
     }
     await printLaunchRecap({
       record: result.record,

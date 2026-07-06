@@ -40,11 +40,14 @@ import {
   type CheckResult,
   type ProviderName,
 } from '../lib/doctor-checks.js';
+import { PROVIDER_NAMES, providerMeta, type ProviderKind } from '@agentbox/config';
+import { isRuntimeProvider, loadProviderModule } from '../provider/loaders.js';
 import { markSetupComplete } from '../lib/first-run.js';
 import { maybePromptStar } from '../lib/star-prompt.js';
 import { installCmuxCommand } from './install-cmux.js';
 import { installHerdrCommand } from './install-herdr.js';
 import { installCodexCommand, installCodexPlugin } from './install-codex.js';
+import { installTray, installTrayCommand } from './install-tray.js';
 import { runPrepare } from './prepare.js';
 
 /** Marker on the line after the frontmatter of every skill we ship. Its
@@ -392,22 +395,6 @@ export async function installForkSkill(
   }
 }
 
-const PROVIDER_HINTS: Record<ProviderName, string> = {
-  docker: 'builds a ~1GB local image; no login needed',
-  hetzner: 'paste an API token from the Hetzner Console',
-  daytona: 'approve a browser sign-in link',
-  vercel: 'installs the Vercel sandbox CLI, then a browser sign-in',
-  e2b: 'paste an API key from the E2B dashboard',
-};
-
-const PROVIDER_LABEL: Record<ProviderName, string> = {
-  docker: 'Docker (local)',
-  hetzner: 'Hetzner (cloud VPS)',
-  daytona: 'Daytona (cloud sandbox)',
-  vercel: 'Vercel (cloud microVM)',
-  e2b: 'E2B (cloud microVM)',
-};
-
 function ensureTty(): boolean {
   if (process.stdin.isTTY && process.stdout.isTTY) return true;
   process.stderr.write(
@@ -430,53 +417,17 @@ interface RunInstallWizardOptions {
 }
 
 async function runProviderLogin(name: ProviderName): Promise<boolean> {
-  if (name === 'docker') return true;
-  if (name === 'daytona') {
-    const mod = await import('@agentbox/sandbox-daytona');
-    const status = await mod.getDaytonaStatus();
-    if (status.configured) {
-      log.info('daytona: already configured');
-      const rotate = await confirm({ message: 'Re-authenticate Daytona?', initialValue: false });
-      if (rotate) await mod.ensureDaytonaCredentials({ force: true });
-      return true;
-    }
-    await mod.ensureDaytonaCredentials();
+  const mod = await loadProviderModule(name);
+  // No credential surface (docker) → nothing to log in.
+  if (!mod.ensureCredentials) return true;
+  const status = mod.readCredStatus ? await mod.readCredStatus() : { configured: false };
+  if (status.configured) {
+    log.info(`${name}: already configured${status.label ? ` (${status.label})` : ''}`);
+    const rotate = await confirm({ message: `Re-authenticate ${name}?`, initialValue: false });
+    if (rotate) await mod.ensureCredentials({ force: true });
     return true;
   }
-  if (name === 'hetzner') {
-    const mod = await import('@agentbox/sandbox-hetzner');
-    const status = mod.readHetznerCredStatus();
-    if (status.source !== 'none') {
-      log.info('hetzner: already configured');
-      const rotate = await confirm({ message: 'Re-authenticate Hetzner?', initialValue: false });
-      if (rotate) await mod.ensureHetznerCredentials({ force: true });
-      return true;
-    }
-    await mod.ensureHetznerCredentials();
-    return true;
-  }
-  if (name === 'vercel') {
-    const mod = await import('@agentbox/sandbox-vercel');
-    const status = mod.readVercelCredStatus();
-    if (status.auth !== 'none') {
-      log.info(`vercel: already configured (${status.auth})`);
-      const rotate = await confirm({ message: 'Re-authenticate Vercel?', initialValue: false });
-      if (rotate) await mod.ensureVercelCredentials({ force: true });
-      return true;
-    }
-    await mod.ensureVercelCredentials();
-    return true;
-  }
-  // e2b
-  const mod = await import('@agentbox/sandbox-e2b');
-  const status = mod.readE2bCredStatus();
-  if (status.auth !== 'none') {
-    log.info(`e2b: already configured (${status.auth})`);
-    const rotate = await confirm({ message: 'Re-authenticate E2B?', initialValue: false });
-    if (rotate) await mod.ensureE2bCredentials({ force: true });
-    return true;
-  }
-  await mod.ensureE2bCredentials();
+  await mod.ensureCredentials();
   return true;
 }
 
@@ -494,10 +445,13 @@ function tutorialBody(provider: ProviderName): string {
   );
 }
 
-const KNOWN_PROVIDERS: ProviderName[] = ['docker', 'hetzner', 'daytona', 'vercel', 'e2b'];
+// The interactive picker offers built-in providers only; external plugin
+// providers are set up via `agentbox plugin add` (they still validate as a
+// `--provider` value through `isProviderName` below).
+const KNOWN_PROVIDERS: readonly ProviderKind[] = PROVIDER_NAMES;
 
 function isProviderName(s: string): s is ProviderName {
-  return (KNOWN_PROVIDERS as readonly string[]).includes(s);
+  return isRuntimeProvider(s);
 }
 
 /**
@@ -543,8 +497,8 @@ export async function runInstallWizard(opts: RunInstallWizardOptions = {}): Prom
       initialValue: 'docker',
       options: KNOWN_PROVIDERS.map((p) => ({
         value: p,
-        label: PROVIDER_LABEL[p],
-        hint: PROVIDER_HINTS[p],
+        label: providerMeta(p).label,
+        hint: providerMeta(p).loginHint,
       })),
     });
     providerName = picked;
@@ -563,7 +517,7 @@ export async function runInstallWizard(opts: RunInstallWizardOptions = {}): Prom
   const prepareMsg =
     providerName === 'docker'
       ? 'Build the box image now? (~1GB, a few minutes)'
-      : `Bake the ${providerName} base snapshot now? (a few minutes, uses cloud time)`;
+      : `Create the ${providerName} base snapshot now? (a few minutes, uses cloud time)`;
   const wantPrepare = opts.yes ? true : await confirm({ message: prepareMsg, initialValue: true });
   if (wantPrepare) {
     try {
@@ -637,6 +591,24 @@ export async function runInstallWizard(opts: RunInstallWizardOptions = {}): Prom
   // Brief check post-setup so the user sees what's now ready.
   const providerGroup = await runProviderChecks(providerName);
   process.stdout.write('  ' + formatCompact([sysGroup, providerGroup]) + '\n');
+
+  // 6b) Offer the macOS menu-bar app (downloaded from GitHub Releases).
+  if (process.platform === 'darwin') {
+    const wantTray = opts.yes
+      ? true
+      : await confirm({ message: 'Install the AgentBox menu-bar app?', initialValue: true });
+    if (wantTray === true) {
+      const sp = spinner();
+      sp.start('Downloading menu-bar app');
+      try {
+        const res = await installTray({ quiet: true });
+        sp.stop(res.ran ? 'Menu-bar app: installed' : `Menu-bar app: skipped (${res.reason ?? ''})`);
+      } catch (err) {
+        sp.stop('Menu-bar app: failed');
+        log.warn(err instanceof Error ? err.message : String(err));
+      }
+    }
+  }
 
   // 7) Tutorial outro.
   note(tutorialBody(providerName), 'Next steps');
@@ -719,3 +691,4 @@ installCommand.enablePositionalOptions();
 installCommand.addCommand(installCmuxCommand);
 installCommand.addCommand(installHerdrCommand);
 installCommand.addCommand(installCodexCommand);
+installCommand.addCommand(installTrayCommand);

@@ -128,6 +128,26 @@ doesn't change any baked file produces an identical SHA, so the base
 stays `fresh`. See `docs/cloud-create-flow.md` → "Stale base detection
 at create" for the full state machine.
 
+### 1.2.1 Claude install method (`box.claudeInstall`)
+
+Every provider bakes Claude Code with Anthropic's **native installer**
+(`curl claude.ai/install.sh`) by default. Its CDN intermittently 403s
+cloud-datacenter egress IPs; the bake retries 3× then aborts (exit 71)
+rather than shipping a Claude-less base. `box.claudeInstall=npm` (or
+`agentbox prepare --claude-install npm`) is the opt-in escape hatch: the
+bake runs `npm install -g @anthropic-ai/claude-code` and symlinks it into
+`/home/vscode/.local/bin/claude` — the path the attach command, PATH
+shim, and host-side `installMethod=native` coercion all hardcode — so the
+box stays indistinguishable from a native install. It's **bake-time
+only** (never read at create), and the mode is folded into the base
+fingerprint (`claudeInstallFingerprint`, `@agentbox/sandbox-core`) so a
+switch re-bakes. Plumbing per provider: shell-script bakes (hetzner,
+vercel, e2b) read `AGENTBOX_CLAUDE_INSTALL` in their install script;
+docker passes a Dockerfile `--build-arg` (and folds the mode into
+`ensureImage`'s create-time fingerprint so the lazy rebuild doesn't
+clobber an npm image); daytona — whose SDK has no build-arg — builds from
+a sibling temp Dockerfile with the ARG default flipped.
+
 ### 1.3 Login → prepare nudge
 
 Each cloud's `agentbox <provider> login` only persists credentials.
@@ -475,10 +495,10 @@ precedence over `box.defaultCheckpoint` for Hetzner boxes. Set via
 
 ### 3.5 DinD inside the VPS
 
-Reuses the unchanged `launchCloudDockerdDaemon` scaffolding — the
-install script bakes `/usr/local/bin/agentbox-dockerd-start` (the same
-script the docker provider ships), and `createCloudProvider.create()`
-auto-launches it via `backend.exec` at provision + resume time.
+The install script bakes `/usr/local/bin/agentbox-dockerd-start` (the same
+script the docker provider ships), and the in-box bootstrap
+(`agentbox-ctl bootstrap`, kicked by `createCloudProvider.create()` /
+`reEnsureCloudBox()` at provision + resume) launches it before the ctl daemon.
 `docker run --rm hello-world` works inside the box without any
 hetzner-specific code (verified live in Phase-7 smoke).
 
@@ -710,10 +730,20 @@ signedPreviewUrl, attachArgv, revokeAttachToken, ensureVolume,
 createSnapshot, deleteSnapshot, list
 ```
 
-Then add a one-line case to `resolveCloudBackend` in
-`packages/relay/src/host-actions.ts` and register the name in
-`apps/cli/src/provider/registry.ts`'s `KNOWN`. Compose the full
-`Provider` with `createCloudProvider(backend)`.
+Compose the full `Provider` with `createCloudProvider(backend)` and export a
+`providerModule` (see `packages/sandbox-core/src/doctor.ts`).
+
+Two ways to ship it:
+
+- **Built-in** (first-party): add one row to the `PROVIDERS` table in
+  `packages/config/src/providers.ts` and one entry to the `IMPORTERS` map in
+  `apps/cli/src/provider/loaders.ts` (both bundle-inlined), plus the relay's
+  literal-import block in `resolveCloudBackend`
+  (`packages/relay/src/host-actions.ts`).
+- **External / community plugin**: publish `agentbox-provider-<name>` built on
+  `@agentbox/provider-sdk` and `agentbox plugin add` it — **no edits to AgentBox**.
+  This is the recommended path for third-party clouds. See
+  [`provider-plugins.md`](./provider-plugins.md).
 
 ### 7.1 Validating with the mock backend + contract tests
 

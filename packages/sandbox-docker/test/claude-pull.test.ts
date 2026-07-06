@@ -5,7 +5,7 @@ import {
   pickNewItems,
   referencedPluginVersionKeys,
   SKILL_EXCLUDE_PREFIXES,
-} from '../src/claude-pull.js';
+} from '../src/sync/claude-pull.js';
 
 describe('pickNewItems', () => {
   it('returns box names absent on host, sorted', () => {

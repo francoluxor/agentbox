@@ -17,20 +17,12 @@
  * shapes its result, so call sites can `.length > 0` test uniformly.
  */
 import type { EffectiveConfig, ProviderKind } from './types.js';
+import { perProviderValue } from './image.js';
 
 export function resolveBoxSize(cfg: EffectiveConfig, provider: ProviderKind | string): string {
-  // Unknown provider names fall into the docker bucket — a stray value in
-  // argv or config shouldn't crash before the validation layer.
-  const perProvider =
-    provider === 'daytona'
-      ? cfg.box.sizeDaytona
-      : provider === 'hetzner'
-        ? cfg.box.sizeHetzner
-        : provider === 'vercel'
-          ? cfg.box.sizeVercel
-          : provider === 'e2b'
-            ? cfg.box.sizeE2b
-            : cfg.box.sizeDocker;
-  if (perProvider && perProvider.length > 0) return perProvider;
+  // Unknown provider names fall back to the generic `box.size` — a stray value
+  // in argv or config shouldn't crash before the validation layer.
+  const perProvider = perProviderValue(cfg, 'size', provider);
+  if (perProvider.length > 0) return perProvider;
   return cfg.box.size;
 }

@@ -1,6 +1,6 @@
 {
   "name": "@madarco/agentbox",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "description": "Launch Claude Code, Codex, and other coding agents in isolated sandboxes",
   "license": "MIT",
   "author": "Marco D'Alia",
@@ -47,7 +47,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist runtime .turbo",
-    "prepublishOnly": "cd ../.. && pnpm -w build",
+    "stage": "node scripts/stage-runtime.mjs",
+    "prepublishOnly": "cd ../.. && pnpm -w build && pnpm --filter @agentbox/hub build:standalone && pnpm --filter @madarco/agentbox stage",
     "version": "git add CHANGELOG.md",
     "publish:patch": "npm version patch && git push --follow-tags",
     "publish:minor": "npm version minor && git push --follow-tags"
@@ -60,6 +61,7 @@
     "commander": "^12.1.0",
     "e2b": "^2.27.1",
     "execa": "^9.5.2",
+    "pg": "^8.13.1",
     "smol-toml": "^1.7.0",
     "supports-hyperlinks": "^3.1.0",
     "yaml": "^2.6.1"

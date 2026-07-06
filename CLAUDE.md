@@ -48,6 +48,12 @@ When verifying a change:
   hang — inspect that step rather than killing the whole command.
 - **Test projects**: use the `examples/` directory mainly, or `../agentbox-test-repo` to test push/pull on a test repo setup on GitHub, and `../agentbox-test-repo-gh` for the same repo but with https origin using `gh` tool. Also `../express-server` can be used to test the setup wizard since it doesn't have an `agentbox.yaml` file.
 - **Use Agentbox inside Agentbox**: start a container with `agentbox claude --shared-docker-cache --carry-yes` to have a box ready with agentbox compiled and in the path and reuse docker cache for faster builds. For Images build use `docker build --network=host -t agentbox/box:dev -f apps/cli/runtime/docker/Dockerfile.box apps/cli/runtime/docker` instead of `agentbox prepare` because the box runs without `CAP_SYS_PTRACE`.
+- **Hub is a persistent daemon — always rebuild + restart it after any hub change.** `agentbox hub` (relay + Next UI on 8787) is long-lived and spawns the **standalone build**, so a running hub keeps serving stale code after you edit `apps/hub/**` or any package it imports (`@agentbox/relay`, `@agentbox/sandbox-docker`, …). On dev, rebuild the standalone and restart before verifying:
+  ```
+  pnpm --filter @agentbox/hub build:standalone
+  AGENTBOX_HUB_BIN="$PWD/apps/hub/dist-standalone/apps/hub/server.js" node apps/cli/dist/index.js hub restart
+  ```
+  The `AGENTBOX_HUB_BIN` override is load-bearing: `resolveHubServer` prefers the CLI-staged `apps/cli/runtime/hub/…/server.js` (only refreshed by a full `agentbox` CLI build) over the fresh `apps/hub/dist-standalone`, so a bare `hub restart` respawns the stale staged bundle. Rebuild the imported packages too if you touched them. Same rule as `agentbox relay restart` for relay code. For fast UI-only iteration run the hub directly with `pnpm --filter @agentbox/hub hub:dev` (`tsx watch server.ts`). Note: `public/` assets (logo, favicon) only work through `build:standalone` (which stages `public/`) or `next dev`/`next start` — never assume a static asset serves without one of these.
 
 ## Conventions
 
@@ -59,6 +65,32 @@ When verifying a change:
 - **execa** for shelling out to `docker` (debuggable, no native deps). Don't introduce `dockerode` without a good reason. **One sanctioned native-dep exception**: `@homebridge/node-pty-prebuilt-multiarch` (ships ABI-stable N-API prebuilds, no end-user compiler) is used **only** by `agentbox dashboard` for the in-process terminal compositor. It is an `optionalDependencies` of `apps/cli` with a guarded dynamic import — a missing prebuild degrades `dashboard` to a clear error, never breaks the rest of the CLI.
 - **No emojis in code or output** unless explicitly requested.
 - **Comments only when the WHY is non-obvious** (a constraint, a workaround, a surprising invariant). Names should carry the WHAT.
+
+## AgentBox Tray (macOS menu-bar app)
+
+A native macOS **menu-bar app** lives in the sibling repo [`../agentbox-tray`](../agentbox-tray)
+(private GitHub `madarco/agentbox-tray`). It surfaces all boxes and gives one-click actions — open
+the hub, open each box's Web/VNC, start/stop, per-box git ops (`pull`/`push`/`push --host-only`/
+`checkout`/`branch`), restart services, and answer host-action approvals — without a terminal. It
+updates live over the hub's SSE stream and falls back to polling.
+
+It has **no build-time coupling** to this repo — it's a Swift Package Manager / AppKit app (Swift
+5.10, no Xcode, no external deps) that drives the two public surfaces:
+
+- **Boxes + actions** via the installed CLI, shelled through a login shell (`/bin/zsh -lc 'agentbox …'`,
+  because a GUI app has no inherited PATH). The list comes from `agentbox list -g --json` — it keeps
+  the CLI (not hub REST `/api/v1/boxes`) because only `ListedBox` carries the resolved Web/VNC URLs.
+- **Approvals + live events** via the local **Control Hub** at `127.0.0.1:8787`: REST
+  `/api/v1/approvals` (+ `…/{id}/answer`) and the SSE `/api/events` stream. **Auth split to remember
+  when changing the hub:** `/api/v1/*` uses `Authorization: Bearer <token>`, but `/api/events` reads
+  the **`agentbox_hub_token` cookie** (Bearer there 401s). Token is `~/.agentbox/hub/token`. SSE
+  events are refetch signals only (empty `data: {}`).
+
+**When you change the hub API, the SSE event/auth contract, the `agentbox list --json` shape, or any
+CLI command/flag the app uses (git/services/url/screen/start/stop/hub), update the tray app too** —
+its own [`CLAUDE.md`](../agentbox-tray/CLAUDE.md) documents exactly which surfaces it depends on. The
+app's data/action layer sits behind a `BoxSource` protocol so a future `HubAPIBoxSource` can target
+the hosted control-plane unchanged (aligns with [`docs/control-plane-roadmap.md`](./docs/control-plane-roadmap.md)).
 
 ## Documentation map
 
@@ -83,9 +115,12 @@ Each topic has a dedicated file under [`docs/`](./docs). Read the relevant one b
 - [`docs/features.md`](./docs/features.md) — what works today (the full CLI lifecycle) and what is not built yet.
 - [`docs/development.md`](./docs/development.md) — build + verify commands, manual end-to-end runs, the image-rebuild checklist, and assumed host environment.
 - [`docs/cloud-providers.md`](./docs/cloud-providers.md) — Daytona + Hetzner provider docs: how each cloud differs from docker, the bridge relay model, agent-credential volumes, signed preview URLs, SSH ControlMaster + per-box firewall (hetzner), known caveats.
+- [`docs/provider-plugins.md`](./docs/provider-plugins.md) — external / community providers: publish `agentbox-provider-<name>` on the public `@agentbox/provider-sdk` and `agentbox plugin add` it (registry at `~/.agentbox/plugins.json`, runtime `import()` seam, shared box-runtime via `resolveSharedRuntimeAsset`, trust-on-add + `SDK_API_VERSION` gate). Reference: [`examples/agentbox-provider-sample`](./examples/agentbox-provider-sample).
 - [`docs/cloud-create-flow.md`](./docs/cloud-create-flow.md) — step-by-step walk of `agentbox create --provider daytona`: how `.git` and workspace files get into the box (git bundle + stash + untracked tar), cloud checkpoints, the **base snapshot vs project snapshot** tiers, and the docker-auto-builds-but-daytona-doesn't asymmetry.
 - [`docs/daytona-backlog.md`](./docs/daytona-backlog.md) — what's done vs still missing on the Daytona path. Quick index of where each cloud feature actually lives.
 - [`docs/hertzner_backlog.md`](./docs/hertzner_backlog.md) — Hetzner provider build-out status: phase-by-phase progress, the live e2e smoke results, deferred follow-ups (per-project snapshot tier, `--pause` checkpoint flag, `agentbox prune --provider hetzner`, the install-script post-Chromium trace mystery). Filename uses the user-requested spelling.
 - [`docs/vercel-backlog.md`](./docs/vercel-backlog.md) — Vercel provider build-out status: why Vercel's shape differs (no Dockerfile, no containers, no SSH, persistent snapshots), phase-by-phase progress, and the live-verify checklist (user mapping, attach latency / ttyd upgrade, snapshot-vs-delete cascade, VNC on AL2023, published-CLI asset staging).
 - [`docs/e2b_backlog.md`](./docs/e2b_backlog.md) — E2B provider build-out status: how the shape maps onto `CloudBackend`, why E2B is the only cloud that builds the base **from a Dockerfile** (`Template.build()`), task-by-task progress, and shipped/deferred items.
 - [`docs/linux-host-backlog.md`](./docs/linux-host-backlog.md) — Linux (Ubuntu) **host** support: what's done (`agentbox doctor` is Linux-aware), how to test on a persistent Hetzner Ubuntu VM (`scripts/linux-dev-vm.sh` — `up`/`deploy`/`ssh`/`doctor`/`down`), and the remaining macOS-only host assumptions (browser `open`→`xdg-open`, iTerm2/AppleScript terminal spawning, OrbStack-only fast paths).
+- [`docs/control-plane-roadmap.md`](./docs/control-plane-roadmap.md) — the **Control Hub** architecture + roadmap (the forward direction; "Control Hub" / `agentbox hub` is the new name for the control-plane, renamed in milestone M1). Covers the three shifts (in-box create/bake + poll to unify the local + serverless paths; hub-anywhere/PC-first with a SQLite local hub; custody + 3-way sync), the four deployment topologies (local host, mac-mini, server/container, serverless Vercel→Cloudflare), the two capability profiles (serverless "control plane" vs full-host "control-box"), the source-of-truth constraint, the CLI rename + `hub install/update/uninstall`, and milestones M0–M8. Pairs with [`docs/control-plane-backlog.md`](./docs/control-plane-backlog.md) (what shipped).
+- [`docs/control-plane-guide.md`](./docs/control-plane-guide.md) — the **feature guide** for the hosted control plane (a.k.a. the legacy "control-box"): the one-relay-core/three-topologies model, how it works (Store seam, GitHub-App token leasing, block-vs-poll approvals, dual-mode server + bridge + CloudBoxPoller, the create-job worker, the in-box clone/relay-env/lease-and-push), and how to use it (`agentbox control-plane setup|set-url|status|add|worker` with examples). Read this before the roadmap/backlog for the high-level "what + how to use".

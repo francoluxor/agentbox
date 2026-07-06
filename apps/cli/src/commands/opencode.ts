@@ -9,6 +9,7 @@ import {
   type AttachOpenIn,
   type UserConfig,
 } from '@agentbox/config';
+import { ensureProjectRepoOnControlPlane } from '../control-plane/ensure-repo-installed.js';
 import {
   buildOpencodeAttachArgv,
   buildOpencodeLoginRunArgv,
@@ -427,6 +428,16 @@ export const opencodeCommand = new Command('opencode')
     // Portless, createBox) and delegates to cloudAgentCreate.
     const providerName = opts.provider ?? cfg.effective.box.provider ?? 'docker';
     const isCloud = providerName !== 'docker';
+
+    // When a control plane is configured, make sure this project's repo is
+    // authorized on its GitHub App so the box can lease push tokens.
+    await ensureProjectRepoOnControlPlane({
+      controlPlaneUrl: cfg.effective.relay.controlPlaneUrl,
+      gitPushMode: cfg.effective.git.pushMode,
+      projectRoot,
+      yes: !!opts.yes,
+    });
+
     const providerDefault = resolveDefaultCheckpoint(cfg.effective, providerName);
     const checkpointRef =
       opts.snapshot && opts.snapshot.length > 0
@@ -546,6 +557,10 @@ export const opencodeCommand = new Command('opencode')
           useBranch,
           resyncOnStart: opts.resync,
           projectRoot,
+          // Control-plane topology + git push routing — mirror `agentbox create`
+          // so cloud boxes from the agent commands honor the same config.
+          controlPlaneUrl: cfg.effective.relay.controlPlaneUrl,
+          gitPushMode: cfg.effective.git.pushMode,
           // Per-provider session-lifetime (e2b/vercel timeout); mirrors create.
           providerOptions: cloudSizingProviderOptions(provider.name, cfg.effective),
         },

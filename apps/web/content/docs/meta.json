@@ -32,6 +32,8 @@
     "e2b",
     "---Reference---",
     "cli",
+    "hub",
+    "api",
     "agentbox-yaml",
     "configuration",
     "environment"

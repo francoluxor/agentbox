@@ -4,6 +4,7 @@ import {
   findProjectRoot,
   loadEffectiveConfig,
   pruneOrphanProjectConfigs,
+  registerProject,
   resolveBoxImage,
   resolveBoxSize,
   resolveDefaultCheckpoint,
@@ -229,12 +230,21 @@ export const createCommand = new Command('create')
       cliOverrides: buildCliOverrides(opts),
     });
     const projectRoot = (await findProjectRoot(opts.workspace)).root;
+    // Register the project in the on-disk registry so the hub / web UI can list
+    // it (even before it has any box). Best-effort: never block or fail create.
+    // Other create entry points (agent commands, queue worker) are covered by
+    // the hub's self-heal backfill, which registers any box's projectRoot it sees.
+    try {
+      await registerProject(projectRoot);
+    } catch {
+      /* best-effort project registration */
+    }
     const providerName = opts.provider ?? cfg.effective.box.provider ?? 'docker';
     const checkpointRef = resolveCheckpointRef(
       opts,
       resolveDefaultCheckpoint(
         cfg.effective,
-        providerName as 'docker' | 'daytona' | 'hetzner' | 'vercel',
+        providerName,
       ),
     );
     // VM size: `--size` flag wins; otherwise the cascaded box.size /
@@ -242,7 +252,7 @@ export const createCommand = new Command('create')
     // override beats a project-level per-provider key.
     const sizeDefault = resolveBoxSize(
       cfg.effective,
-      providerName as 'docker' | 'daytona' | 'hetzner' | 'vercel',
+      providerName,
     );
     const effectiveSize = opts.size && opts.size.length > 0 ? opts.size : sizeDefault;
     // Box image: same precedence pattern as --size. `--image` wins; otherwise
@@ -250,7 +260,7 @@ export const createCommand = new Command('create')
     // prepare --provider X`).
     const imageDefault = resolveBoxImage(
       cfg.effective,
-      providerName as 'docker' | 'daytona' | 'hetzner' | 'vercel',
+      providerName,
     );
     const effectiveImage = opts.image && opts.image.length > 0 ? opts.image : imageDefault;
 
@@ -312,7 +322,10 @@ export const createCommand = new Command('create')
     // runtime; if the local install no longer matches, the wizard offers to
     // rebuild before creating. Docker self-heals via `ensureImage`, so its
     // baseStatus is always `fresh` and the wizard is a no-op here.
-    const baseStatus = await evaluateBaseFreshness(providerName);
+    const baseStatus = await evaluateBaseFreshness(
+      providerName,
+      cfg.effective.box.claudeInstall,
+    );
     const wiz = await maybeRunSetupWizard({
       workspace: opts.workspace,
       yes: !!opts.yes,
@@ -423,6 +436,12 @@ export const createCommand = new Command('create')
         fromBranch,
         useBranch,
         resyncOnStart: opts.resync,
+        // When a control plane is configured, a cloud box's live relay IS the
+        // plane: the provider resolves control-plane topology, registers the box
+        // on the plane, and the box forwards /rpc + leases push tokens directly.
+        // Cloud-only in effect; the docker provider ignores it.
+        controlPlaneUrl: cfg.effective.relay.controlPlaneUrl,
+        gitPushMode: cfg.effective.git.pushMode,
         projectRoot,
         onLog: (line) => {
           s.message(line);

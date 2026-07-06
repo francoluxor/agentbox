@@ -6,6 +6,7 @@ import {
 } from '@agentbox/relay';
 import { loadConfig } from '../config.js';
 import { writeRelayEnvFile } from '../relay-env.js';
+import { selectInBoxTransport } from './in-box-transport.js';
 import { startCodexScraper, type CodexScraperHandle } from '../codex-scraper.js';
 import { startClaudeScraper, type ClaudeScraperHandle } from '../claude-scraper.js';
 import { Supervisor } from '../supervisor.js';
@@ -119,7 +120,8 @@ export const daemonCommand = new Command('daemon')
     const boxRelayPort = resolveBoxRelayPort();
     let inBoxRelay: RelayServerHandle | null = null;
     let inBoxForwarder: BoxRelayForwarderHandle | null = null;
-    if (process.env.AGENTBOX_BOX_KIND === 'cloud') {
+    const transport = selectInBoxTransport(process.env);
+    if (transport.kind === 'box') {
       const bridgeToken = process.env.AGENTBOX_BRIDGE_TOKEN ?? '';
       const boxId = process.env.AGENTBOX_BOX_ID ?? '';
       const boxName = process.env.AGENTBOX_BOX_NAME ?? boxId;
@@ -169,8 +171,7 @@ export const daemonCommand = new Command('daemon')
         }
       }
     } else {
-      const upstreamUrl =
-        process.env.AGENTBOX_HOST_RELAY_URL ?? 'http://host.docker.internal:8787';
+      const upstreamUrl = transport.upstream;
       try {
         inBoxForwarder = await startBoxRelayForwarder({
           port: boxRelayPort,
@@ -180,6 +181,19 @@ export const daemonCommand = new Command('daemon')
         process.stdout.write(
           `agentbox-ctl: in-box relay forwarder listening on :${String(boxRelayPort)} -> ${upstreamUrl}\n`,
         );
+        // Control-plane cloud box: no global env (unlike docker's `-e`), so
+        // sibling ctl invocations (the tmux login shell's `git lease-token`)
+        // need the relay URL+token persisted to the 0600 file — same as the
+        // mode:'box' branch. The docker forwarder skips this (it has global env).
+        if (process.env.AGENTBOX_BOX_KIND === 'cloud') {
+          const boxToken = process.env.AGENTBOX_RELAY_TOKEN ?? '';
+          try {
+            writeRelayEnvFile(`http://127.0.0.1:${String(boxRelayPort)}`, boxToken);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            process.stderr.write(`agentbox-ctl: failed to write relay env file: ${msg}\n`);
+          }
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         process.stderr.write(`agentbox-ctl: in-box relay forwarder failed to start: ${msg}\n`);

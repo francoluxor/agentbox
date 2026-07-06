@@ -10,6 +10,7 @@ export {
   type ConfigSource,
   type EffectiveConfig,
   type EngineKind,
+  type GitPushMode,
   type IdeFlavor,
   type KeyDescriptor,
   type KeyType,
@@ -18,6 +19,17 @@ export {
   type QueueOpenIn,
   type UserConfig,
 } from './types.js';
+
+export {
+  PROVIDERS,
+  PROVIDER_NAMES,
+  CLOUD_PROVIDER_NAMES,
+  isProviderKind,
+  providerMeta,
+  providerKeyCap,
+  perProviderConfigKey,
+  type ProviderMeta,
+} from './providers.js';
 
 export {
   coerceFromString,
@@ -64,8 +76,11 @@ export {
   bumpProjectGcCounter,
   listProjectsConfigured,
   pruneOrphanProjectConfigs,
+  registerProject,
   setConfigValue,
+  unregisterProject,
   unsetConfigValue,
+  type ProjectEntry,
   type PruneOrphanProjectConfigsOptions,
   type PruneOrphanProjectConfigsResult,
 } from './write.js';

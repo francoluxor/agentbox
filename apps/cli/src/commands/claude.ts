@@ -6,6 +6,7 @@ import {
   type AttachOpenIn,
   type UserConfig,
 } from '@agentbox/config';
+import { ensureProjectRepoOnControlPlane } from '../control-plane/ensure-repo-installed.js';
 import {
   buildClaudeAttachArgv,
   buildClaudeLoginRunArgv,
@@ -583,6 +584,15 @@ export const claudeCommand = new Command('claude')
     const providerName = opts.provider ?? cfg.effective.box.provider ?? 'docker';
     const isCloud = providerName !== 'docker';
 
+    // When a control plane is configured, make sure this project's repo is
+    // authorized on its GitHub App so the box can lease push tokens.
+    await ensureProjectRepoOnControlPlane({
+      controlPlaneUrl: cfg.effective.relay.controlPlaneUrl,
+      gitPushMode: cfg.effective.git.pushMode,
+      projectRoot,
+      yes: !!opts.yes,
+    });
+
     // -i / --initial-prompt: background mode. Write a queue manifest and exit;
     // the relay's queue loop spawns the worker as a slot frees. Works on every
     // provider — the worker creates the box and pre-starts the seeded session
@@ -733,7 +743,10 @@ export const claudeCommand = new Command('claude')
     // runtime; if the local install no longer matches, the wizard offers to
     // rebuild before creating. Docker self-heals via `ensureImage`, so its
     // baseStatus is always `fresh` and the wizard is a no-op here.
-    const baseStatus = await evaluateBaseFreshness(providerName);
+    const baseStatus = await evaluateBaseFreshness(
+      providerName,
+      cfg.effective.box.claudeInstall,
+    );
     const wiz = await maybeRunSetupWizard({
       workspace: opts.workspace,
       yes: !!opts.yes,
@@ -825,6 +838,10 @@ export const claudeCommand = new Command('claude')
           useBranch,
           resyncOnStart: opts.resync,
           projectRoot,
+          // Control-plane topology + git push routing — mirror `agentbox create`
+          // so cloud boxes from the agent commands honor the same config.
+          controlPlaneUrl: cfg.effective.relay.controlPlaneUrl,
+          gitPushMode: cfg.effective.git.pushMode,
           // Per-provider session-lifetime (e2b/vercel timeout) so the keepalive
           // seeds correctly; mirrors `agentbox create`.
           providerOptions: cloudSizingProviderOptions(provider.name, cfg.effective),

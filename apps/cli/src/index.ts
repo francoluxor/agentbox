@@ -13,10 +13,31 @@ import { AGENTBOX_COMMIT, AGENTBOX_VERSION } from './version.js';
 process.env.AGENTBOX_CLI_VERSION = AGENTBOX_VERSION;
 process.env.AGENTBOX_CLI_COMMIT = AGENTBOX_COMMIT;
 
+// Stamp the staged `runtime/` root so externally-installed provider plugins can
+// resolve the shared box-side assets (ctl.cjs + shims) from the RUNNING CLI via
+// `@agentbox/provider-sdk`'s `resolveSharedRuntimeAsset`. Probe both bundle
+// layouts (dist/index.js and dist/<chunk>.js) for the `_shared` marker.
+import { existsSync as _existsSync } from 'node:fs';
+import { dirname as _dirname, resolve as _resolve } from 'node:path';
+import { fileURLToPath as _fileURLToPath } from 'node:url';
+{
+  const selfDir = _dirname(_fileURLToPath(import.meta.url));
+  for (const cand of [
+    _resolve(selfDir, '..', 'runtime'),
+    _resolve(selfDir, '..', '..', 'runtime'),
+  ]) {
+    if (_existsSync(_resolve(cand, '_shared'))) {
+      process.env.AGENTBOX_CLI_RUNTIME_DIR = cand;
+      break;
+    }
+  }
+}
+
 import { Command } from 'commander';
 import { applyEngineOverrideAtStartup } from './engine-override.js';
 import { buildGroupedHelp } from './help.js';
 import { agentCommand } from './commands/agent.js';
+import { appCommand } from './commands/app.js';
 import { attachCommand } from './commands/attach.js';
 import { claudeCommand } from './commands/claude.js';
 import { checkpointCommand } from './commands/checkpoint.js';
@@ -37,6 +58,7 @@ import { downloadCommand } from './commands/download.js';
 import { driveCommand } from './commands/drive.js';
 import { forkCommand } from './commands/fork.js';
 import { installCommand, runInstallWizard } from './commands/install.js';
+import { pluginCommand } from './commands/plugin.js';
 import { doctorCommand } from './commands/doctor.js';
 import { isFirstRun } from './lib/first-run.js';
 import { printCliError } from './lib/print-cli-error.js';
@@ -49,11 +71,15 @@ import { prepareCommand } from './commands/prepare.js';
 import { pruneCommand } from './commands/prune.js';
 import { queueCommand } from './commands/queue.js';
 import { relayCommand } from './commands/relay.js';
+import { hubCommand } from './commands/hub.js';
+import { controlPlaneCommand } from './commands/control-plane.js';
 import { runQueuedJobCommand } from './commands/_run-queued-job.js';
+import { runQueuedPrepareCommand } from './commands/_run-queued-prepare.js';
 import { claudeLoginWorkerCommand } from './commands/_claude-login-worker.js';
 import { herdrCommand } from './commands/herdr.js';
 import { recoverCommand } from './commands/recover.js';
 import { screenCommand } from './commands/screen.js';
+import { servicesCommand } from './commands/services.js';
 import { shellCommand } from './commands/shell.js';
 import { startCommand } from './commands/start.js';
 import { statusCommand } from './commands/status.js';
@@ -93,6 +119,7 @@ program.addCommand(screenCommand);
 program.addCommand(downloadCommand);
 program.addCommand(cpCommand);
 program.addCommand(statusCommand);
+program.addCommand(servicesCommand);
 program.addCommand(topCommand);
 program.addCommand(dashboardCommand);
 program.addCommand(driveCommand);
@@ -111,9 +138,16 @@ program.addCommand(checkpointCommand);
 program.addCommand(configCommand);
 program.addCommand(queueCommand);
 program.addCommand(relayCommand);
+program.addCommand(hubCommand);
+// Experimental + WIP (hosted control plane / deployed hub). Hidden from the main
+// `agentbox --help` list; still runnable and self-documented via `control-plane --help`.
+program.addCommand(controlPlaneCommand, { hidden: true });
 // Internal worker spawned by the relay's queue scheduler. Hidden from
 // `--help` (it shows nothing user-facing — see _run-queued-job.ts).
 program.addCommand(runQueuedJobCommand, { hidden: true });
+// Internal worker that bakes a provider base image for a `kind: 'prepare'` queue
+// job (hub-driven), streaming progress to the job log. Hidden.
+program.addCommand(runQueuedPrepareCommand, { hidden: true });
 // Internal worker that drives `claude auth login` under a pty for the headless
 // (non-TTY / --headless) login flow. Hidden — see _claude-login-worker.ts.
 program.addCommand(claudeLoginWorkerCommand, { hidden: true });
@@ -126,6 +160,8 @@ program.addCommand(e2bCommand);
 program.addCommand(dockerCommand);
 program.addCommand(updateCommand);
 program.addCommand(installCommand);
+program.addCommand(appCommand);
+program.addCommand(pluginCommand);
 program.addCommand(doctorCommand);
 
 program.configureHelp({ visibleCommands: () => [] });
@@ -145,7 +181,10 @@ const FIRST_RUN_EXEMPT = new Set([
   'doctor',
   'help',
   'relay',
+  'hub',
+  'app',
   '_run-queued-job',
+  '_run-queued-prepare',
   '_claude-login-worker',
   'drive',
   'screen',

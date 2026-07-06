@@ -1,4 +1,4 @@
-import type { BoxRecord, ExecResult, Provider } from '@agentbox/core';
+import { normalizeLastAgent, type BoxRecord, type ExecResult, type Provider } from '@agentbox/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Mock the light deps so `restoreAgentSessions` runs without docker/config IO.
@@ -81,5 +81,17 @@ describe('restoreAgentSessions restoreOnly', () => {
   it('does nothing without restoreOnly when nothing is resumable', async () => {
     await restoreAgentSessions(box, deadBoxProvider(), {});
     expect(cloudAgentStartDetached).not.toHaveBeenCalled();
+  });
+
+  it('a legacy lastAgent="claude-code" record drives the claude restore branch', async () => {
+    // Mirrors recover.ts: a box record written by a past/forked build may hold
+    // the wire spelling. recover.ts normalizes it before dispatch, so the
+    // canonical `'claude'` fresh-launch path must run (never a no-op).
+    const legacy = { ...box, lastAgent: 'claude-code' } as unknown as BoxRecord;
+    await restoreAgentSessions(legacy, deadBoxProvider(), {
+      restoreOnly: normalizeLastAgent(legacy.lastAgent),
+    });
+    expect(cloudAgentStartDetached).toHaveBeenCalledTimes(1);
+    expect(cloudAgentStartDetached.mock.calls[0]![0].binary).toBe('claude');
   });
 });

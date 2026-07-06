@@ -5,10 +5,13 @@
  */
 
 import type { Provider } from '@agentbox/core';
+import type { ProviderModule } from '@agentbox/sandbox-core';
 import { createCloudProvider } from '@agentbox/sandbox-cloud';
 import { daytonaBackend, DEFAULT_BOX_IMAGE_REF } from './backend.js';
 import { prepareDaytona } from './prepare.js';
 import { currentDaytonaBaseFingerprintLive } from './prepared-state.js';
+import { ensureDaytonaCredentials, setDaytonaCredentials } from './credentials.js';
+import { doctorChecks, readCredStatusSummary } from './provider-module.js';
 
 const cloudProvider = createCloudProvider(daytonaBackend, {
   defaultResources: { cpu: 2, memory: 4, disk: 8 },
@@ -20,6 +23,17 @@ export const daytonaProvider: Provider = {
   baseFingerprint: () => currentDaytonaBaseFingerprintLive(),
 };
 
+/** Uniform surface the CLI provider loader resolves this package through. */
+export const providerModule: ProviderModule = {
+  provider: daytonaProvider,
+  backend: daytonaBackend,
+  ensureCredentials: ensureDaytonaCredentials,
+  readCredStatus: readCredStatusSummary,
+  setCredentials: setDaytonaCredentials,
+  currentBaseFingerprintLive: (claudeInstall) => currentDaytonaBaseFingerprintLive(claudeInstall),
+  doctorChecks,
+};
+
 export { daytonaBackend, DEFAULT_BOX_IMAGE_REF };
 export { resolveDockerfileContext, type DockerfileContext } from './dockerfile-context.js';
 export { ensureDaytonaEnvLoaded } from './env-loader.js';
@@ -28,7 +42,7 @@ export { currentDaytonaBaseFingerprintLive } from './prepared-state.js';
 // Plain async function — no commander surface — so adding it here doesn't
 // pull commander/clack into consumers' type graphs. The full CLI command
 // lives at the `./cli` subpath export.
-export { ensureDaytonaCredentials } from './credentials.js';
+export { ensureDaytonaCredentials, setDaytonaCredentials } from './credentials.js';
 export type { EnsureDaytonaCredentialsOptions } from './credentials.js';
 export {
   getDaytonaStatus,

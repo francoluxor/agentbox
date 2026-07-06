@@ -8,10 +8,12 @@
  * inputs, plus one extra entry for the daytona overlay.
  */
 
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  claudeInstallFingerprint,
   computeContextSha256,
   DOCKER_CONTEXT_FILE_MAP,
   readCliStamp,
@@ -71,10 +73,23 @@ export interface DaytonaFingerprint {
   files: ContextFile[];
 }
 
+/**
+ * Bumped when the daytona seed-bake BUILD LOGIC changes in a way the
+ * context-file fingerprint can't see (the files are unchanged but the emitted
+ * Dockerfile steps differ). `relctx-1`: switched from absolute `addLocalFile`
+ * COPYs (which silently never landed) to relative `dockerfileCommands` COPYs.
+ * Folding it into the fingerprint forces existing snapshots to re-bake once.
+ */
+const DAYTONA_SEED_SCHEMA = 'relctx-1';
+
 export async function computeDaytonaContextFingerprint(): Promise<DaytonaFingerprint | null> {
   const files = resolveDaytonaContextFiles();
   if (!files) return null;
-  return { contextSha256: await computeContextSha256(files), files };
+  const rawSha = await computeContextSha256(files);
+  const contextSha256 = createHash('sha256')
+    .update(`${rawSha}\0daytona-seed=${DAYTONA_SEED_SCHEMA}`)
+    .digest('hex');
+  return { contextSha256, files };
 }
 
 /**
@@ -84,10 +99,15 @@ export async function computeDaytonaContextFingerprint(): Promise<DaytonaFingerp
  * by the CLI's `evaluateBaseFreshness` to compare against the stored
  * `daytona-prepared.json.base.contextSha256`.
  */
-export async function currentDaytonaBaseFingerprintLive(): Promise<string | undefined> {
+export async function currentDaytonaBaseFingerprintLive(
+  claudeInstall: 'native' | 'npm' = 'native',
+): Promise<string | undefined> {
   try {
     const fp = await computeDaytonaContextFingerprint();
-    return fp?.contextSha256;
+    if (!fp?.contextSha256) return undefined;
+    // Fold in claudeInstall exactly as `prepare` does — otherwise an npm-baked
+    // base never matches the stored (npm-folded) fingerprint.
+    return claudeInstallFingerprint(fp.contextSha256, claudeInstall);
   } catch {
     return undefined;
   }

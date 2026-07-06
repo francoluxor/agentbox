@@ -3,12 +3,15 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   countInFlightCreateJobs,
+  countRunningPrepareJobs,
   countWorkingSlots,
   defaultCountWorkingBoxes,
   loadQueue,
   occupiesWorkingSlot,
+  PREPARE_MAX_CONCURRENT,
   selectNextRunnable,
   selectNextRunnableByWorking,
+  selectNextRunnablePrepare,
   startQueueLoop,
   STARTUP_GRACE_MS,
   writeJob,
@@ -320,6 +323,47 @@ describe('countInFlightCreateJobs', () => {
   });
 });
 
+describe('prepare (image-bake) lane', () => {
+  const DEAD_PID = 2_147_483_646;
+
+  it('selectNextRunnable skips prepare jobs (they have their own lane)', () => {
+    const jobs = [job({ id: 'p', kind: 'prepare' }), job({ id: 'c', kind: 'create' })];
+    // Even with a free box slot, only the create job is selected here.
+    expect(selectNextRunnable(jobs, 0)?.id).toBe('c');
+    // A queue of only prepare jobs yields nothing on the box gate.
+    expect(selectNextRunnable([job({ id: 'p', kind: 'prepare' })], 0)).toBeNull();
+  });
+
+  it('selectNextRunnablePrepare picks the oldest queued prepare under the ceiling', () => {
+    const jobs = [
+      job({ id: 'a', kind: 'prepare', createdAt: '2024-01-01T00:00:00.000Z' }),
+      job({ id: 'b', kind: 'prepare', createdAt: '2024-01-01T00:00:01.000Z' }),
+      job({ id: 'c', kind: 'create' }),
+    ];
+    expect(selectNextRunnablePrepare(jobs, 0)?.id).toBe('a');
+    // At the ceiling → nothing starts.
+    expect(selectNextRunnablePrepare(jobs, PREPARE_MAX_CONCURRENT)).toBeNull();
+  });
+
+  it('countRunningPrepareJobs counts live prepare workers only', () => {
+    const jobs = [
+      job({ id: 'run', kind: 'prepare', status: 'running' }),
+      job({ id: 'dead', kind: 'prepare', status: 'running', pid: DEAD_PID }),
+      job({ id: 'queued', kind: 'prepare', status: 'queued' }),
+      job({ id: 'createRun', kind: 'create', status: 'running' }),
+    ];
+    expect(countRunningPrepareJobs(jobs)).toBe(1);
+  });
+
+  it('countInFlightCreateJobs ignores prepare jobs (a bake is not a box)', () => {
+    const jobs = [
+      job({ id: 'bake', kind: 'prepare', status: 'running' }),
+      job({ id: 'create', kind: 'create', status: 'running' }),
+    ];
+    expect(countInFlightCreateJobs(jobs, new Set())).toBe(1);
+  });
+});
+
 describe('startQueueLoop working-agent gate', () => {
   const cfg = (over: Partial<QueueConfig>): QueueConfig => ({
     enabled: true,
@@ -466,6 +510,20 @@ describe('loadQueue / writeJob round trip', () => {
       for (const id of [...ids, malformed]) {
         await rm(join(QUEUE_DIR, `${id}.json`), { force: true });
       }
+    }
+  });
+
+  it('persists noAgent on the manifest so the worker can skip the agent session', async () => {
+    const { QUEUE_DIR } = await import('../src/queue.js');
+    const id = `queue-vitest-${String(process.pid)}-noagent`;
+    try {
+      await writeJob(job({ id, noAgent: true }));
+      const raw = JSON.parse(await readFile(join(QUEUE_DIR, `${id}.json`), 'utf8')) as QueueJob;
+      expect(raw.noAgent).toBe(true);
+      const loaded = (await loadQueue()).find((j) => j.id === id);
+      expect(loaded?.noAgent).toBe(true);
+    } finally {
+      await rm(join(QUEUE_DIR, `${id}.json`), { force: true });
     }
   });
 });

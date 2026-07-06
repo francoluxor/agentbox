@@ -76,7 +76,9 @@ function copy(srcRel, destAbs, exec = false) {
     return;
   }
   mkdirSync(dirname(destAbs), { recursive: true });
-  cpSync(src, destAbs, { recursive: true });
+  // verbatimSymlinks keeps relative symlink targets intact (the hub standalone
+  // tree relies on them); the default rewrites them to absolute source paths.
+  cpSync(src, destAbs, { recursive: true, verbatimSymlinks: true });
   if (exec) chmodSync(destAbs, 0o755);
 }
 
@@ -86,6 +88,14 @@ mkdirSync(runtime, { recursive: true });
 for (const [srcRel, destRel] of direct) {
   copy(srcRel, join(runtime, destRel));
 }
+
+// Hub standalone build — `agentbox hub` spawns this self-contained Next+relay
+// server (packages/sandbox-docker/src/hub.ts resolveHubServer() looks for
+// runtime/hub/apps/hub/server.js). Built by `apps/hub` `build:standalone`; the
+// traced tree uses relative symlinks so cpSync (dereference:false) keeps it
+// self-contained. Absent in a partial dev build (warn+skip) — a publish runs
+// build:standalone first (apps/cli prepublishOnly).
+copy('apps/hub/dist-standalone', join(runtime, 'hub'));
 copy(dockerfileSrc, join(dockerCtx, 'Dockerfile.box'));
 for (const srcRel of contextFiles) {
   copy(srcRel, join(dockerCtx, srcRel), execBitFiles.has(srcRel));
@@ -115,6 +125,33 @@ const hetznerFiles = [
 ];
 for (const [srcRel, destRel, exec] of hetznerFiles) {
   copy(srcRel, join(hetznerCtx, destRel), exec);
+}
+
+// _shared — provider-NEUTRAL box-side runtime assets exposed to external
+// provider plugins via `@agentbox/provider-sdk`'s `resolveSharedRuntimeAsset`.
+// A VPS-style plugin brings only its own install script + system prompt and
+// pulls ctl + the shims from here, so it always installs the *running* CLI's
+// `ctl.cjs` (version-locked to the CLI, not to whatever the plugin bundled).
+// The CLI stamps this dir into `AGENTBOX_CLI_RUNTIME_DIR` at startup.
+const sharedCtx = join(runtime, '_shared');
+const sharedFiles = [
+  ['packages/ctl/dist/bin.cjs', 'ctl.cjs', true],
+  ['packages/sandbox-docker/scripts/agentbox-vnc-start', 'agentbox-vnc-start', true],
+  ['packages/sandbox-docker/scripts/agentbox-dockerd-start', 'agentbox-dockerd-start', true],
+  ['packages/sandbox-docker/scripts/agentbox-portless-trust', 'agentbox-portless-trust', true],
+  ['packages/sandbox-docker/scripts/agentbox-checkpoint-cleanup', 'agentbox-checkpoint-cleanup', true],
+  ['packages/sandbox-docker/scripts/agentbox-open', 'agentbox-open', true],
+  ['packages/sandbox-docker/scripts/gh-shim', 'gh-shim', true],
+  ['packages/sandbox-docker/scripts/git-shim', 'git-shim', true],
+  ['packages/sandbox-docker/scripts/ntn-shim', 'ntn-shim', true],
+  ['packages/sandbox-docker/scripts/linear-shim', 'linear-shim', true],
+  ['packages/sandbox-docker/scripts/claude-managed-settings.json', 'claude-managed-settings.json', false],
+  ['packages/sandbox-docker/scripts/agentbox-codex-hooks.json', 'agentbox-codex-hooks.json', false],
+  ['packages/sandbox-docker/scripts/opencode-agentbox-plugin.js', 'opencode-agentbox-plugin.js', false],
+  ['apps/cli/share/agentbox-setup/SKILL.md', 'agentbox-setup-skill.md', false],
+];
+for (const [srcRel, destRel, exec] of sharedFiles) {
+  copy(srcRel, join(sharedCtx, destRel), exec);
 }
 
 // Daytona provider — overlay files the daytona prepare step adds on top of
@@ -205,6 +242,9 @@ function stageReadme() {
   writeFileSync(join(cliRoot, 'README.md'), rewritten);
 }
 stageReadme();
+
+// Note: the macOS tray app (madarco/agentbox-tray) is distributed separately via GitHub Releases
+// (downloaded by `agentbox install tray`), NOT bundled here — keeps this cross-platform package small.
 
 if (missing > 0) {
   console.warn(

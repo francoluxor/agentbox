@@ -24,6 +24,7 @@
 import { intro, log, spinner } from '@clack/prompts';
 import {
   boxImageConfigKey,
+  isProviderKind,
   loadEffectiveConfig,
   setConfigValue,
   unsetConfigValue,
@@ -39,6 +40,7 @@ import {
 } from '@agentbox/sandbox-docker';
 import { Command } from 'commander';
 import { getProvider, isKnownProvider } from '../provider/registry.js';
+import { getRuntimeProviderNames } from '../provider/loaders.js';
 
 interface PrepareOptions {
   provider?: string;
@@ -47,6 +49,7 @@ interface PrepareOptions {
   build?: boolean;
   yes?: boolean;
   status?: boolean;
+  claudeInstall?: string;
 }
 
 interface DockerStatus {
@@ -294,6 +297,11 @@ export interface RunPrepareOptions {
   cwd?: string;
   /** Suppress the post-prepare status block. */
   suppressStatus?: boolean;
+  /**
+   * How the bake installs Claude Code (`native` | `npm`). CLI override of the
+   * `box.claudeInstall` config key; falls back to the effective config.
+   */
+  claudeInstall?: 'native' | 'npm';
 }
 
 /**
@@ -307,7 +315,9 @@ export async function runPrepare(
   opts: RunPrepareOptions = {},
 ): Promise<void> {
   if (!isKnownProvider(providerName)) {
-    process.stderr.write('error: --provider must be one of: docker, daytona, hetzner, vercel, e2b\n');
+    process.stderr.write(
+      `error: --provider must be one of: ${getRuntimeProviderNames().join(', ')}\n`,
+    );
     process.exit(1);
   }
 
@@ -326,13 +336,11 @@ export async function runPrepare(
   }
 
   const cwd = opts.cwd ?? process.cwd();
+  const cfg = await loadEffectiveConfig(cwd).catch(() => null);
   // Docker base-image registry override (box.imageRegistry; empty = always build).
-  const registry =
-    providerName === 'docker'
-      ? await loadEffectiveConfig(cwd)
-          .then((c) => c.effective.box.imageRegistry)
-          .catch(() => undefined)
-      : undefined;
+  const registry = providerName === 'docker' ? cfg?.effective.box.imageRegistry : undefined;
+  // Bake-time Claude install method: CLI flag wins over the config key.
+  const claudeInstall = opts.claudeInstall ?? cfg?.effective.box.claudeInstall ?? 'native';
   const sp = spinner();
   sp.start(`preparing ${providerName}…`);
   try {
@@ -342,20 +350,30 @@ export async function runPrepare(
       force: opts.force,
       allowPull: opts.build ? false : undefined,
       registry,
+      claudeInstall,
       onLog: (line) => sp.message(line.slice(0, 80)),
     });
     if (result.snapshotName !== undefined) {
       sp.stop(`prepared ${providerName}: snapshot '${result.snapshotName}'`);
-      const configKey = boxImageConfigKey(providerName);
-      try {
-        const written = await setConfigValue('project', configKey, result.snapshotName, cwd);
-        log.success(`${configKey} = ${result.snapshotName} (written to ${written.path})`);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        log.warn(
-          `prepared snapshot '${result.snapshotName}', but failed to pin it into the project config: ${msg}\n` +
-            `Run \`agentbox config set --project ${configKey} ${result.snapshotName}\` manually.`,
-        );
+      if (isProviderKind(providerName)) {
+        const configKey = boxImageConfigKey(providerName);
+        try {
+          const written = await setConfigValue('project', configKey, result.snapshotName, cwd);
+          log.success(`${configKey} = ${result.snapshotName} (written to ${written.path})`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log.warn(
+            `prepared snapshot '${result.snapshotName}', but failed to pin it into the project config: ${msg}\n` +
+              `Run \`agentbox config set --project ${configKey} ${result.snapshotName}\` manually.`,
+          );
+        }
+      } else {
+        // External plugin providers persist their baked ref in their own
+        // prepared-state (`~/.agentbox/<name>-prepared.json`), which the
+        // plugin's backend reads back when it sees the image sentinel — so
+        // there is no AgentBox config key to pin (and pinning to the generic
+        // `box.image` would poison built-in providers).
+        log.success(`prepared ${providerName}: snapshot '${result.snapshotName}'`);
       }
     } else {
       sp.stop(`${providerName.slice(0, 1).toUpperCase() + providerName.slice(1)} provider ready`);
@@ -415,11 +433,24 @@ export const prepareCommand = new Command('prepare')
   )
   .option('-y, --yes', 'skip confirmation prompts (cost / time warnings)')
   .option('--status', 'show status without preparing anything')
+  .option(
+    '--claude-install <mode>',
+    'install Claude Code into the base image via the native installer (default) or npm (native | npm)',
+  )
   .action(async (opts: PrepareOptions) => {
     // Status-only path: no provider, or explicit --status.
     if (!opts.provider || opts.status) {
       await showStatus({});
       return;
+    }
+
+    let claudeInstall: 'native' | 'npm' | undefined;
+    if (opts.claudeInstall !== undefined) {
+      if (opts.claudeInstall !== 'native' && opts.claudeInstall !== 'npm') {
+        process.stderr.write('error: --claude-install must be one of: native, npm\n');
+        process.exit(1);
+      }
+      claudeInstall = opts.claudeInstall;
     }
 
     const providerName = opts.provider.trim();
@@ -433,6 +464,7 @@ export const prepareCommand = new Command('prepare')
       force: opts.force,
       build: opts.build,
       yes: opts.yes,
+      claudeInstall,
     });
   });
 

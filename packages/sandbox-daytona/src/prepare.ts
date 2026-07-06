@@ -20,15 +20,16 @@
  * https://www.daytona.io/docs/en/snapshots/
  */
 
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { Image } from '@daytonaio/sdk';
 import type { PrepareOptions, PrepareResult } from '@agentbox/core';
 import {
-  stageClaudeStaticForUpload,
-  stageCodexStaticForUpload,
-  stageAgentsStaticForUpload,
-  stageOpencodeStaticForUpload,
-  type StageResult,
-} from '@agentbox/sandbox-cloud';
+  claudeInstallFingerprint,
+  stageAllAgentStatic,
+  type AgentStaticStage,
+} from '@agentbox/sandbox-core';
 import { getClient } from './backend.js';
 import { resolveDaytonaCustomClaudeMd, resolveDockerfileContext } from './dockerfile-context.js';
 import { ensureDaytonaEnvLoaded } from './env-loader.js';
@@ -52,53 +53,55 @@ function defaultSnapshotName(fingerprint: string | null): string {
   return `agentbox-base-${Math.floor(Date.now() / 1000).toString()}`;
 }
 
-interface AgentStage {
-  kind: 'claude' | 'codex' | 'opencode' | 'agents';
-  /** Path inside the image build that the tarball is uploaded to. */
-  remoteTar: string;
-  /** Path the image build extracts the tarball into. */
-  extractDir: string;
-  staged: StageResult;
+/**
+ * Daytona build paths for a staged tool. The tarball is copied into the seed
+ * build-context dir under `contextRel` (a RELATIVE name — the Daytona builder
+ * only resolves COPY sources that map to a relative archive entry; an absolute
+ * `addLocalFile` COPY silently fails to land), then COPYed to `remoteTar`.
+ */
+function daytonaSeedPaths(kind: AgentStaticStage['kind']): { contextRel: string; remoteTar: string } {
+  return {
+    contextRel: `agentbox-seed-${kind}.tar.gz`,
+    remoteTar: `/tmp/agentbox-seed-${kind}.tar.gz`,
+  };
 }
 
+/** Relative name the daytona CLAUDE.md overlay is staged under in the seed context dir. */
+const DAYTONA_CLAUDE_MD_REL = 'agentbox-custom-CLAUDE.md';
+
 /**
- * Stage the three agents' static tarballs in parallel. Each `StageResult`'s
- * `cleanup()` must be called by the caller, after the image build picks the
- * file up.
+ * Build the appended Dockerfile commands for the seed bake. Every `COPY` source
+ * is a RELATIVE name resolved against the seed build-context dir — the Daytona
+ * builder drops absolute-source COPYs (they archive to a stripped relative entry
+ * that the absolute source can't reference), so relative names are mandatory.
+ * Runs as root (COPY drops files root-owned; chown -R + /etc/claude-code need
+ * root), then restores `USER vscode` so the image keeps its default-user invariant.
+ * Pure + exported for the regression test.
  */
-async function stageAllAgentStatic(opts: { hostWorkspace?: string }): Promise<AgentStage[]> {
-  const [claudeStaged, codexStaged, opencodeStaged, agentsStaged] = await Promise.all([
-    stageClaudeStaticForUpload({ hostWorkspace: opts.hostWorkspace }),
-    stageCodexStaticForUpload(),
-    stageOpencodeStaticForUpload(),
-    stageAgentsStaticForUpload(),
-  ]);
-  return [
-    {
-      kind: 'claude',
-      remoteTar: '/tmp/agentbox-seed-claude.tar.gz',
-      extractDir: '/home/vscode/.claude',
-      staged: claudeStaged,
-    },
-    {
-      kind: 'codex',
-      remoteTar: '/tmp/agentbox-seed-codex.tar.gz',
-      extractDir: '/home/vscode/.codex',
-      staged: codexStaged,
-    },
-    {
-      kind: 'opencode',
-      remoteTar: '/tmp/agentbox-seed-opencode.tar.gz',
-      extractDir: '/home/vscode/.local/share/opencode',
-      staged: opencodeStaged,
-    },
-    {
-      kind: 'agents',
-      remoteTar: '/tmp/agentbox-seed-agents.tar.gz',
-      extractDir: '/home/vscode/.agents',
-      staged: agentsStaged,
-    },
+export function buildDaytonaSeedCommands(
+  usable: ReadonlyArray<Pick<AgentStaticStage, 'kind' | 'extractDir'>>,
+): string[] {
+  const cmds: string[] = [
+    'USER root',
+    `COPY ${DAYTONA_CLAUDE_MD_REL} /tmp/agentbox-custom-CLAUDE.md`,
+    ...usable.map((s) => `COPY ${daytonaSeedPaths(s.kind).contextRel} ${daytonaSeedPaths(s.kind).remoteTar}`),
+    'RUN install -m 0644 /tmp/agentbox-custom-CLAUDE.md /etc/claude-code/CLAUDE.md && rm -f /tmp/agentbox-custom-CLAUDE.md',
+    ...usable.map(
+      (s) =>
+        `RUN mkdir -p ${s.extractDir} && tar -xzf ${daytonaSeedPaths(s.kind).remoteTar} -C ${s.extractDir} --no-same-permissions --no-same-owner -m`,
+    ),
   ];
+  if (usable.length > 0) {
+    // Own the extracted trees as the box user, then drop the staging tarballs.
+    // ~/.agents is only present when the host had one (skills dir); guard it.
+    cmds.push(
+      'RUN chown -R vscode:vscode /home/vscode/.claude /home/vscode/.codex /home/vscode/.local' +
+        ' && ( [ -d /home/vscode/.agents ] && chown -R vscode:vscode /home/vscode/.agents || true )' +
+        ' && rm -f /tmp/agentbox-seed-*.tar.gz',
+    );
+  }
+  cmds.push('USER vscode');
+  return cmds;
 }
 
 /**
@@ -113,7 +116,17 @@ export async function prepareDaytona(opts: PrepareOptions): Promise<PrepareResul
   // deterministically and (b) detect cache hits against the recorded
   // prepared state. Computed before staging so an early `null` (partial
   // dev rebuild) doesn't waste a tar staging cycle.
-  const fingerprint = await computeDaytonaContextFingerprint();
+  const claudeInstall = opts.claudeInstall ?? 'native';
+  const rawFingerprint = await computeDaytonaContextFingerprint();
+  // Fold the install mode into the sha so native↔npm are distinct cache
+  // identities (`native` leaves the hash unchanged) — the snapshot name and the
+  // prepared-state match both derive from it.
+  const fingerprint = rawFingerprint
+    ? {
+        ...rawFingerprint,
+        contextSha256: claudeInstallFingerprint(rawFingerprint.contextSha256, claudeInstall),
+      }
+    : rawFingerprint;
   const snapshotName =
     opts.name ?? defaultSnapshotName(fingerprint?.contextSha256 ?? null);
 
@@ -176,51 +189,43 @@ export async function prepareDaytona(opts: PrepareOptions): Promise<PrepareResul
     for (const w of s.staged.warnings) log(w);
   }
 
+  // The Daytona SDK's `Image.fromDockerfile` takes only a path — no build args —
+  // and appended `.env()`/`.runCommands()` land *after* the base Dockerfile's
+  // Claude RUN (too late, and a native 403 would already have failed the build).
+  // So for npm mode we build from a sibling temp Dockerfile with the
+  // `AGENTBOX_CLAUDE_INSTALL` ARG default flipped to `npm`. It must live in the
+  // original's directory so the Dockerfile's relative COPY sources still resolve.
+  let tempDockerfile: string | null = null;
+  const dockerfilePath =
+    claudeInstall === 'npm'
+      ? (tempDockerfile = writeNpmDockerfile(ctx.dockerfile))
+      : ctx.dockerfile;
+
+  // Seed build-context dir: the daytona CLAUDE.md + each staged tarball are
+  // copied here under RELATIVE names so the appended `COPY <name>` sources map
+  // to relative archive entries the Daytona builder actually reconstructs.
+  // (An absolute `addLocalFile` COPY emits `COPY /abs/tmp/x` but archives the
+  // entry as the stripped `abs/tmp/x` — the mismatch silently drops the layer.)
+  let seedContextDir: string | null = null;
   try {
     // git-lfs (binary + `git lfs install --system`) is inherited for free from
     // Dockerfile.box, so an in-box checkout of an LFS repo smudges real content.
     // No daytona-specific overlay step is needed; the host-side object seeding
     // lives in sandbox-cloud's workspace-seed (seedCloneLfsObjects).
-    let image: Image = Image.fromDockerfile(ctx.dockerfile);
+    let image: Image = Image.fromDockerfile(dockerfilePath);
 
+    seedContextDir = mkdtempSync(join(tmpdir(), 'agentbox-daytona-seed-'));
     // Overlay the daytona-specific /etc/claude-code/CLAUDE.md on top of the
-    // docker-shaped one baked by Dockerfile.box. Daytona boxes have no host
-    // .git/ bind-mount, so the in-box hint needs daytona-specific git wording.
-    image = image.addLocalFile(daytonaClaudeMd, '/tmp/agentbox-custom-CLAUDE.md');
-    const extractCmds: string[] = [
-      'install -m 0644 /tmp/agentbox-custom-CLAUDE.md /etc/claude-code/CLAUDE.md',
-      'rm -f /tmp/agentbox-custom-CLAUDE.md',
-    ];
+    // docker-shaped one baked by Dockerfile.box (daytona boxes have no host
+    // .git/ bind-mount, so the in-box hint needs daytona-specific git wording).
+    copyFileSync(daytonaClaudeMd, join(seedContextDir, DAYTONA_CLAUDE_MD_REL));
 
-    // For each agent whose stage produced a tarball, add the file to the
-    // image build context and append a single tar-extract + chown.
     const usable = stages.filter((s) => s.staged.tarballPath !== null);
     for (const s of usable) {
-      image = image.addLocalFile(s.staged.tarballPath as string, s.remoteTar);
-      extractCmds.push(`mkdir -p ${s.extractDir}`);
-      extractCmds.push(`tar -xzf ${s.remoteTar} -C ${s.extractDir}`);
+      copyFileSync(s.staged.tarballPath as string, join(seedContextDir, daytonaSeedPaths(s.kind).contextRel));
     }
-    if (usable.length > 0) {
-      // One final pass: own the extracted trees as the box user, then drop the
-      // staging tarballs (no point shipping them twice in the image layer).
-      extractCmds.push(
-        'chown -R vscode:vscode /home/vscode/.claude /home/vscode/.codex /home/vscode/.local',
-      );
-      // ~/.agents is only present when the host had one (skills dir); guard it.
-      extractCmds.push(
-        '[ -d /home/vscode/.agents ] && chown -R vscode:vscode /home/vscode/.agents || true',
-      );
-      extractCmds.push('rm -f /tmp/agentbox-seed-*.tar.gz');
-    }
-    // Dockerfile.box ends with `USER vscode`. Switch to root for the
-    // install/tar/chown/rm pass — COPYed files are root-owned in /tmp (sticky
-    // bit), chown -R on /home/vscode/.* only works as root, and
-    // /etc/claude-code is root-owned. Switch back to vscode so the image
-    // keeps its default-user invariant.
-    image = image
-      .dockerfileCommands(['USER root'])
-      .runCommands(...extractCmds)
-      .dockerfileCommands(['USER vscode']);
+
+    image = image.dockerfileCommands(buildDaytonaSeedCommands(usable), seedContextDir);
 
     const client = getClient();
     log(`creating Daytona snapshot '${snapshotName}'…`);
@@ -243,5 +248,30 @@ export async function prepareDaytona(opts: PrepareOptions): Promise<PrepareResul
     return { snapshotName: snapshot.name ?? snapshotName };
   } finally {
     await Promise.all(stages.map((s) => s.staged.cleanup()));
+    if (tempDockerfile) rmSync(tempDockerfile, { force: true });
+    if (seedContextDir) rmSync(seedContextDir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Write a sibling copy of `Dockerfile.box` with the `AGENTBOX_CLAUDE_INSTALL`
+ * ARG default flipped from `native` to `npm`, and return its path. A sibling
+ * (same directory) keeps the Dockerfile's relative COPY sources resolvable.
+ * Throws if the ARG line isn't found (Dockerfile drifted from this expectation).
+ */
+function writeNpmDockerfile(originalPath: string): string {
+  const original = readFileSync(originalPath, 'utf8');
+  const flipped = original.replace(
+    'ARG AGENTBOX_CLAUDE_INSTALL=native',
+    'ARG AGENTBOX_CLAUDE_INSTALL=npm',
+  );
+  if (flipped === original) {
+    throw new Error(
+      `could not enable npm Claude install for Daytona: 'ARG AGENTBOX_CLAUDE_INSTALL=native' ` +
+        `not found in ${originalPath}. The Dockerfile.box drifted from the expected shape.`,
+    );
+  }
+  const target = join(dirname(originalPath), '.agentbox-claude-npm.Dockerfile');
+  writeFileSync(target, flipped);
+  return target;
 }

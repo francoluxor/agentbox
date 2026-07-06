@@ -6,6 +6,7 @@
  */
 
 import type { BoxRuntimeState } from './provider.js';
+import type { SyncTopology } from './sync/types.js';
 
 /** Sandbox backend a box runs on. Open-ended so future providers need no core change. */
 export type ProviderName = 'docker' | 'daytona' | 'hetzner' | (string & {});
@@ -121,6 +122,48 @@ export interface CloudBoxFields {
    * default). Absent on backends without a session timeout / pre-feature records.
    */
   sessionTimeoutMs?: number;
+  /**
+   * True when this box's `/workspace` was seeded from the host checkout (the
+   * laptop `create` path), i.e. it has a real fork base shared with the host.
+   * Left unset for `inBoxClone` / plane boxes (they clone in-box from a leased
+   * URL with no host fork base). Gates the session-start live-box resync — only
+   * host-seeded boxes can merge the host's current state back in (Phase 7.5).
+   */
+  hostSeeded?: boolean;
+  /**
+   * The box's per-box branch (`agentbox/<name>`, or `--use-branch <b>`). The
+   * merge target branch for the live-box resync; re-derived layout aside, this
+   * is the one piece resync can't recover from the box alone.
+   */
+  workspaceBranch?: string;
+  /**
+   * Last branch the HOST sanctioned for this cloud box (defaults to
+   * `workspaceBranch`, updated by host `agentbox git checkout`/`branch`/`pull
+   * <branch>`). The cloud push gate auto-approves a push only to a scratch
+   * branch OR this value — the cloud analogue of the docker registry's
+   * `BoxWorktree.sanctionedBranch`. Absent → treated as `workspaceBranch`.
+   */
+  sanctionedBranch?: string;
+  /**
+   * The box's resolved sync federation shape (`resolveSyncTopology`). `'cloud'`
+   * for a classic host-synced box, `'control-plane'` when its live relay is a
+   * hosted control plane (the box forwards `/rpc` to the plane and leases push
+   * tokens directly). Persisted so the value is stable across resumes.
+   */
+  topology?: SyncTopology;
+  /**
+   * The hosted control-plane base URL this box points at, when
+   * `topology === 'control-plane'`. Persisted (not re-derived from config) so a
+   * resume re-kick on a host whose config has changed/lacks the URL still
+   * re-threads the box's forwarder upstream + `AGENTBOX_GIT_LEASE` correctly.
+   */
+  controlPlaneUrl?: string;
+  /**
+   * Git push routing (`git.pushMode`): `'auto' | 'relay' | 'lease'`. Persisted
+   * (not re-derived from config) so a resume re-kick re-threads `AGENTBOX_GIT_LEASE`
+   * correctly even if the host config changed. Mirrors config's `GitPushMode`.
+   */
+  gitPushMode?: 'auto' | 'relay' | 'lease';
 }
 
 export interface GitWorktreeRecord {
@@ -141,6 +184,16 @@ export interface GitWorktreeRecord {
   gitWorktreePath: string;
   /** Branch the worktree was created on, e.g. `agentbox/<box-name>`. */
   branch: string;
+  /**
+   * The last branch the HOST put this box on — its create-time `branch`,
+   * updated by host-driven `agentbox git checkout`/`branch`/`pull <branch>`.
+   * Distinct from `branch` (which stays the immutable scratch identity used by
+   * host-only land, checkout guards, and upstream-sync skip): the relay
+   * auto-approves a push only to a scratch branch OR this sanctioned branch,
+   * so an in-box agent self-switching to `main` and pushing still prompts.
+   * Absent on records written before this field existed → treated as `branch`.
+   */
+  sanctionedBranch?: string;
   /** Workspace-relative path the repo was found at (empty string for root). */
   relPathFromWorkspace: string;
 }
@@ -210,6 +263,15 @@ export interface BoxRecord {
    * Persisted so a `relay` rehydrate re-registers with the same policy.
    */
   autoApproveHostActions?: boolean;
+  /**
+   * Resolved `box.autoApproveSafeHostActions` at create time (default true).
+   * Forwarded to the relay so the SAFE subset of host actions (open PR, PR
+   * comments, sanctioned-branch push, contained non-secret file copy, CI
+   * rerun, checkpoint, integration writes) auto-resolves without a prompt.
+   * Absent is treated as enabled (default on) by the relay. Persisted so a
+   * `relay` rehydrate re-registers with the same policy.
+   */
+  autoApproveSafeHostActions?: boolean;
   /**
    * Carry summary recorded at create time: which host paths were copied into
    * the box from `agentbox.yaml`'s `carry:` block. Audit trail for inspect

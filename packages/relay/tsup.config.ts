@@ -23,11 +23,18 @@ const externalAtRuntime = [
   '@agentbox/sandbox-daytona',
   '@agentbox/sandbox-cloud',
   '@daytonaio/sdk',
+  // `pg` is only used by the Postgres store on the hosted control plane, loaded
+  // via a lazy dynamic `import('pg')`. Keep it out of both relay bundles (esp.
+  // the self-contained bin.cjs) so the laptop relay never carries it.
+  'pg',
 ];
 
 export default defineConfig([
   {
-    entry: { index: 'src/index.ts' },
+    // `index` is the full library (consumed by the CLI / sandbox packages).
+    // `control-plane` is the lean hosted-plane entry (the Next.js app) — no
+    // server.ts/host-actions, so its graph carries none of the cloud SDKs.
+    entry: { index: 'src/index.ts', 'control-plane': 'src/control-plane.ts', daemon: 'src/daemon.ts' },
     format: ['esm'],
     target: 'node20',
     clean: true,

@@ -143,6 +143,7 @@ Uses `portless` to give box web apps the same URL from inside the box and on the
 - `agentbox self-update` — Update agentbox, wipe the box image so it rebuilds, reload the relay
 - `agentbox config` — Read / write layered config (global, per-project, workspace `defaults:`)
 - `agentbox relay` — Manage the host relay process (`status` / `stop` / `start` / `restart`)
+- `agentbox app` — Control the macOS menu-bar app process (`status` / `start` / `stop` / `restart`); install it with `agentbox install tray`
 
 Run `agentbox <command> --help` for command-specific options.
 
@@ -165,6 +166,20 @@ node apps/cli/dist/index.js --help
 ```
 
 The full development workflow, stack, end-to-end smoke tests, and teardown live in [`docs/development.md`](./docs/development.md).
+
+### Menu-bar tray app (dev)
+
+The macOS tray app lives in the sibling repo [`../agentbox-tray`](https://github.com/madarco/agentbox-tray). When you have it checked out next to this repo, these scripts build and run your **local** dev build (ad-hoc signed, at `../agentbox-tray/AgentBoxTray.app`) — separate from the notarized copy `agentbox install tray` puts in `/Applications`:
+
+```sh
+pnpm tray:dev        # rebuild the dev .app and relaunch it (the one you'll use most)
+pnpm tray:build      # just rebuild (scripts/make-app.sh)
+pnpm tray:start      # launch the dev build
+pnpm tray:stop       # quit any running instance
+pnpm tray:restart    # quit + relaunch the dev build
+```
+
+> Note: `agentbox app start|restart` targets the **installed** `/Applications` copy, not this dev build. Use the `pnpm tray:*` scripts while iterating on the tray here; run `agentbox install tray` to refresh `/Applications` from the current CLI build.
 
 # Author
 

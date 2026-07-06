@@ -10,6 +10,8 @@ import type { BoxRecord, ProviderName } from './box-record.js';
 import type { BoxEndpoints } from './endpoints.js';
 import type { ReplaceRule } from './replace.js';
 import type { BoxResourceStats } from './types.js';
+import type { SyncTransport } from './sync/transport.js';
+import type { ProviderSync } from './sync/provider-sync.js';
 
 /** Coarse lifecycle state, identical across providers. */
 export type BoxRuntimeState = 'running' | 'paused' | 'stopped' | 'missing';
@@ -131,6 +133,30 @@ export interface CreateBoxRequest {
    * now (Phase 2).
    */
   resyncOnStart?: boolean;
+  /**
+   * Seed /workspace by cloning inside the box instead of host-seeding. When set,
+   * cloud providers skip the host-side `seedCloudWorkspace` and the in-box
+   * bootstrap clones `authedUrl` (a leased, token-bearing URL) into /workspace,
+   * then resets origin to `originUrl` (scrubbing the token). Used by the plane /
+   * cloud-IDE create path, which has no host checkout to seed from; the laptop
+   * path omits this and host-seeds (carrying local uncommitted state). Cloud
+   * only — the docker provider bind-mounts the host `.git` and never clones.
+   */
+  inBoxClone?: { authedUrl: string; originUrl: string; branch?: string };
+  /**
+   * Hosted control-plane base URL when this box's live relay IS the plane (cloud
+   * only). When set, the provider resolves `topology: 'control-plane'`, registers
+   * the box on the plane with its origin URL, and the box's in-box daemon
+   * forwards `/rpc` to the plane + pushes via a leased token (`AGENTBOX_GIT_LEASE`).
+   * Absent → classic host-side sync (`'cloud'`/`'docker'`). Docker ignores it.
+   */
+  controlPlaneUrl?: string;
+  /**
+   * Git push routing (`git.pushMode`): `'auto' | 'relay' | 'lease'`. Mirrors
+   * config's `GitPushMode` (core doesn't depend on config). Threaded to the box
+   * bootstrap to gate `AGENTBOX_GIT_LEASE`. Docker ignores it (always relay).
+   */
+  gitPushMode?: 'auto' | 'relay' | 'lease';
   /** Provider-specific knobs (docker: sharedCache/portless; daytona: resources/region). */
   providerOptions?: Record<string, unknown>;
   onLog?: (line: string) => void;
@@ -282,6 +308,14 @@ export interface PrepareOptions {
    */
   registry?: string;
   /**
+   * How the bake installs Claude Code: `native` (Anthropic's installer, the
+   * default) or `npm` (`@anthropic-ai/claude-code`). Threaded into each
+   * provider's install script (`AGENTBOX_CLAUDE_INSTALL` env) or Dockerfile
+   * build-arg. An opt-in fallback for cloud egress IPs whose CDN the native
+   * installer 403s. Bake-time only — resolved from `box.claudeInstall`.
+   */
+  claudeInstall?: 'native' | 'npm';
+  /**
    * Progress sink for the build-side log stream (Docker BuildKit output,
    * Daytona's `onLogs` chunks). Wired to the CLI spinner / latest.log.
    */
@@ -339,9 +373,28 @@ export interface Provider {
    * uncommitted/untracked changes, keeping the box's version on conflict. The
    * CLI calls this on agent-session starts (gated by `box.resyncOnStart`).
    * Optional — providers that can't reach a live host workspace omit it and the
-   * CLI skips resync for that provider.
+   * CLI skips resync for that provider. `onLog` streams progress to the CLI
+   * spinner (the underlying resync concern logs per-repo merge/overlay lines).
    */
-  resyncWorkspace?(box: BoxRecord): Promise<ResyncResult>;
+  resyncWorkspace?(box: BoxRecord, onLog?: (line: string) => void): Promise<ResyncResult>;
+
+  /**
+   * The co-located `ProviderSync` facade for an already-created box: every
+   * shared sync op (resync, agent config, credentials, env, carry, git identity)
+   * named once, each a thin delegation to the provider-neutral concern. The
+   * handle is closed from `box` at construction. `create()` builds the same
+   * facade directly from raw handles (no record yet) and walks it. Optional —
+   * providers wire this as they adopt the facade (Phase 7).
+   */
+  sync?(box: BoxRecord): ProviderSync;
+
+  /**
+   * Build the byte-mover the sync layer drives for operations on an already-
+   * created box (session-start resync, `cp`, credential extract, download).
+   * At create time the provider constructs its transport internally instead.
+   * Optional — providers wire this as they migrate concerns onto the seam.
+   */
+  syncTransport?(box: BoxRecord): SyncTransport;
 
   // ---- query ----
   inspect(box: BoxRecord): Promise<InspectedBox>;
@@ -430,6 +483,11 @@ export interface Provider {
    * Returns `undefined` when the assets can't be resolved (e.g. a dev tree
    * without `pnpm -w build`); callers degrade to "don't nag" rather than
    * flag a false stale.
+   *
+   * `claudeInstall` MUST match the mode the base was baked with (from
+   * `box.claudeInstall`), because `prepare` folds it into the stored
+   * fingerprint via `claudeInstallFingerprint`. Omitting it makes an
+   * npm-baked base always read as stale.
    */
-  baseFingerprint?(): Promise<string | undefined>;
+  baseFingerprint?(claudeInstall?: 'native' | 'npm'): Promise<string | undefined>;
 }

@@ -6,66 +6,31 @@
  */
 
 import type { EffectiveConfig } from '@agentbox/config';
+import type { ProviderKind } from '@agentbox/config';
 import type { BoxRecord, Provider, ProviderName } from '@agentbox/core';
+import { getRuntimeProviderNames, isRuntimeProvider, loadProviderModule } from './loaders.js';
 
-export type KnownProviderName = 'docker' | 'daytona' | 'hetzner' | 'vercel' | 'e2b';
+/** A built-in `ProviderKind` OR a registered plugin provider name. */
+export type KnownProviderName = ProviderKind | (string & {});
 
-const KNOWN: readonly KnownProviderName[] = ['docker', 'daytona', 'hetzner', 'vercel', 'e2b'];
-
-export function isKnownProvider(name: string): name is KnownProviderName {
-  return (KNOWN as readonly string[]).includes(name);
+/** True for a built-in provider or a registered plugin provider. */
+export function isKnownProvider(name: string): boolean {
+  return isRuntimeProvider(name);
 }
 
+/**
+ * Resolve a `Provider` by name, running its first-run credential gate first.
+ * Each provider package's `providerModule.ensureCredentials` walks the user
+ * through `agentbox <provider> login` on first use (a no-op for docker, and
+ * for scripted/non-TTY callers). The base-snapshot gate lives inside
+ * `backend.provision`, not here, so `agentbox prepare` can build the snapshot
+ * without tripping it. Built-ins load through the bundle-inlined map; unknown
+ * names fall back to the plugin registry (`loaders.ts`).
+ */
 export async function getProvider(name: ProviderName): Promise<Provider> {
-  switch (name) {
-    case 'docker': {
-      const mod = await import('@agentbox/sandbox-docker');
-      return mod.dockerProvider;
-    }
-    case 'daytona': {
-      // Single lazy import covers both the first-run prompt gate and the
-      // provider itself — keeps the Daytona SDK off the Docker hot path.
-      // The prompt is a no-op when env is already configured or stdin isn't
-      // a TTY (scripted callers get the SDK's "not configured" error instead
-      // of a hung prompt).
-      const mod = await import('@agentbox/sandbox-daytona');
-      await mod.ensureDaytonaCredentials();
-      return mod.daytonaProvider;
-    }
-    case 'hetzner': {
-      // Same lazy-import pattern as daytona. `ensureHetznerCredentials` walks
-      // the user through `agentbox hetzner login` on first use. The base-
-      // snapshot gate (`ensureHetznerBaseSnapshot`) is deliberately *not*
-      // called here: it would chicken-and-egg `agentbox prepare --provider
-      // hetzner` (which exists precisely to BUILD the snapshot). The gate
-      // lives inside `backend.provision` instead — `prepare` calls the REST
-      // client directly, never `provision`, so it slips past the gate while
-      // `create`/`claude`/etc. still trip it.
-      const mod = await import('@agentbox/sandbox-hetzner');
-      await mod.ensureHetznerCredentials();
-      return mod.hetznerProvider;
-    }
-    case 'vercel': {
-      // Same lazy-import pattern. `ensureVercelCredentials` walks the user
-      // through `agentbox vercel login` (OIDC or token trio) on first use. The
-      // base-snapshot gate lives inside `backend.provision` (so `prepare` can
-      // build it without tripping the gate), matching the hetzner shape.
-      const mod = await import('@agentbox/sandbox-vercel');
-      await mod.ensureVercelCredentials();
-      return mod.vercelProvider;
-    }
-    case 'e2b': {
-      // Same lazy-import pattern. `ensureE2bCredentials` walks the user
-      // through `agentbox e2b login` (single API key) on first use. Task 1
-      // boots from E2B's default `base` template at create-time — no
-      // base-snapshot gate yet; Task 2 will add `prepare` + the gate.
-      const mod = await import('@agentbox/sandbox-e2b');
-      await mod.ensureE2bCredentials();
-      return mod.e2bProvider;
-    }
-    default:
-      throw new Error(`unknown sandbox provider: ${String(name)}`);
-  }
+  const mod = await loadProviderModule(name);
+  if (mod.ensureCredentials) await mod.ensureCredentials();
+  return mod.provider;
 }
 
 /** Provider for an existing box record. Defaults to 'docker' for legacy records. */
@@ -89,7 +54,7 @@ export async function providerForCreate(choice: CreateProviderChoice): Promise<P
   const name = (flag && flag.length > 0 ? flag : choice.config.box.provider) as ProviderName;
   if (typeof name !== 'string' || name.length === 0 || !isKnownProvider(name)) {
     throw new Error(
-      `unknown sandbox provider "${String(name)}" (known: ${KNOWN.join(', ')})`,
+      `unknown sandbox provider "${String(name)}" (known: ${getRuntimeProviderNames().join(', ')})`,
     );
   }
   return getProvider(name);

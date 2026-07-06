@@ -17,12 +17,16 @@ import type {
   PrepareOptions,
   PrepareResult,
   Provider,
+  ProviderSync,
+  ResyncResult,
 } from '@agentbox/core';
+import { claudeInstallFingerprint, makeSyncContext } from '@agentbox/sandbox-core';
+import { makeDockerSync } from './sync/docker-sync.js';
 import { createBox, type CreateBoxOptions } from './create.js';
 import { destroyBox, inspectBox, pauseBox, startBox, stopBox, unpauseBox } from './lifecycle.js';
 import { execInBox, inspectContainerStatus } from './docker.js';
 import { boxResourceStats } from './stats.js';
-import { detectEngine } from './host-export.js';
+import { detectEngine } from './sync/host-export.js';
 import { portlessGetUrl } from './portless.js';
 import { DEFAULT_BOX_IMAGE, imageExists, pullOrBuild } from './image.js';
 import {
@@ -129,6 +133,25 @@ export const dockerProvider: Provider = {
     await destroyBox(box.id);
   },
 
+  async resyncWorkspace(box: BoxRecord, onLog?: (line: string) => void): Promise<ResyncResult> {
+    // Merge the host's current branch into each per-box worktree + overlay the
+    // host's uncommitted/untracked (box wins). Reproduces `resyncBox`: the
+    // facade short-circuits when the box has no worktrees. Only `ctx.onLog` is
+    // read by resync (the concern reads each worktree's hostMainRepo).
+    const ctx = makeSyncContext({
+      boxName: box.name,
+      boxId: box.id,
+      provider: 'docker',
+      hostWorkspace: box.workspacePath,
+      onLog,
+    });
+    return makeDockerSync({ container: box.container }).resyncWorkspace(ctx, box.gitWorktrees ?? []);
+  },
+
+  sync(box: BoxRecord): ProviderSync {
+    return makeDockerSync({ container: box.container });
+  },
+
   async inspect(box: BoxRecord): Promise<InspectedBox> {
     const insp = await inspectBox(box.id);
     return {
@@ -206,7 +229,16 @@ export const dockerProvider: Provider = {
     // build-context fingerprint matches the recorded one. `--force`
     // overrides both checks.
     const ref = DEFAULT_BOX_IMAGE;
-    const fingerprint = await computeDockerContextFingerprint();
+    const claudeInstall = opts.claudeInstall ?? 'native';
+    const rawFingerprint = await computeDockerContextFingerprint();
+    // Fold the install mode into the sha so native↔npm are distinct cache
+    // identities (`native` leaves the hash unchanged).
+    const fingerprint = rawFingerprint
+      ? {
+          ...rawFingerprint,
+          contextSha256: claudeInstallFingerprint(rawFingerprint.contextSha256, claudeInstall),
+        }
+      : null;
     const prepared = readPreparedDockerState();
 
     if (!opts.force) {
@@ -226,10 +258,13 @@ export const dockerProvider: Provider = {
     }
 
     // `--force` skips the registry pull and always builds a fresh local image.
+    // npm mode must also build locally — the published GHCR image is native-only.
+    const npm = claudeInstall === 'npm';
     const { source } = await pullOrBuild(ref, fingerprint, {
       onProgress: opts.onLog,
-      allowPull: opts.force ? false : opts.allowPull,
+      allowPull: opts.force || npm ? false : opts.allowPull,
       registry: opts.registry,
+      buildArgs: npm ? { AGENTBOX_CLAUDE_INSTALL: 'npm' } : undefined,
     });
     if (fingerprint) {
       opts.onLog?.(
