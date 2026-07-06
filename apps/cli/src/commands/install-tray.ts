@@ -1,43 +1,48 @@
 /**
  * `agentbox install tray` — install the AgentBox Tray macOS menu-bar app.
  *
- * The tray ships as a signed+notarized `AgentBoxTray.app` zipped into the CLI's npm package at
- * `runtime/tray/AgentBoxTray.zip` (staged by `scripts/stage-runtime.mjs` at publish time). This
- * command unpacks it into `/Applications` with `ditto` (which preserves the code signature and the
- * stapled notarization ticket) and launches it. macOS-only; a clean no-op elsewhere.
+ * The tray is distributed separately (it's macOS-only, and keeps this cross-platform CLI small):
+ * a signed+notarized `AgentBoxTray.zip` is published to the public `madarco/agentbox` repo under the
+ * moving `tray-latest` release. This command downloads it, verifies its SHA-256, unpacks it into
+ * `/Applications` with `ditto` (which preserves the signature + stapled notarization ticket), and
+ * launches it. macOS-only; a clean no-op elsewhere.
+ *
+ * Humans who prefer no CLI can instead download `AgentBoxTray.dmg` from the same release and drag it
+ * to Applications.
  */
 
 import { intro, log, outro } from '@clack/prompts';
 import { Command } from 'commander';
 import { execa } from 'execa';
-import { existsSync, rmSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 export const APP_NAME = 'AgentBoxTray';
 export const APP_PATH = `/Applications/${APP_NAME}.app`;
 
-/** Locate the bundled tray zip, or null if it isn't staged (e.g. a dev checkout, or Linux). */
-export function resolveTrayZip(): string | null {
-  const candidates: string[] = [];
-  if (process.env.AGENTBOX_CLI_RUNTIME_DIR) {
-    candidates.push(join(process.env.AGENTBOX_CLI_RUNTIME_DIR, 'tray', `${APP_NAME}.zip`));
-  }
-  const selfDir = dirname(fileURLToPath(import.meta.url));
-  candidates.push(resolve(selfDir, '..', 'runtime', 'tray', `${APP_NAME}.zip`));
-  candidates.push(resolve(selfDir, '..', '..', 'runtime', 'tray', `${APP_NAME}.zip`));
-  return candidates.find((p) => existsSync(p)) ?? null;
-}
+// Overridable for forks/testing; default is the public agentbox repo's moving tray release.
+const RELEASE_BASE =
+  process.env.AGENTBOX_TRAY_RELEASE_BASE ?? 'https://github.com/madarco/agentbox/releases/download';
+const DEFAULT_TAG = 'tray-latest';
 
 export interface InstallTrayResult {
   ran: boolean;
   reason?: string;
 }
 
+export interface InstallTrayOptions {
+  uninstall?: boolean;
+  quiet?: boolean;
+  /** Install a local zip instead of downloading (dev/offline). */
+  zip?: string;
+  /** Release tag to download from (default `tray-latest`; e.g. `tray-v0.1.0`). */
+  tag?: string;
+}
+
 /** Install (or uninstall) the tray app. Reusable from the setup wizard. */
-export async function installTray(
-  opts: { uninstall?: boolean; quiet?: boolean } = {},
-): Promise<InstallTrayResult> {
+export async function installTray(opts: InstallTrayOptions = {}): Promise<InstallTrayResult> {
   const say = (msg: string) => {
     if (!opts.quiet) log.info(msg);
   };
@@ -56,29 +61,72 @@ export async function installTray(
     return { ran: true };
   }
 
-  const zip = resolveTrayZip();
-  if (!zip) {
-    say('Tray app not bundled in this CLI build (dev checkout?) — nothing to install.');
-    return { ran: false, reason: 'not-bundled' };
+  // Resolve the zip: a local path (--zip) or a fresh download from the release.
+  let zip: string;
+  let scratch: string | null = null;
+  if (opts.zip) {
+    if (!existsSync(opts.zip)) {
+      say(`No zip at ${opts.zip}.`);
+      return { ran: false, reason: 'zip-missing' };
+    }
+    zip = opts.zip;
+  } else {
+    scratch = mkdtempSync(join(tmpdir(), 'agentbox-tray-'));
+    try {
+      zip = await downloadAndVerify(opts.tag ?? DEFAULT_TAG, scratch, say);
+    } catch (err) {
+      rmSync(scratch, { recursive: true, force: true });
+      say(`Download failed: ${err instanceof Error ? err.message : String(err)}`);
+      return { ran: false, reason: 'download-failed' };
+    }
   }
 
-  // Replace any existing copy, extract with ditto (preserves signature + notarization ticket).
-  if (existsSync(APP_PATH)) rmSync(APP_PATH, { recursive: true, force: true });
-  await execa('ditto', ['-x', '-k', zip, '/Applications']);
-  // Belt-and-suspenders: clear any quarantine bit so Gatekeeper never blocks the local install.
-  await execa('xattr', ['-dr', 'com.apple.quarantine', APP_PATH]).catch(() => undefined);
-  await execa('open', [APP_PATH]);
+  try {
+    // Replace any existing copy, extract with ditto (preserves signature + notarization ticket).
+    if (existsSync(APP_PATH)) rmSync(APP_PATH, { recursive: true, force: true });
+    await execa('ditto', ['-x', '-k', zip, '/Applications']);
+    // Belt-and-suspenders: clear any quarantine bit so Gatekeeper never blocks the download.
+    await execa('xattr', ['-dr', 'com.apple.quarantine', APP_PATH]).catch(() => undefined);
+    await execa('open', [APP_PATH]);
+  } finally {
+    if (scratch) rmSync(scratch, { recursive: true, force: true });
+  }
 
   say(`Installed ${APP_PATH} and launched it (look for the box icon in the menu bar).`);
   return { ran: true };
 }
 
+/** Download `<tag>/AgentBoxTray.zip` + its `.sha256`, verify, and return the local zip path. */
+async function downloadAndVerify(
+  tag: string,
+  dir: string,
+  say: (m: string) => void,
+): Promise<string> {
+  const base = `${RELEASE_BASE}/${tag}`;
+  const zipPath = join(dir, `${APP_NAME}.zip`);
+  const shaPath = join(dir, `${APP_NAME}.zip.sha256`);
+
+  say(`Downloading ${APP_NAME} (${tag})…`);
+  await execa('curl', ['-fSL', '-o', zipPath, `${base}/${APP_NAME}.zip`]);
+  await execa('curl', ['-fSL', '-o', shaPath, `${base}/${APP_NAME}.zip.sha256`]);
+
+  // The .sha256 sidecar is `shasum` format: "<hex>  AgentBoxTray.zip".
+  const expected = readFileSync(shaPath, 'utf8').trim().split(/\s+/)[0]?.toLowerCase();
+  const actual = createHash('sha256').update(readFileSync(zipPath)).digest('hex');
+  if (!expected || expected !== actual) {
+    throw new Error(`checksum mismatch (expected ${expected ?? 'none'}, got ${actual})`);
+  }
+  return zipPath;
+}
+
 export const installTrayCommand = new Command('tray')
-  .description('Install the AgentBox Tray macOS menu-bar app into /Applications and launch it')
+  .description('Download and install the AgentBox Tray macOS menu-bar app into /Applications')
   .option('--uninstall', 'quit and remove the menu-bar app')
-  .action(async (opts: { uninstall?: boolean }) => {
+  .option('--tag <tag>', 'release tag to install from (default: tray-latest)')
+  .option('--zip <path>', 'install a local AgentBoxTray.zip instead of downloading')
+  .action(async (opts: { uninstall?: boolean; tag?: string; zip?: string }) => {
     intro(opts.uninstall ? 'Removing AgentBox Tray…' : 'Installing AgentBox Tray…');
-    const res = await installTray({ uninstall: opts.uninstall });
+    const res = await installTray(opts);
     outro(res.ran ? 'Done' : `Skipped (${res.reason ?? 'nothing to do'})`);
-    if (!res.ran && res.reason === 'not-bundled') process.exitCode = 1;
+    if (!res.ran && res.reason && res.reason !== 'not-macos') process.exitCode = 1;
   });
