@@ -18,7 +18,7 @@
  */
 import { createRequire } from 'node:module';
 import { cp, rm, readdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,6 +33,42 @@ const outApp = path.join(outDir, appRel);
 if (!existsSync(standaloneSrc)) {
   console.error(`[build-standalone] ${standaloneSrc} missing — run \`next build\` first.`);
   process.exit(1);
+}
+
+// The published bundle ships NO node_modules (see the cp filter below); the hub's
+// externals — most importantly `next` — resolve from the installed
+// @madarco/agentbox package's own node_modules. The compiled `.next` output is
+// tied to the EXACT next version it was built against, so a drift between that and
+// the CLI's declared `next` dependency would ship a broken hub. Fail loudly here.
+{
+  const nextVer = readPkgVersion('next', hubDir);
+  const cliPkg = JSON.parse(readFileSync(path.join(hubDir, '..', 'cli', 'package.json'), 'utf8'));
+  const cliNextSpec = cliPkg.dependencies?.next;
+  if (nextVer && cliNextSpec !== nextVer) {
+    console.error(
+      `[build-standalone] next version drift: the hub was built against next@${nextVer}, ` +
+        `but apps/cli/package.json pins next="${cliNextSpec ?? '(missing)'}". ` +
+        `The compiled .next output requires the exact version — set dependencies.next to "${nextVer}".`,
+    );
+    process.exit(1);
+  }
+}
+
+/** Version of an installed package resolvable from `fromDir` (bypasses `exports`). */
+function readPkgVersion(name, fromDir) {
+  try {
+    const entry = createRequire(path.join(fromDir, 'noop.js')).resolve(name);
+    for (let dir = path.dirname(entry); dir !== path.dirname(dir); dir = path.dirname(dir)) {
+      const pj = path.join(dir, 'package.json');
+      if (existsSync(pj)) {
+        const j = JSON.parse(readFileSync(pj, 'utf8'));
+        if (j.name === name) return j.version;
+      }
+    }
+  } catch {
+    /* best effort — if we can't resolve it, skip the guard rather than block the build */
+  }
+  return null;
 }
 
 // esbuild is a transitive workspace dep; resolve it via tsup's tree.
@@ -56,13 +92,11 @@ await esbuild.build({
     'next/*',
     'pg',
     'pg-native',
-    // dynamic-only cloud providers + their heavy SDKs: resolved from node_modules
-    // at runtime, and only when a cloud box lifecycle action fires (never in the
-    // common docker/localhost path).
-    '@agentbox/sandbox-daytona',
-    '@agentbox/sandbox-vercel',
-    '@agentbox/sandbox-e2b',
-    '@agentbox/sandbox-hetzner',
+    // The @agentbox/sandbox-* providers are private:true workspace packages
+    // (never published to npm), so a fresh `npm i -g` install has no node_modules
+    // to resolve them from — bundle them IN. Their heavy, npm-published SDKs stay
+    // external (they're real deps of @madarco/agentbox) and are only pulled when a
+    // cloud box lifecycle action fires (never on the docker/localhost path).
     '@daytonaio/sdk',
     '@vercel/sandbox',
     'e2b',
@@ -79,11 +113,17 @@ await esbuild.build({
 
 console.log('[build-standalone] assembling dist-standalone …');
 await rm(outDir, { recursive: true, force: true });
-// Preserve the relative symlinks the traced pnpm tree uses (dereferencing bloats
-// it ~4x). verbatimSymlinks keeps the ORIGINAL relative targets — the default
-// (false) rewrites them to absolute source paths, which breaks a staged/published
-// copy that no longer sits next to the source tree.
-await cp(standaloneSrc, outDir, { recursive: true, verbatimSymlinks: true });
+// Ship NO node_modules. The traced pnpm store here (relative symlinks + a `.pnpm`
+// virtual store) is correct on-disk but does NOT survive `npm publish` — npm
+// mangles the symlink tree, so the installed hub's `next` symlink dangles →
+// `Cannot find package 'next'`. Instead the hub's externals resolve from the
+// installed @madarco/agentbox package's own node_modules (next/react/react-dom/
+// pg/better-auth/kysely + the cloud SDKs are declared as its dependencies). This
+// also drops ~44M of dead weight from the tarball.
+await cp(standaloneSrc, outDir, {
+  recursive: true,
+  filter: (src) => !src.split(path.sep).includes('node_modules'),
+});
 // Static assets aren't part of the traced server output — copy them in.
 await cp(path.join(nextDir, 'static'), path.join(outApp, '.next', 'static'), { recursive: true });
 // public/ isn't traced into the standalone output either; Next serves it from the
