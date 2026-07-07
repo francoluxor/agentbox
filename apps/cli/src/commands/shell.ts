@@ -24,8 +24,9 @@ import {
 import { resolveBoxOrExit, resolveBoxOrShift } from '../box-ref.js';
 import { providerForBox } from '../provider/registry.js';
 import { resolveCloudSshTarget } from '../cloud-ssh.js';
+import { recordBoxSsh } from '@agentbox/sandbox-core';
 import { hyperlink } from '../hyperlink.js';
-import { hasUnmanagedHostConflict, writeAgentboxSshAlias } from '../ssh-config.js';
+import { agentboxSshConfigPath, hasUnmanagedHostConflict, syncAgentboxSshConfig } from '../ssh-config.js';
 import { runWrappedAttach } from '../wrapped-pty/index.js';
 import { handleLifecycleError } from './_errors.js';
 import { requireDockerProvider } from './_provider-guard.js';
@@ -241,12 +242,12 @@ async function runSshConfig(box: BoxRecord, opts: ShellOptions): Promise<void> {
     );
   }
 
-  await writeAgentboxSshAlias({
-    alias: conn.alias,
-    hostname: conn.host,
+  await recordBoxSsh(box.id, {
+    host: conn.host,
     user: conn.user,
     identityFile: conn.identityFile,
   });
+  await syncAgentboxSshConfig();
 
   const codexUrl = `codex://settings/connections/ssh/add?name=${encodeURIComponent(conn.alias)}`;
   if (opts.json) {
@@ -269,7 +270,7 @@ async function runSshConfig(box: BoxRecord, opts: ShellOptions): Promise<void> {
 
   const codexLink = hyperlink(`Add ${conn.alias} to Codex SSH`, codexUrl, process.stdout);
   const lines = [
-    `wrote ~/.ssh/config alias "${conn.alias}"`,
+    `wrote ${agentboxSshConfigPath()} entry "${conn.alias}" (Include'd from ~/.ssh/config)`,
     ``,
     `ssh alias:      ${conn.alias}`,
     `host:           ${conn.host}`,

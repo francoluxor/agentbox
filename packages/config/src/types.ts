@@ -149,6 +149,9 @@ export interface UserConfig {
     login?: boolean;
     tmux?: boolean;
   };
+  ssh?: {
+    autoConfig?: boolean;
+  };
   engine?: {
     kind?: EngineKind;
   };
@@ -288,6 +291,9 @@ export interface EffectiveConfig {
     user: string;
     login: boolean;
     tmux: boolean;
+  };
+  ssh: {
+    autoConfig: boolean;
   };
   engine: {
     kind: EngineKind;
@@ -441,6 +447,9 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     user: 'vscode',
     login: true,
     tmux: true,
+  },
+  ssh: {
+    autoConfig: true,
   },
   engine: {
     kind: 'auto',
@@ -796,6 +805,12 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     key: 'shell.tmux',
     type: 'bool',
     description: 'Run `agentbox shell` inside a detachable tmux session (Ctrl+a d to detach).',
+  },
+  {
+    key: 'ssh.autoConfig',
+    type: 'bool',
+    description:
+      'Automatically write a `~/.agentbox/ssh/config` entry (Include\'d from `~/.ssh/config`) for SSH-capable cloud boxes on create and start/resume, so `ssh <box>` just works. On by default; set false if you manage `~/.ssh/config` yourself. Explicit `agentbox shell --ssh-config`/`code`/`open` still write on demand regardless.',
   },
   {
     key: 'engine.kind',

@@ -7,6 +7,7 @@ export {
   mutateState,
   readState,
   recordBox,
+  recordBoxSsh,
   recordLastAgent,
   removeBoxRecord,
   reserveProjectIndex,
