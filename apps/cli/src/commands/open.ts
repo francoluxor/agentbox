@@ -47,12 +47,13 @@ function parseOpenTarget(value: string): OpenTarget {
     value === 'herdr' ||
     value === 'cmux' ||
     value === 'vscode' ||
+    value === 'iterm2' ||
     value === 'finder'
   ) {
     return value;
   }
   throw new InvalidArgumentError(
-    `expected one of: codex, herdr, cmux, vscode, finder (got "${value}")`,
+    `expected one of: codex, herdr, cmux, vscode, iterm2, finder (got "${value}")`,
   );
 }
 
@@ -77,7 +78,7 @@ export const openCommand = new Command('open')
   )
   .option(
     '--in <app>',
-    'open the box in a host app instead of Finder: codex | herdr | cmux | vscode | finder',
+    'open the box in a host app instead of Finder: codex | herdr | cmux | vscode | iterm2 | finder',
     parseOpenTarget,
   )
   .option('--targets', 'print which --in apps are installed on this host and exit (no box needed)')
@@ -97,7 +98,7 @@ export const openCommand = new Command('open')
         await openInCodex(box);
         return;
       }
-      if (app === 'herdr' || app === 'cmux') {
+      if (app === 'herdr' || app === 'cmux' || app === 'iterm2') {
         await openInTerminalApp(box, app);
         return;
       }
@@ -183,13 +184,14 @@ async function openInCodex(box: BoxRecord): Promise<void> {
 }
 
 /**
- * `open --in herdr|cmux`: bring the box online, then open a new workspace in
- * the host app running `agentbox attach <box>`. Works from OUTSIDE the app:
- * Herdr via its well-known session socket, cmux via its control CLI (PATH or
- * the macOS app bundle). cmux rejects external control clients unless the
- * user enables it — surface that as an actionable error, don't auto-configure.
+ * `open --in herdr|cmux|iterm2`: bring the box online, then open a new
+ * workspace/window in the host app running `agentbox attach <box>`. Works from
+ * OUTSIDE the app: Herdr via its well-known session socket, cmux via its
+ * control CLI (PATH or the macOS app bundle), iTerm2 via AppleScript (which
+ * auto-launches it). cmux rejects external control clients unless the user
+ * enables it — surface that as an actionable error, don't auto-configure.
  */
-async function openInTerminalApp(box: BoxRecord, host: 'herdr' | 'cmux'): Promise<void> {
+async function openInTerminalApp(box: BoxRecord, host: 'herdr' | 'cmux' | 'iterm2'): Promise<void> {
   // `agentbox attach` does not auto-start a box, so bring it online here —
   // otherwise the new pane just shows the "box is stopped" error.
   if ((box.provider ?? 'docker') === 'docker') {
@@ -267,10 +269,12 @@ async function openInTerminalApp(box: BoxRecord, host: 'herdr' | 'cmux'): Promis
     const hint =
       host === 'herdr'
         ? ' Is Herdr running? (`herdr status server`)'
-        : ' Is cmux running?';
+        : host === 'cmux'
+          ? ' Is cmux running?'
+          : ' Is iTerm2 installed?';
     throw new Error(`could not open in ${host}: ${r.error ?? 'unknown error'}.${hint}`);
   }
-  log.success(`opened ${box.name} in a new ${host} workspace (agentbox attach)`);
+  log.success(`opened ${box.name} in a new ${host} ${host === 'iterm2' ? 'window' : 'workspace'} (agentbox attach)`);
 }
 
 /**

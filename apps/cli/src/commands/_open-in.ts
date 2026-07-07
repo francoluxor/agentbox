@@ -12,10 +12,10 @@ import { existsSync as realExistsSync } from 'node:fs';
 import { homedir as realHomedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 
-export type OpenInApp = 'codex' | 'herdr' | 'cmux' | 'vscode';
+export type OpenInApp = 'codex' | 'herdr' | 'cmux' | 'vscode' | 'iterm2';
 export type OpenTarget = OpenInApp | 'finder';
 
-export const OPEN_IN_APPS: readonly OpenInApp[] = ['codex', 'herdr', 'cmux', 'vscode'];
+export const OPEN_IN_APPS: readonly OpenInApp[] = ['codex', 'herdr', 'cmux', 'vscode', 'iterm2'];
 
 /**
  * Providers whose per-box SSH identity outlives the CLI call (see
@@ -113,6 +113,9 @@ export function detectOpenTargets(seams: DetectSeams = realSeams()): OpenTargets
     vscode: {
       available: pathHasBinary('code', seams) || pathHasBinary('cursor', seams),
       providers: [...IDE_PROVIDERS],
+    },
+    iterm2: {
+      available: macAppInstalled('iTerm.app', seams),
     },
   };
 }

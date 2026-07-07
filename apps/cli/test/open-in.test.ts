@@ -88,6 +88,16 @@ describe('detectOpenTargets', () => {
     expect(detectOpenTargets(seams({})).vscode.available).toBe(false);
   });
 
+  it('detects iterm2 via the app bundle on darwin only', () => {
+    const mac = seams({ existing: ['/Applications/iTerm.app'] });
+    expect(detectOpenTargets(mac).iterm2).toEqual({ available: true });
+    const home = seams({ existing: ['/home/u/Applications/iTerm.app'] });
+    expect(detectOpenTargets(home).iterm2.available).toBe(true);
+    const linux = seams({ platform: 'linux', existing: ['/Applications/iTerm.app'] });
+    expect(detectOpenTargets(linux).iterm2.available).toBe(false);
+    expect(detectOpenTargets(seams({})).iterm2.available).toBe(false);
+  });
+
   it('never throws on linux (no /Applications probes)', () => {
     expect(() => detectOpenTargets(seams({ platform: 'linux' }))).not.toThrow();
   });
@@ -144,12 +154,14 @@ describe('renderTargets', () => {
       herdr: { available: true },
       cmux: { available: true },
       vscode: { available: true, providers: ['docker', 'hetzner', 'daytona'] },
+      iterm2: { available: true },
     });
     expect(out).toBe(
       'codex: not installed\n' +
         'herdr: available\n' +
         'cmux: available\n' +
-        'vscode: available (docker, hetzner, daytona boxes)\n',
+        'vscode: available (docker, hetzner, daytona boxes)\n' +
+        'iterm2: available\n',
     );
   });
 });
