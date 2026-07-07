@@ -63,26 +63,36 @@ interface CrashReport {
   mtimeMs: number;
 }
 
-/** Recent tray crash reports (`AgentBoxTray-*.ips`), newest first. [] if none / no dir. */
+// macOS names tray reports `AgentBoxTray-<ts>.ips` (hyphen) today; allow an underscore too since
+// some report types use it. Built from APP_NAME so it stays in sync (no regex-special chars in it).
+const IPS_NAME = new RegExp(`^${APP_NAME}[-_].*\\.ips$`, 'i');
+
+/**
+ * Recent tray crash reports, newest first. [] if none. Scans the top level of DiagnosticReports
+ * **and** its `Retired/` subdir — macOS moves older `.ips` reports there, so a top-level-only scan
+ * would miss them.
+ */
 function listCrashReports(): CrashReport[] {
-  let names: string[];
-  try {
-    names = readdirSync(DIAGNOSTIC_REPORTS_DIR);
-  } catch {
-    return []; // dir absent (no crash ever recorded) — not an error
-  }
-  return names
-    .filter((n) => n.startsWith(`${APP_NAME}-`) && n.endsWith('.ips'))
-    .map((n) => {
-      const path = join(DIAGNOSTIC_REPORTS_DIR, n);
+  const dirs = [DIAGNOSTIC_REPORTS_DIR, join(DIAGNOSTIC_REPORTS_DIR, 'Retired')];
+  const reports: CrashReport[] = [];
+  for (const dir of dirs) {
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      continue; // dir absent (no crash / no Retired yet) — not an error
+    }
+    for (const n of names) {
+      if (!IPS_NAME.test(n)) continue;
+      const path = join(dir, n);
       try {
-        return { name: n, path, mtimeMs: statSync(path).mtimeMs };
+        reports.push({ name: n, path, mtimeMs: statSync(path).mtimeMs });
       } catch {
-        return null; // vanished between readdir and stat — skip it, don't fail the whole command
+        // vanished between readdir and stat — skip it, don't fail the whole command
       }
-    })
-    .filter((r): r is CrashReport => r !== null)
-    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    }
+  }
+  return reports.sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 
 interface UnifiedLogResult {
