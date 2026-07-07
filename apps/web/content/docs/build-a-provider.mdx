@@ -5,6 +5,10 @@ description: Build a custom AgentBox provider as a plugin on @madarco/agentbox-p
 
 AgentBox ships five built-in providers ([local-docker](/docs/local-docker), [hetzner](/docs/hetzner), [daytona](/docs/daytona), [vercel](/docs/vercel), [e2b](/docs/e2b)), but the provider surface is **open**: you can build your own provider as a plugin — its own npm package — and run agents on any cloud or infrastructure with `agentbox --provider <name>`. A plugin needs **zero changes to AgentBox itself**.
 
+<Callout type="info" title="SHARE YOUR PROVIDER">
+Once your provider works end to end, open a PR against [madarco/agentbox](https://github.com/madarco/agentbox) to add a short page for it under **Community Providers** in these docs — so other users can discover and install it.
+</Callout>
+
 You build against one public package, [`@madarco/agentbox-provider-sdk`](https://www.npmjs.com/package/@madarco/agentbox-provider-sdk). It re-exports the whole provider-facing surface with AgentBox's internals inlined, so your plugin never imports AgentBox internals — that indirection is the stable seam AgentBox can refactor behind without breaking published plugins.
 
 Two reference packages live in the repo — read the first, copy the second:
