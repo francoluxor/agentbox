@@ -137,6 +137,15 @@ describe('resolveCmuxBinary', () => {
     });
     expect(resolveCmuxBinary(linux)).toBeUndefined();
   });
+
+  it('resolves a ~/Applications bundle (matches detectOpenTargets availability)', () => {
+    const viaHome = seams({
+      existing: ['/home/u/Applications/cmux.app/Contents/Resources/bin/cmux'],
+    });
+    expect(resolveCmuxBinary(viaHome)).toBe(
+      '/home/u/Applications/cmux.app/Contents/Resources/bin/cmux',
+    );
+  });
 });
 
 describe('defaultHerdrSocketPath', () => {

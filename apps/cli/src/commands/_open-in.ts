@@ -81,11 +81,12 @@ export function defaultHerdrSocketPath(seams: DetectSeams = realSeams()): string
   return seams.existsSync(p) ? p : undefined;
 }
 
-const CMUX_APP_CLI = '/Applications/cmux.app/Contents/Resources/bin/cmux';
+const CMUX_APP_CLI_SUFFIX = 'cmux.app/Contents/Resources/bin/cmux';
 
 /**
  * Locate a cmux control CLI usable from *outside* cmux: explicit env override,
- * then PATH, then the macOS app bundle (cmux does not install itself on PATH).
+ * then PATH, then the macOS app bundle (cmux does not install itself on PATH;
+ * `/Applications` and `~/Applications` both count, matching detectOpenTargets).
  * Distinct from `cmuxBinary()` in terminal/host.ts, which assumes it runs
  * inside cmux where `CMUX_BUNDLED_CLI_PATH` is always set.
  */
@@ -93,7 +94,12 @@ export function resolveCmuxBinary(seams: DetectSeams = realSeams()): string | un
   const bundled = seams.env['CMUX_BUNDLED_CLI_PATH'];
   if (bundled && bundled.length > 0) return bundled;
   if (pathHasBinary('cmux', seams)) return 'cmux';
-  if (seams.platform === 'darwin' && seams.existsSync(CMUX_APP_CLI)) return CMUX_APP_CLI;
+  if (seams.platform === 'darwin') {
+    for (const root of ['/Applications', join(seams.homedir(), 'Applications')]) {
+      const cli = join(root, CMUX_APP_CLI_SUFFIX);
+      if (seams.existsSync(cli)) return cli;
+    }
+  }
   return undefined;
 }
 
