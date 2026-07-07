@@ -194,7 +194,7 @@ async function listAllProjects(): Promise<void> {
 
   const dockerGroups = await listAllCheckpoints();
   const cloudGroups = await Promise.all(
-    CLOUD_BACKENDS.map(async (backend) => ({
+    (await allCloudBackends()).map(async (backend) => ({
       backend,
       groups: await listAllCloudCheckpoints(backend),
     })),
@@ -204,7 +204,7 @@ async function listAllProjects(): Promise<void> {
   interface Merged {
     projectRoot?: string;
     docker: CheckpointInfo[];
-    cloud: { backend: CloudBackend; items: CloudCheckpointInfo[] }[];
+    cloud: { backend: string; items: CloudCheckpointInfo[] }[];
   }
   const bySegment = new Map<string, Merged>();
   const ensure = (segment: string): Merged => {
@@ -239,13 +239,15 @@ async function listAllProjects(): Promise<void> {
     // `*default` marker is cosmetic, so a single corrupt config falls back to
     // empty defaults rather than aborting the whole global listing.
     let defDocker = '';
-    const defCloud = new Map<CloudBackend, string>();
+    const defCloud = new Map<string, string>();
     if (m.projectRoot) {
       const cfg = await loadEffectiveConfig(m.projectRoot).catch(() => null);
       if (cfg) {
         defDocker = resolveDefaultCheckpoint(cfg.effective, 'docker');
         for (const { backend } of m.cloud) {
-          defCloud.set(backend, resolveDefaultCheckpoint(cfg.effective, backend));
+          // A plugin backend has no per-provider default key; resolveDefaultCheckpoint
+          // returns the cross-provider fallback for it (cast is a no-op at runtime).
+          defCloud.set(backend, resolveDefaultCheckpoint(cfg.effective, backend as CloudBackend));
         }
       }
     }
@@ -395,6 +397,7 @@ const rmSub = new Command('rm')
           process.stdout.write(`removed docker checkpoint ${ref}\n`);
         }
       }
+      const failedBackends: string[] = [];
       for (const backend of cloudHits) {
         try {
           const provider = await cloudProviderFor(backend);
@@ -402,12 +405,20 @@ const rmSub = new Command('rm')
           any = true;
           process.stdout.write(`removed ${backend} checkpoint ${ref}\n`);
         } catch (err) {
+          failedBackends.push(backend);
           log.warn(
             `${backend} checkpoint remove failed: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
       }
-      if (!any) throw new Error(`checkpoint not found: ${ref}`);
+      if (!any) {
+        // The ref WAS resolved on disk (cloudHits) but every removal failed —
+        // report that, not a misleading "not found". Only truly-absent refs 404.
+        if (failedBackends.length > 0) {
+          throw new Error(`failed to remove checkpoint ${ref} from: ${failedBackends.join(', ')}`);
+        }
+        throw new Error(`checkpoint not found: ${ref}`);
+      }
 
       // Don't leave any default-checkpoint pointer dangling at a now-deleted
       // ref — future `agentbox create` would fail to resolve it. Sweep the
