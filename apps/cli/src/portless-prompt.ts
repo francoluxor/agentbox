@@ -108,7 +108,9 @@ export async function setupPortlessHost(
 export async function maybePromptPortless(args: PortlessPromptArgs): Promise<boolean> {
   if (args.enabled !== undefined) return args.enabled;
   if (args.engine === 'orbstack') return false;
-  if (!process.stdin.isTTY || args.yes) return false;
+  // Non-interactive (`--yes`, CI, no TTY): can't prompt — adopt a running proxy
+  // instead of forcing the user to opt in from a terminal first.
+  if (!process.stdin.isTTY || args.yes) return resolvePortlessNonInteractive(args);
 
   const answer = await confirm({
     message:
@@ -127,4 +129,33 @@ export async function maybePromptPortless(args: PortlessPromptArgs): Promise<boo
 
   if (answer) await setupPortlessHost();
   return answer;
+}
+
+/**
+ * Resolve `portless.enabled` when we can't prompt — background queue jobs, the
+ * tray app's hub-create path, `--yes`, CI. Honors an already-decided value
+ * (config or `--portless`/`--no-portless`). Otherwise, on Docker Desktop, it
+ * adopts an already-running Portless proxy — and persists the choice so later
+ * runs skip re-detection, mirroring an interactive "yes" for a user who already
+ * has Portless up. Without this, the first box started from the tray app never
+ * uses Portless even though the proxy is live on :443, until the user happens to
+ * run `agentbox` once from a real terminal. Never installs or starts a proxy
+ * unasked; OrbStack needs no Portless (it has `.orb.local`).
+ */
+export async function resolvePortlessNonInteractive(args: {
+  engine: DockerEngine;
+  enabled: boolean | undefined;
+  cwd: string;
+}): Promise<boolean> {
+  if (args.enabled !== undefined) return args.enabled;
+  if (args.engine === 'orbstack') return false;
+  const state = await detectPortless();
+  if (state.proxyRunning) {
+    try {
+      await setConfigValue('global', 'portless.enabled', true, args.cwd, { raw: false });
+    } catch {
+      // Best-effort persist; still use the running proxy for this run.
+    }
+  }
+  return state.proxyRunning;
 }

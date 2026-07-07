@@ -24,6 +24,7 @@ import {
 import {
   createBox,
   DEFAULT_BOX_IMAGE,
+  detectEngine,
   ensureImage,
   hostBackupHasCredentials,
   rebuildPluginNativeDeps,
@@ -56,6 +57,7 @@ import { applyClaudeSkipPermissions, applyCodexSkipPermissions } from '../lib/sk
 import { providerForCreate } from '../provider/registry.js';
 import { cloudAgentStartDetached } from './_cloud-attach.js';
 import { spawnQueuedOpenTerminal } from '../terminal/queue-open.js';
+import { resolvePortlessNonInteractive } from '../portless-prompt.js';
 import { buildSetupInitialPrompt } from '../wizard.js';
 
 /**
@@ -296,6 +298,20 @@ async function runDockerJob(
     await ensureClaudeLoginFresh({ id: job.id, log, image: cfg.effective.box.image, isCloud: false });
   }
 
+  // Background jobs (incl. hub / tray-app created boxes) can't negotiate
+  // Portless interactively. An explicit --portless/--no-portless on the job
+  // wins; otherwise resolve non-interactively — honoring a persisted config
+  // opt-in, and, on Docker Desktop, adopting an already-running proxy so the
+  // very first box started from the tray app gets its <name>.localhost alias
+  // (previously it only worked after opting in once from a real terminal).
+  const portlessEnabled =
+    opts.portless ??
+    (await resolvePortlessNonInteractive({
+      engine: await detectEngine(),
+      enabled: cfg.effective.portless.enabled,
+      cwd: opts.workspace,
+    }));
+
   log.write(`creating box for agent=${job.noAgent ? 'none' : job.agent}`);
   const result = await createBox({
     workspacePath: opts.workspace,
@@ -320,12 +336,7 @@ async function runDockerJob(
     withEnv: cfg.effective.box.withEnv,
     vnc: { enabled: cfg.effective.box.vnc },
     docker: { sharedCache: cfg.effective.box.dockerCacheShared },
-    // Background jobs (incl. hub-created boxes) can't negotiate Portless
-    // interactively, but they must still honor a resolved `portless.enabled`.
-    // Explicit --portless / --no-portless on the job wins; otherwise fall back
-    // to the effective config so a host that opted in gets its <name>.localhost
-    // alias registered. Undefined (never opted in) still skips, as before.
-    portless: opts.portless ?? cfg.effective.portless.enabled,
+    portless: portlessEnabled,
     portlessStateDir: cfg.effective.portless.stateDir || undefined,
     resyncOnStart: opts.resync,
     limits: resolveLimits(cfg.effective.box, opts),
