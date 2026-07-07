@@ -75,21 +75,40 @@ function listCrashReports(): CrashReport[] {
     .filter((n) => n.startsWith(`${APP_NAME}-`) && n.endsWith('.ips'))
     .map((n) => {
       const path = join(DIAGNOSTIC_REPORTS_DIR, n);
-      return { name: n, path, mtimeMs: statSync(path).mtimeMs };
+      try {
+        return { name: n, path, mtimeMs: statSync(path).mtimeMs };
+      } catch {
+        return null; // vanished between readdir and stat — skip it, don't fail the whole command
+      }
     })
+    .filter((r): r is CrashReport => r !== null)
     .sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 
+interface UnifiedLogResult {
+  text: string;
+  /** Set when `log show` failed/timed out, so callers don't misread empty output as "no entries". */
+  failureNote?: string;
+}
+
 /** Read the tray's unified-log entries for the given window via `log show`. */
-async function trayUnifiedLog(last: string): Promise<string> {
+async function trayUnifiedLog(last: string): Promise<UnifiedLogResult> {
   // `--info` surfaces info-level lines too (notice/error/fault always show). `reject:false`
-  // so a slow/edge-case `log` exit doesn't throw — we still want whatever it printed.
+  // so a slow/edge-case `log` exit resolves (with `failed`/`timedOut` set) rather than throwing —
+  // we still want whatever it printed, plus a note explaining the shortfall.
   const res = await execa(
     'log',
     ['show', '--predicate', LOG_PREDICATE, '--last', last, '--style', 'compact', '--info'],
     { reject: false, timeout: 60_000 },
   );
-  return res.stdout ?? '';
+  const text = res.stdout ?? '';
+  if (res.failed) {
+    const failureNote = res.timedOut
+      ? '`log show` timed out after 60s — output above may be partial. Narrow --last for a faster query.'
+      : `\`log show\` failed: ${(res.stderr || '').trim() || `exit code ${res.exitCode ?? 'unknown'}`}`;
+    return { text, failureNote };
+  }
+  return { text };
 }
 
 /** Print the crash-report list (newest few) to stdout. */
@@ -220,7 +239,14 @@ const logSub = new Command('log')
       };
       process.on('SIGINT', term);
       process.on('SIGTERM', term);
-      await new Promise<void>((resolve) => child.on('exit', () => resolve()));
+      await new Promise<void>((resolve) => {
+        // `error` (not `exit`) fires if `log stream` fails to spawn — resolve so we don't hang.
+        child.on('error', (err) => {
+          log.error(`failed to start \`log stream\`: ${err.message}`);
+          resolve();
+        });
+        child.on('exit', () => resolve());
+      });
       return;
     }
 
@@ -233,10 +259,12 @@ const logSub = new Command('log')
 
     const s = spinner();
     s.start('Reading tray unified log…');
-    const logText = await trayUnifiedLog(opts.last);
+    const { text: logText, failureNote } = await trayUnifiedLog(opts.last);
     s.stop('Tray unified log');
     process.stdout.write(logText.endsWith('\n') || logText === '' ? logText : logText + '\n');
-    if (logText.trim() === '') {
+    if (failureNote) {
+      log.warn(failureNote);
+    } else if (logText.trim() === '') {
       log.info(
         `No log entries in the last ${opts.last}. The tray may not be running, or try a longer --last window.`,
       );
@@ -256,7 +284,7 @@ async function writeBugReportBundle(outPath: string, last: string): Promise<void
     'unknown';
   const pids = await trayPids();
   const installed = existsSync(APP_PATH);
-  const logText = await trayUnifiedLog(last);
+  const { text: logText, failureNote } = await trayUnifiedLog(last);
   const reports = listCrashReports();
   const newest = reports[0];
   let newestBody = 'none';
@@ -279,6 +307,7 @@ async function writeBugReportBundle(outPath: string, last: string): Promise<void
     '',
     `## Unified log (subsystem ${APP_BUNDLE_ID}, last ${last})`,
     '',
+    ...(failureNote ? [`NOTE: ${failureNote}`, ''] : []),
     logText.trim() === '' ? '(no entries)' : logText.trimEnd(),
     '',
     '## Newest crash report',
