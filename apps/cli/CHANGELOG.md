@@ -13,13 +13,20 @@ CLI, not the raw commits.
 
 ### Added
 
-- **`agentbox app log`** — collect the macOS tray app's diagnostics for a bug
-  report. Reads the tray's macOS unified-log entries (`--last <window>`, `-f` to
+- **`agentbox app log`** — collect the macOS menu-bar app's diagnostics for a bug
+  report. Reads the app's macOS unified-log entries (`--last <window>`, `-f` to
   stream live, `--crashes` for crash reports only) and lists its crash reports from
   `~/Library/Logs/DiagnosticReports`; `--open` reveals that folder in Finder and
   `--out <file>` writes one self-contained bundle (versions + log + newest crash
-  report) to attach. The tray keeps no log file of its own — these are
+  report) to attach. The app keeps no log file of its own — these are
   macOS-native surfaces (unified logging + OS `.ips` crash reports).
+
+### Changed
+
+- **The macOS menu-bar app is now named "AgentBox"** (was "AgentBoxTray"). It
+  installs to `/Applications/AgentBox.app`; `agentbox install tray` removes any
+  old `AgentBoxTray.app` on install so the two never coexist. The bundle
+  identifier is unchanged, so launch-at-login and notifications carry over.
 
 ### Fixed
 

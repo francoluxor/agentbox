@@ -1,13 +1,13 @@
 /**
- * `agentbox install tray` — install the AgentBox Tray macOS menu-bar app.
+ * `agentbox install tray` — install the AgentBox macOS menu-bar app.
  *
- * The tray is distributed separately (it's macOS-only, and keeps this cross-platform CLI small):
- * a signed+notarized `AgentBoxTray.zip` is published to the public `madarco/agentbox` repo under the
+ * The app is distributed separately (it's macOS-only, and keeps this cross-platform CLI small):
+ * a signed+notarized `AgentBox.zip` is published to the public `madarco/agentbox` repo under the
  * moving `tray-latest` release. This command downloads it, verifies its SHA-256, unpacks it into
  * `/Applications` with `ditto` (which preserves the signature + stapled notarization ticket), and
  * launches it. macOS-only; a clean no-op elsewhere.
  *
- * Humans who prefer no CLI can instead download `AgentBoxTray.dmg` from the same release and drag it
+ * Humans who prefer no CLI can instead download `AgentBox.dmg` from the same release and drag it
  * to Applications.
  */
 
@@ -20,10 +20,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-export const APP_NAME = 'AgentBoxTray';
+export const APP_NAME = 'AgentBox';
 export const APP_PATH = `/Applications/${APP_NAME}.app`;
-/** Unified-logging subsystem the tray logs under (see the tray app's `Diagnostics/Log.swift`). */
+/** Unified-logging subsystem the app logs under (see the app's `Diagnostics/Log.swift`). */
 export const APP_BUNDLE_ID = 'com.madarco.agentbox-tray';
+
+// The app was renamed AgentBoxTray.app → AgentBox.app but kept its bundle id. A leftover old bundle
+// would collide (two bundles, one id), so remove it on install/uninstall.
+const LEGACY_APP_NAME = 'AgentBoxTray';
+const LEGACY_APP_PATH = `/Applications/${LEGACY_APP_NAME}.app`;
 
 // Overridable for forks/testing; default is the public agentbox repo's moving tray release.
 const RELEASE_BASE =
@@ -55,8 +60,11 @@ export async function installTray(opts: InstallTrayOptions = {}): Promise<Instal
     return { ran: false, reason: 'not-macos' };
   }
 
-  // Quit any running instance so we can replace the bundle cleanly.
+  // Quit any running instance (new + legacy name) so we can replace the bundle cleanly.
   await execa('pkill', ['-x', APP_NAME]).catch(() => undefined);
+  await execa('pkill', ['-x', LEGACY_APP_NAME]).catch(() => undefined);
+  // Remove a leftover pre-rename bundle so we never have two bundles sharing the same id.
+  if (existsSync(LEGACY_APP_PATH)) rmSync(LEGACY_APP_PATH, { recursive: true, force: true });
 
   if (opts.uninstall) {
     if (existsSync(APP_PATH)) rmSync(APP_PATH, { recursive: true, force: true });
@@ -122,7 +130,7 @@ async function launchTray(say: (m: string) => void): Promise<void> {
   }
 }
 
-/** Download `<tag>/AgentBoxTray.zip` + its `.sha256`, verify, and return the local zip path. */
+/** Download `<tag>/AgentBox.zip` + its `.sha256`, verify, and return the local zip path. */
 async function downloadAndVerify(
   tag: string,
   dir: string,
@@ -136,7 +144,7 @@ async function downloadAndVerify(
   await execa('curl', ['-fSL', '-o', zipPath, `${base}/${APP_NAME}.zip`]);
   await execa('curl', ['-fSL', '-o', shaPath, `${base}/${APP_NAME}.zip.sha256`]);
 
-  // The .sha256 sidecar is `shasum` format: "<hex>  AgentBoxTray.zip".
+  // The .sha256 sidecar is `shasum` format: "<hex>  AgentBox.zip".
   const expected = readFileSync(shaPath, 'utf8').trim().split(/\s+/)[0]?.toLowerCase();
   const actual = createHash('sha256').update(readFileSync(zipPath)).digest('hex');
   if (!expected || expected !== actual) {
@@ -149,7 +157,7 @@ export const installTrayCommand = new Command('tray')
   .description('Download and install the AgentBox Tray macOS menu-bar app into /Applications')
   .option('--uninstall', 'quit and remove the menu-bar app')
   .option('--tag <tag>', 'release tag to install from (default: tray-latest)')
-  .option('--zip <path>', 'install a local AgentBoxTray.zip instead of downloading')
+  .option('--zip <path>', 'install a local AgentBox.zip instead of downloading')
   .action(async (opts: { uninstall?: boolean; tag?: string; zip?: string }) => {
     intro(opts.uninstall ? 'Removing AgentBox Tray…' : 'Installing AgentBox Tray…');
     const res = await installTray(opts);

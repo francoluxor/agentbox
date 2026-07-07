@@ -1,5 +1,5 @@
 /**
- * `agentbox app` — start / stop / restart / status for the AgentBox Tray macOS menu-bar app.
+ * `agentbox app` — start / stop / restart / status for the AgentBox macOS menu-bar app.
  *
  * Drives the running process directly (`open` / `pkill` / `pgrep`) without touching the installed
  * bundle — the lightweight lifecycle control the tray otherwise lacks (only `agentbox install tray`
@@ -18,7 +18,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { AGENTBOX_VERSION } from '../version.js';
 import { APP_BUNDLE_ID, APP_NAME, APP_PATH } from './install-tray.js';
 
-/** macOS writes app crash reports here as `AgentBoxTray-<timestamp>.ips`. */
+/** macOS writes app crash reports here as `AgentBox-<timestamp>.ips`. */
 const DIAGNOSTIC_REPORTS_DIR = join(homedir(), 'Library/Logs/DiagnosticReports');
 /** Unified-logging predicate scoping to the tray's subsystem. */
 const LOG_PREDICATE = `subsystem == "${APP_BUNDLE_ID}"`;
@@ -63,8 +63,8 @@ interface CrashReport {
   mtimeMs: number;
 }
 
-// macOS names tray reports `AgentBoxTray-<ts>.ips` (hyphen) today; allow an underscore too since
-// some report types use it. Built from APP_NAME so it stays in sync (no regex-special chars in it).
+// macOS names reports `AgentBox-<ts>.ips` (hyphen) today; allow an underscore too since some report
+// types use it. Built from APP_NAME so it stays in sync (no regex-special chars in it).
 const IPS_NAME = new RegExp(`^${APP_NAME}[-_].*\\.ips$`, 'i');
 
 /**
@@ -149,7 +149,7 @@ interface StatusOpts {
 }
 
 const statusSub = new Command('status')
-  .description('Show whether the AgentBox Tray app is running, with pid(s)')
+  .description('Show whether the AgentBox app is running, with pid(s)')
   .option('--json', 'emit { running, pids, installed, appPath } as JSON')
   .action(async (opts: StatusOpts) => {
     const mac = process.platform === 'darwin';
@@ -164,19 +164,19 @@ const statusSub = new Command('status')
     }
     if (!ensureMac()) return;
     if (pids.length) {
-      log.info(`AgentBox Tray is running (pid ${pids.join(', ')}).`);
+      log.info(`AgentBox is running (pid ${pids.join(', ')}).`);
     } else if (installed) {
-      log.info('AgentBox Tray is installed but not running.');
+      log.info('AgentBox is installed but not running.');
     } else {
-      log.warn('AgentBox Tray is not installed. Run `agentbox install tray`.');
+      log.warn('AgentBox is not installed. Run `agentbox install tray`.');
     }
   });
 
 const startSub = new Command('start')
-  .description('Launch the AgentBox Tray app if it is not already running')
+  .description('Launch the AgentBox app if it is not already running')
   .action(async () => {
     if (!ensureMac()) return;
-    intro('Starting AgentBox Tray…');
+    intro('Starting AgentBox…');
     if ((await trayPids()).length) {
       outro('Already running');
       return;
@@ -190,10 +190,10 @@ const startSub = new Command('start')
   });
 
 const stopSub = new Command('stop')
-  .description('Quit the running AgentBox Tray app (idempotent)')
+  .description('Quit the running AgentBox app (idempotent)')
   .action(async () => {
     if (!ensureMac()) return;
-    intro('Stopping AgentBox Tray…');
+    intro('Stopping AgentBox…');
     if (!(await trayPids()).length) {
       outro('Not running');
       return;
@@ -203,11 +203,11 @@ const stopSub = new Command('stop')
   });
 
 const restartSub = new Command('restart')
-  .description('Quit and relaunch the AgentBox Tray app')
+  .description('Quit and relaunch the AgentBox app')
   .action(async () => {
     if (!ensureMac()) return;
     if (!ensureInstalled()) return;
-    intro('Restarting AgentBox Tray…');
+    intro('Restarting AgentBox…');
     await stopTray();
     // Wait for the old process to actually exit before relaunching, else `open`
     // may just foreground the still-quitting instance.
@@ -313,7 +313,7 @@ async function writeBugReportBundle(outPath: string, last: string): Promise<void
   }
 
   const bundle = [
-    '# AgentBox Tray bug report',
+    '# AgentBox bug report',
     `generated (UTC): ${new Date().toISOString()}`,
     `agentbox CLI: ${cliVersion}`,
     `macOS: ${macVersion}`,
@@ -340,7 +340,7 @@ async function writeBugReportBundle(outPath: string, last: string): Promise<void
 }
 
 export const appCommand = new Command('app')
-  .description('Control the AgentBox Tray menu-bar app (status / start / stop / restart / log)')
+  .description('Control the AgentBox menu-bar app (status / start / stop / restart / log)')
   .addCommand(statusSub, { isDefault: true })
   .addCommand(startSub)
   .addCommand(stopSub)
