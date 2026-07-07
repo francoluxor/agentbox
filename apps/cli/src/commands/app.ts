@@ -243,9 +243,15 @@ const logSub = new Command('log')
         // `error` (not `exit`) fires if `log stream` fails to spawn — resolve so we don't hang.
         child.on('error', (err) => {
           log.error(`failed to start \`log stream\`: ${err.message}`);
+          process.exitCode = 1;
           resolve();
         });
-        child.on('exit', () => resolve());
+        // Propagate a genuine non-zero exit so scripts see the failure. A user Ctrl-C kills the
+        // child by signal (code null) — that's a normal stop, not a failure.
+        child.on('exit', (code) => {
+          if (code && code !== 0) process.exitCode = code;
+          resolve();
+        });
       });
       return;
     }
@@ -287,7 +293,7 @@ async function writeBugReportBundle(outPath: string, last: string): Promise<void
   const { text: logText, failureNote } = await trayUnifiedLog(last);
   const reports = listCrashReports();
   const newest = reports[0];
-  let newestBody = 'none';
+  let newestBody = '';
   if (newest) {
     try {
       newestBody = readFileSync(newest.path, 'utf8');
