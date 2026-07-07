@@ -290,6 +290,14 @@ async function spawnHub(
     },
   });
   child.unref();
+  // Note when the child dies before it ever answers /healthz. The common cause is
+  // a startup crash (e.g. a missing runtime dep) whose stack the child already
+  // wrote to HUB_LOG_FILE — we surface that tail rather than making the user wait
+  // out the full timeout and then go read the log by hand.
+  let exit: { code: number | null; signal: NodeJS.Signals | null } | null = null;
+  child.on('exit', (code, signal) => {
+    exit = { code, signal };
+  });
   if (typeof child.pid === 'number') {
     await writeFile(HUB_PID_FILE, String(child.pid), 'utf8');
     log(`spawned hub process (pid ${String(child.pid)}, port ${String(PORT)})`);
@@ -302,9 +310,37 @@ async function spawnHub(
       if (purl) log(`hub also reachable on ${purl}`);
       return endpointFor(purl);
     }
+    if (exit !== null) {
+      await unlink(HUB_PID_FILE).catch(() => {});
+      // Let the child flush its last stderr line into the log before we tail it.
+      await delay(150);
+      throw new Error(await hubStartupError(`hub process exited (${describeExit(exit)}) during startup`));
+    }
     await delay(200);
   }
-  throw new Error(`hub did not become reachable on http://${HOST}:${String(PORT)} within ~25s; see ${HUB_LOG_FILE}`);
+  throw new Error(await hubStartupError(`hub did not become reachable on http://${HOST}:${String(PORT)} within ~25s`));
+}
+
+function describeExit(exit: { code: number | null; signal: NodeJS.Signals | null }): string {
+  if (exit.signal !== null) return `killed by ${exit.signal}`;
+  return `exit code ${String(exit.code ?? 'unknown')}`;
+}
+
+/** Build a startup-failure message with the tail of the hub log inlined. */
+async function hubStartupError(headline: string): Promise<string> {
+  const tail = await tailFile(HUB_LOG_FILE, 20);
+  const suffix = tail ? `\n--- last lines of ${HUB_LOG_FILE} ---\n${tail}` : `; see ${HUB_LOG_FILE}`;
+  return `${headline}${suffix}`;
+}
+
+/** Last `maxLines` non-empty lines of a file, or '' when unreadable/empty. */
+async function tailFile(file: string, maxLines: number): Promise<string> {
+  try {
+    const lines = (await readFile(file, 'utf8')).split('\n').filter((l) => l.trim().length > 0);
+    return lines.slice(-maxLines).join('\n');
+  } catch {
+    return '';
+  }
 }
 
 export interface StopHubResult {

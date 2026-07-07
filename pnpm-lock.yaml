@@ -56,6 +56,9 @@ importers:
       '@xterm/headless':
         specifier: ^5.5.0
         version: 5.5.0
+      better-auth:
+        specifier: ^1.6.0
+        version: 1.6.23(@opentelemetry/api@1.9.1)(next@16.2.7(@opentelemetry/api@1.9.1)(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(pg@8.22.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(vitest@2.1.9(@types/node@22.19.19)(lightningcss@1.32.0))
       commander:
         specifier: ^12.1.0
         version: 12.1.0
@@ -65,9 +68,21 @@ importers:
       execa:
         specifier: ^9.5.2
         version: 9.6.1
+      kysely:
+        specifier: ^0.29.2
+        version: 0.29.2
+      next:
+        specifier: 16.2.7
+        version: 16.2.7(@opentelemetry/api@1.9.1)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       pg:
         specifier: ^8.13.1
         version: 8.22.0
+      react:
+        specifier: ^19
+        version: 19.2.7
+      react-dom:
+        specifier: ^19
+        version: 19.2.7(react@19.2.7)
       smol-toml:
         specifier: ^1.7.0
         version: 1.7.0

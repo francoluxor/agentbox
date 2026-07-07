@@ -9,6 +9,23 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [Unreleased]
+
+### Fixed
+
+- **`agentbox hub` now starts after a fresh `npm install`.** The published
+  package shipped the hub's Next.js bundle with a pnpm-linked `node_modules` that
+  `npm publish` mangles, so a globally-installed hub crashed on startup with
+  `Cannot find package 'next'` (it only worked from a dev checkout). The hub's
+  runtime dependencies (`next`, `react`, `react-dom`, `better-auth`, `kysely`)
+  are now declared as real package dependencies and resolved by npm, and the
+  private `@agentbox/sandbox-*` providers are bundled into the hub server. The
+  broken ~44 MB bundled `node_modules` is no longer shipped.
+- **Clearer hub startup failures.** When the hub process dies while starting,
+  `agentbox hub` now fails fast and includes the tail of `~/.agentbox/hub.log`
+  (with the real error) in its message, instead of waiting ~25s and only pointing
+  you at the log file.
+
 ## [0.22.0] - 2026-07-06
 
 ### Added

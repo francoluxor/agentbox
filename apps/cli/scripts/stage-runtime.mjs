@@ -89,12 +89,14 @@ for (const [srcRel, destRel] of direct) {
   copy(srcRel, join(runtime, destRel));
 }
 
-// Hub standalone build — `agentbox hub` spawns this self-contained Next+relay
-// server (packages/sandbox-docker/src/hub.ts resolveHubServer() looks for
-// runtime/hub/apps/hub/server.js). Built by `apps/hub` `build:standalone`; the
-// traced tree uses relative symlinks so cpSync (dereference:false) keeps it
-// self-contained. Absent in a partial dev build (warn+skip) — a publish runs
-// build:standalone first (apps/cli prepublishOnly).
+// Hub standalone build — `agentbox hub` spawns this Next+relay server
+// (packages/sandbox-docker/src/hub.ts resolveHubServer() looks for
+// runtime/hub/apps/hub/server.js). Built by `apps/hub` `build:standalone`, which
+// ships NO node_modules: the hub's externals (next/react/react-dom/pg/
+// better-auth/kysely + cloud SDKs) resolve from the installed @madarco/agentbox
+// package's own node_modules — a bundled pnpm store does not survive npm publish.
+// Absent in a partial dev build (warn+skip) — a publish runs build:standalone
+// first (apps/cli prepublishOnly).
 copy('apps/hub/dist-standalone', join(runtime, 'hub'));
 copy(dockerfileSrc, join(dockerCtx, 'Dockerfile.box'));
 for (const srcRel of contextFiles) {
