@@ -157,6 +157,29 @@ export async function recordLastAgent(
 }
 
 /**
+ * Persist a cloud box's last resolved SSH target (`box.cloud.ssh`). A locked
+ * read-modify-write so it can't clobber a concurrent state change. No-op when
+ * the box isn't in state (a race with `destroy`) or isn't a cloud record.
+ * `syncAgentboxSshConfig` reads this back to regenerate `~/.agentbox/ssh/config`
+ * offline, without re-resolving the target from the provider.
+ */
+export async function recordBoxSsh(
+  boxId: string,
+  ssh: { host: string; user: string; identityFile?: string },
+  path: string = STATE_FILE,
+): Promise<void> {
+  await mutateState(
+    (state) => ({
+      version: 1,
+      boxes: state.boxes.map((b) =>
+        b.id === boxId && b.cloud ? { ...b, cloud: { ...b.cloud, ssh } } : b,
+      ),
+    }),
+    path,
+  );
+}
+
+/**
  * Atomically allocate the next per-project index AND persist `record` claiming
  * it, under the state lock. Returns the reserved index (also stamped onto the
  * persisted record).

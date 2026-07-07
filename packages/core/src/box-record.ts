@@ -164,6 +164,16 @@ export interface CloudBoxFields {
    * correctly even if the host config changed. Mirrors config's `GitPushMode`.
    */
   gitPushMode?: 'auto' | 'relay' | 'lease';
+  /**
+   * Last resolved SSH connection target for this box (host/user, plus the
+   * per-box identity file for identity-authed providers like Hetzner). Persisted
+   * whenever we're already online (create/start/code/open/shell) so the
+   * `~/.agentbox/ssh/config` file can be regenerated purely from state — the
+   * regenerate never hits a provider API or wakes a paused box. The host IP can
+   * change across stop/start, so this is refreshed on start/resume. Absent for
+   * providers with no SSH.
+   */
+  ssh?: { host: string; user: string; identityFile?: string };
 }
 
 export interface GitWorktreeRecord {

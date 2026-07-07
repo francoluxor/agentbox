@@ -24,8 +24,9 @@ import {
 import { resolveBoxOrExit, resolveBoxOrShift } from '../box-ref.js';
 import { providerForBox } from '../provider/registry.js';
 import { resolveCloudSshTarget } from '../cloud-ssh.js';
+import { recordBoxSsh } from '@agentbox/sandbox-core';
 import { hyperlink } from '../hyperlink.js';
-import { hasUnmanagedHostConflict, writeAgentboxSshAlias } from '../ssh-config.js';
+import { agentboxSshConfigPath, hasUnmanagedHostConflict, syncAgentboxSshConfig } from '../ssh-config.js';
 import { runWrappedAttach } from '../wrapped-pty/index.js';
 import { handleLifecycleError } from './_errors.js';
 import { requireDockerProvider } from './_provider-guard.js';
@@ -232,21 +233,23 @@ async function runSshConfig(box: BoxRecord, opts: ShellOptions): Promise<void> {
     );
   }
   // The alias is the bare box name; warn (don't fail) if the user already has
-  // their own `Host <name>` — OpenSSH would let the earlier entry shadow ours.
+  // their own `Host <name>`. Our managed `Include` is prepended, so OpenSSH
+  // (first value per keyword) now applies agentbox's entry — silently shadowing
+  // the user's, which may not be what they expect.
   if (await hasUnmanagedHostConflict(conn.alias)) {
     log.warn(
-      `~/.ssh/config already has a non-agentbox \`Host ${conn.alias}\` entry. SSH uses the ` +
-        `first value per keyword, so it may override agentbox's HostName/IdentityFile — ` +
-        `remove it (or rename the box) if \`ssh ${conn.alias}\` doesn't reach the box.`,
+      `~/.ssh/config already has a non-agentbox \`Host ${conn.alias}\` entry. agentbox's ` +
+        `Include is prepended, so SSH applies agentbox's HostName/IdentityFile first and your ` +
+        `entry is ignored — rename the box (or remove your entry) if you meant yours to win.`,
     );
   }
 
-  await writeAgentboxSshAlias({
-    alias: conn.alias,
-    hostname: conn.host,
+  await recordBoxSsh(box.id, {
+    host: conn.host,
     user: conn.user,
     identityFile: conn.identityFile,
   });
+  await syncAgentboxSshConfig();
 
   const codexUrl = `codex://settings/connections/ssh/add?name=${encodeURIComponent(conn.alias)}`;
   if (opts.json) {
@@ -269,7 +272,7 @@ async function runSshConfig(box: BoxRecord, opts: ShellOptions): Promise<void> {
 
   const codexLink = hyperlink(`Add ${conn.alias} to Codex SSH`, codexUrl, process.stdout);
   const lines = [
-    `wrote ~/.ssh/config alias "${conn.alias}"`,
+    `wrote ${agentboxSshConfigPath()} entry "${conn.alias}" (Include'd from ~/.ssh/config)`,
     ``,
     `ssh alias:      ${conn.alias}`,
     `host:           ${conn.host}`,

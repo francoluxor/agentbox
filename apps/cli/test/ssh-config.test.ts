@@ -5,11 +5,12 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   agentboxAliasFor,
+  agentboxSshConfigPath,
+  ensureSshInclude,
   hasUnmanagedHostConflict,
   parseSshTarget,
   readAgentboxSshAlias,
-  removeAgentboxSshAlias,
-  writeAgentboxSshAlias,
+  syncAgentboxSshConfig,
 } from '../src/ssh-config.js';
 
 describe('agentboxAliasFor', () => {
@@ -47,14 +48,16 @@ describe('parseSshTarget', () => {
   });
 });
 
-describe('writeAgentboxSshAlias', () => {
+describe('syncAgentboxSshConfig + Include model', () => {
   let tmp: string;
   let prevHome: string | undefined;
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), 'ab-ssh-cfg-'));
-    // On POSIX, `os.homedir()` falls back to `$HOME` when set, which is the
-    // hook we use to point the writer at a sandboxed dir.
+    // On POSIX, `os.homedir()` falls back to `$HOME` when set — the hook that
+    // points the writer (and `state.json` reader) at a sandboxed home. Critical:
+    // apps/cli tests share the real HOME by default, so a stray write here would
+    // clobber the user's ~/.ssh and ~/.agentbox.
     prevHome = process.env.HOME;
     process.env.HOME = tmp;
   });
@@ -65,118 +68,140 @@ describe('writeAgentboxSshAlias', () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  async function readCfg(): Promise<string> {
-    return fs.readFile(join(tmp, '.ssh', 'config'), 'utf8');
+  async function writeState(boxes: unknown[]): Promise<void> {
+    await fs.mkdir(join(tmp, '.agentbox'), { recursive: true });
+    await fs.writeFile(
+      join(tmp, '.agentbox', 'state.json'),
+      JSON.stringify({ version: 1, boxes }, null, 2),
+    );
   }
+  const readOwned = (): Promise<string> => fs.readFile(agentboxSshConfigPath(), 'utf8');
+  const readSsh = (): Promise<string> => fs.readFile(join(tmp, '.ssh', 'config'), 'utf8');
 
-  it('emits IdentityFile + IdentitiesOnly when identityFile is set (Hetzner)', async () => {
-    await writeAgentboxSshAlias({
-      alias: agentboxAliasFor('hz-box'),
-      hostname: '1.2.3.4',
-      user: 'vscode',
-      identityFile: '/box/key',
-    });
-    const cfg = await readCfg();
-    expect(cfg).toContain('Host hz-box');
-    expect(cfg).toContain('  IdentityFile /box/key');
+  const hzBox = (name: string, host: string): Record<string, unknown> => ({
+    id: `id-${name}`,
+    name,
+    provider: 'hetzner',
+    container: `cloud:${name}`,
+    image: 'snap',
+    workspacePath: '/x',
+    createdAt: 'now',
+    cloud: {
+      backend: 'hetzner',
+      sandboxId: name,
+      ssh: { host, user: 'vscode', identityFile: `/box/${name}/key` },
+    },
+  });
+
+  it('writes one Host block per box with a resolved cloud.ssh target', async () => {
+    await writeState([hzBox('hz1', '1.2.3.4'), hzBox('hz2', '5.6.7.8')]);
+    await syncAgentboxSshConfig();
+    const cfg = await readOwned();
+    expect(cfg).toContain('Host hz1');
+    expect(cfg).toContain('  HostName 1.2.3.4');
+    expect(cfg).toContain('  IdentityFile /box/hz1/key');
     expect(cfg).toContain('  IdentitiesOnly yes');
+    expect(cfg).toContain('Host hz2');
+    expect(cfg).toContain('  HostName 5.6.7.8');
   });
 
-  it('omits IdentityFile lines when identityFile is undefined (Daytona)', async () => {
-    await writeAgentboxSshAlias({
-      alias: agentboxAliasFor('dt-box'),
-      hostname: 'ssh.app.daytona.io',
-      user: 'tok_abc',
-    });
-    const cfg = await readCfg();
-    expect(cfg).toContain('Host dt-box');
-    expect(cfg).not.toContain('IdentityFile');
-    expect(cfg).not.toContain('IdentitiesOnly');
+  it('skips docker boxes and cloud boxes without a resolved cloud.ssh', async () => {
+    await writeState([
+      hzBox('hz1', '1.2.3.4'),
+      {
+        id: 'id-dk',
+        name: 'dk',
+        provider: 'docker',
+        container: 'agentbox-dk',
+        image: 'i',
+        workspacePath: '/x',
+        createdAt: 'now',
+        docker: { image: 'i' },
+      },
+      {
+        id: 'id-nossh',
+        name: 'nossh',
+        provider: 'hetzner',
+        container: 'cloud:nossh',
+        image: 'i',
+        workspacePath: '/x',
+        createdAt: 'now',
+        cloud: { backend: 'hetzner', sandboxId: 'nossh' },
+      },
+    ]);
+    await syncAgentboxSshConfig();
+    const cfg = await readOwned();
+    expect(cfg).toContain('Host hz1');
+    expect(cfg).not.toContain('Host dk');
+    expect(cfg).not.toContain('Host nossh');
   });
 
-  it('rewrites in place (no duplicate blocks across calls)', async () => {
-    const opts = {
-      alias: agentboxAliasFor('hz-box'),
-      hostname: '1.2.3.4',
-      user: 'vscode',
-      identityFile: '/box/key-v1',
-    };
-    await writeAgentboxSshAlias(opts);
-    await writeAgentboxSshAlias({ ...opts, identityFile: '/box/key-v2' });
-    const cfg = await readCfg();
-    const beginCount = cfg.split('# BEGIN agentbox cloud box hz-box').length - 1;
-    expect(beginCount).toBe(1);
-    expect(cfg).toContain('/box/key-v2');
-    expect(cfg).not.toContain('/box/key-v1');
+  it('adds a single managed Include block to ~/.ssh/config, idempotently', async () => {
+    await writeState([hzBox('hz1', '1.2.3.4')]);
+    await syncAgentboxSshConfig();
+    await syncAgentboxSshConfig();
+    const ssh = await readSsh();
+    expect(ssh.split(`Include ${agentboxSshConfigPath()}`).length - 1).toBe(1);
+    expect(ssh.split('# BEGIN agentbox ssh include').length - 1).toBe(1);
   });
 
-  it('removeAgentboxSshAlias strips the managed block and leaves others alone', async () => {
-    await writeAgentboxSshAlias({
-      alias: agentboxAliasFor('hz-box'),
-      hostname: '1.2.3.4',
-      user: 'vscode',
-      identityFile: '/box/key',
-    });
-    await writeAgentboxSshAlias({
-      alias: agentboxAliasFor('dt-box'),
-      hostname: 'ssh.app.daytona.io',
-      user: 'tok_abc',
-    });
-    await removeAgentboxSshAlias(agentboxAliasFor('hz-box'));
-    const cfg = await readCfg();
-    expect(cfg).not.toContain('Host hz-box');
-    expect(cfg).toContain('Host dt-box');
+  it('prepends the Include above existing user content, preserving it', async () => {
+    await fs.mkdir(join(tmp, '.ssh'), { recursive: true });
+    await fs.writeFile(join(tmp, '.ssh', 'config'), 'Host myserver\n  HostName 9.9.9.9\n');
+    await writeState([hzBox('hz1', '1.2.3.4')]);
+    await syncAgentboxSshConfig();
+    const ssh = await readSsh();
+    expect(ssh.indexOf('# BEGIN agentbox ssh include')).toBeLessThan(ssh.indexOf('Host myserver'));
+    expect(ssh).toContain('Host myserver');
   });
 
-  it('readAgentboxSshAlias returns HostName + IdentityFile from a written block', async () => {
-    await writeAgentboxSshAlias({
-      alias: agentboxAliasFor('hz-box'),
-      hostname: '1.2.3.4',
-      user: 'vscode',
-      identityFile: '/box/key',
-    });
-    expect(await readAgentboxSshAlias(agentboxAliasFor('hz-box'))).toEqual({
+  it('strips legacy inline `agentbox cloud box` blocks, keeping user blocks', async () => {
+    await fs.mkdir(join(tmp, '.ssh'), { recursive: true });
+    const legacy =
+      '# BEGIN agentbox cloud box old\nHost old\n  HostName 7.7.7.7\n# END agentbox cloud box old\n';
+    await fs.writeFile(
+      join(tmp, '.ssh', 'config'),
+      legacy + 'Host keepme\n  HostName 8.8.8.8\n',
+    );
+    await writeState([hzBox('hz1', '1.2.3.4')]);
+    await syncAgentboxSshConfig();
+    const ssh = await readSsh();
+    expect(ssh).not.toContain('# BEGIN agentbox cloud box old');
+    expect(ssh).not.toContain('Host old');
+    expect(ssh).toContain('Host keepme');
+  });
+
+  it('regenerate drops a box no longer in state', async () => {
+    await writeState([hzBox('hz1', '1.2.3.4'), hzBox('hz2', '5.6.7.8')]);
+    await syncAgentboxSshConfig();
+    await writeState([hzBox('hz1', '1.2.3.4')]);
+    await syncAgentboxSshConfig();
+    const cfg = await readOwned();
+    expect(cfg).toContain('Host hz1');
+    expect(cfg).not.toContain('Host hz2');
+  });
+
+  it('readAgentboxSshAlias returns HostName + IdentityFile from the owned file', async () => {
+    await writeState([hzBox('hz1', '1.2.3.4')]);
+    await syncAgentboxSshConfig();
+    expect(await readAgentboxSshAlias('hz1')).toEqual({
       hostName: '1.2.3.4',
-      identityFile: '/box/key',
+      identityFile: '/box/hz1/key',
     });
-    expect(await readAgentboxSshAlias('no-such-box')).toBeUndefined();
+    expect(await readAgentboxSshAlias('nope')).toBeUndefined();
   });
 
-  it('migrates away a legacy `agentbox-cloud-<box>` block on rewrite', async () => {
-    // Simulate a block written by an older release keyed on the legacy alias.
-    await writeAgentboxSshAlias({
-      alias: 'agentbox-cloud-hz-box',
-      hostname: '9.9.9.9',
-      user: 'vscode',
-      identityFile: '/box/old-key',
-    });
-    // Now write under the new box-name alias.
-    await writeAgentboxSshAlias({
-      alias: agentboxAliasFor('hz-box'),
-      hostname: '1.2.3.4',
-      user: 'vscode',
-      identityFile: '/box/key',
-    });
-    const cfg = await readCfg();
-    expect(cfg).not.toContain('agentbox-cloud-hz-box');
-    expect(cfg).not.toContain('9.9.9.9');
-    expect(cfg).toContain('Host hz-box');
-    expect(cfg).toContain('1.2.3.4');
-  });
-
-  it('hasUnmanagedHostConflict detects a user-authored Host but ignores our block', async () => {
-    // Our own managed block is not a conflict.
-    await writeAgentboxSshAlias({
-      alias: agentboxAliasFor('hz-box'),
-      hostname: '1.2.3.4',
-      user: 'vscode',
-      identityFile: '/box/key',
-    });
-    expect(await hasUnmanagedHostConflict('hz-box')).toBe(false);
-    expect(await hasUnmanagedHostConflict('mybox')).toBe(false);
-
-    // A user-authored stanza for the same alias IS a conflict.
+  it('hasUnmanagedHostConflict flags a user-authored Host but not our Include', async () => {
+    await writeState([hzBox('hz1', '1.2.3.4')]);
+    await syncAgentboxSshConfig();
+    expect(await hasUnmanagedHostConflict('hz1')).toBe(false);
     await fs.appendFile(join(tmp, '.ssh', 'config'), '\nHost mybox other\n  HostName 5.6.7.8\n');
     expect(await hasUnmanagedHostConflict('mybox')).toBe(true);
+  });
+
+  it('ensureSshInclude adds the Include even with no boxes yet', async () => {
+    await ensureSshInclude();
+    const ssh = await readSsh();
+    expect(ssh).toContain(`Include ${agentboxSshConfigPath()}`);
   });
 });

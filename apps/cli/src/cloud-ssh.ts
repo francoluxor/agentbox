@@ -1,7 +1,8 @@
 import { log } from '@clack/prompts';
 import type { BoxRecord } from '@agentbox/core';
+import { recordBoxSsh } from '@agentbox/sandbox-core';
 import { providerForBox } from './provider/registry.js';
-import { agentboxAliasFor, parseSshTarget, writeAgentboxSshAlias } from './ssh-config.js';
+import { agentboxAliasFor, parseSshTarget, syncAgentboxSshConfig } from './ssh-config.js';
 
 export interface CloudSshAlias {
   /** Host alias written to `~/.ssh/config` (the box name). */
@@ -71,21 +72,52 @@ export async function resolveCloudSshTarget(
 }
 
 /**
- * Bring a cloud box online and (re)write its `~/.ssh/config` alias, returning
- * the connection target. Shared by `agentbox code` (VS Code Remote-SSH),
- * `agentbox open` (sshfs mount), and `agentbox shell --ssh-config` (external
- * app handoff) — all three need the same alias mapped to a live SSH target.
+ * Bring a cloud box online, persist its resolved SSH target to `box.cloud.ssh`,
+ * and regenerate `~/.agentbox/ssh/config` (+ the `~/.ssh/config` Include),
+ * returning the connection target. Shared by `agentbox code` (VS Code
+ * Remote-SSH), `agentbox open` (sshfs mount), and `agentbox shell --ssh-config`
+ * (external app handoff) — all three need the same alias mapped to a live SSH
+ * target. These are explicit user actions, so they write regardless of the
+ * `ssh.autoConfig` toggle (which only governs the proactive create/start path).
  */
 export async function ensureCloudSshAlias(
   box: BoxRecord,
   opts: CloudSshOptions = {},
 ): Promise<CloudSshAlias> {
   const conn = await resolveCloudSshTarget(box, opts);
-  await writeAgentboxSshAlias({
-    alias: conn.alias,
-    hostname: conn.host,
+  await recordBoxSsh(box.id, {
+    host: conn.host,
     user: conn.user,
     identityFile: conn.identityFile,
   });
+  await syncAgentboxSshConfig();
   return conn;
+}
+
+/**
+ * Proactive, default-on SSH-config write on create/start/resume — gated by the
+ * `ssh.autoConfig` config key so a user who manages `~/.ssh/config` themselves
+ * can opt out. Only persistent-identity providers qualify (Hetzner/DigitalOcean:
+ * a per-box identity file that survives across sessions); Daytona's ephemeral
+ * token and Docker/Vercel/E2B (no SSH) are skipped. Best-effort: a failure here
+ * must never break the lifecycle command that triggered it.
+ *
+ * The box is assumed already online (create just finished, or start/resume
+ * brought it up), so `bringOnline: false` avoids a redundant lifecycle pass.
+ * Re-resolving on start is what refreshes a Hetzner box's changed public IP.
+ */
+export async function autoWriteSshConfig(box: BoxRecord, enabled: boolean): Promise<void> {
+  if (!enabled) return;
+  try {
+    const conn = await resolveCloudSshTarget(box, { bringOnline: false });
+    if (!conn.identityFile) return;
+    await recordBoxSsh(box.id, {
+      host: conn.host,
+      user: conn.user,
+      identityFile: conn.identityFile,
+    });
+    await syncAgentboxSshConfig();
+  } catch {
+    /* best-effort: SSH-config auto-write must never break create/start */
+  }
 }

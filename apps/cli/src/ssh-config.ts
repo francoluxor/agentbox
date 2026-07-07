@@ -1,14 +1,21 @@
 import { promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { readState } from '@agentbox/sandbox-core';
 
 /**
- * Host-side helper for maintaining one `Host <alias>` block per cloud box in
- * `~/.ssh/config`. Daytona's SSH gateway authenticates per-token (the User
- * field carries an ephemeral 60-min token from `sb.createSshAccess(60)`), so
- * we rewrite the block every `agentbox code` invocation to keep the alias
- * mapped to a live token. BEGIN/END markers around each managed block let us
- * coexist with user-authored entries.
+ * Host-side SSH-config manager for cloud boxes. AgentBox owns a dedicated file
+ * `~/.agentbox/ssh/config` holding one `Host <alias>` block per SSH-capable box,
+ * and injects a single managed `Include ~/.agentbox/ssh/config` line into the
+ * user's `~/.ssh/config` — so our churn stays out of their hand-maintained
+ * config. The owned file is regenerated wholesale from `state.json`
+ * (`syncAgentboxSshConfig`), which self-heals stale/destroyed boxes and reads
+ * only persisted state (no provider calls, never wakes a paused box).
+ *
+ * Daytona's SSH gateway authenticates per-token (the User field carries an
+ * ephemeral 60-min token from `sb.createSshAccess(60)`), so `agentbox code`
+ * re-resolves + re-syncs on every invocation to keep the alias mapped to a live
+ * token.
  */
 
 export interface SshAliasOptions {
@@ -32,6 +39,18 @@ function sshConfigPath(): string {
   return join(homedir(), '.ssh', 'config');
 }
 
+/** AgentBox-owned SSH config file `Include`d from `~/.ssh/config`. */
+export function agentboxSshConfigPath(): string {
+  return join(homedir(), '.agentbox', 'ssh', 'config');
+}
+
+function stateFilePath(): string {
+  return join(homedir(), '.agentbox', 'state.json');
+}
+
+const INCLUDE_BEGIN = '# BEGIN agentbox ssh include';
+const INCLUDE_END = '# END agentbox ssh include';
+
 function beginMarker(alias: string): string {
   return `# BEGIN agentbox cloud box ${alias}`;
 }
@@ -51,32 +70,13 @@ export function agentboxAliasFor(boxName: string): string {
   return boxName;
 }
 
-async function readConfig(): Promise<string> {
+async function readFileOrEmpty(path: string): Promise<string> {
   try {
-    return await fs.readFile(sshConfigPath(), 'utf8');
+    return await fs.readFile(path, 'utf8');
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return '';
     throw err;
   }
-}
-
-/**
- * Strip an existing managed block for `alias`. Returns the file contents with
- * any block bracketed by our BEGIN/END markers for this alias removed.
- *
- * Anchored at the start of a line (`m` flag) so the preceding newline stays
- * attached to whatever came before — removing a block between two pieces of
- * content must not collapse the separating newline.
- */
-function stripBlock(contents: string, alias: string): string {
-  const begin = beginMarker(alias);
-  const end = endMarker(alias);
-  const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pattern = new RegExp(
-    `^${escape(begin)}\\n[\\s\\S]*?${escape(end)}\\n?`,
-    'gm',
-  );
-  return contents.replace(pattern, '');
 }
 
 function buildBlock(opts: SshAliasOptions): string {
@@ -107,38 +107,86 @@ function buildBlock(opts: SshAliasOptions): string {
 }
 
 /**
- * Pre-`agentbox-cloud-<box>` → `<box>` rename, managed blocks were keyed by
- * `agentbox-cloud-<box>`. We strip that block whenever we rewrite/remove the
- * box's alias so upgrades don't leave a stale duplicate Host entry behind.
+ * Old versions wrote per-box `# BEGIN agentbox cloud box <alias>` … `# END …`
+ * blocks directly into `~/.ssh/config`. We now own `~/.agentbox/ssh/config`, so
+ * strip any such inline leftovers whenever we touch `~/.ssh/config`. AgentBox is
+ * unreleased → clean removal, no deprecation shim.
  */
-function legacyAliasFor(alias: string): string {
-  return `agentbox-cloud-${alias}`;
+function stripLegacyInlineBlocks(contents: string): string {
+  const pattern =
+    /^# BEGIN agentbox cloud box .*\n[\s\S]*?^# END agentbox cloud box .*\n?/gm;
+  return contents.replace(pattern, '');
 }
 
-export async function writeAgentboxSshAlias(opts: SshAliasOptions): Promise<void> {
+function hasIncludeBlock(contents: string): boolean {
+  return (
+    contents.includes(INCLUDE_BEGIN) || contents.includes(`Include ${agentboxSshConfigPath()}`)
+  );
+}
+
+/**
+ * Ensure `~/.ssh/config` contains exactly one managed `Include
+ * ~/.agentbox/ssh/config` block, prepended to the top. Prepend (not append)
+ * because OpenSSH applies the first value it sees per keyword — putting the
+ * Include first lets AgentBox's box entries win over any later user `Host *`
+ * defaults. Also strips any legacy inline per-box blocks. Idempotent.
+ */
+export async function ensureSshInclude(): Promise<void> {
   const path = sshConfigPath();
   await fs.mkdir(join(homedir(), '.ssh'), { recursive: true, mode: 0o700 });
-  const existing = await readConfig();
-  const stripped = stripBlock(stripBlock(existing, opts.alias), legacyAliasFor(opts.alias));
-  const separator = stripped.length === 0 || stripped.endsWith('\n') ? '' : '\n';
-  const next = `${stripped}${separator}${buildBlock(opts)}`;
+  const existing = stripLegacyInlineBlocks(await readFileOrEmpty(path));
+  let next = existing;
+  if (!hasIncludeBlock(existing)) {
+    const block = `${INCLUDE_BEGIN}\nInclude ${agentboxSshConfigPath()}\n${INCLUDE_END}\n`;
+    next = existing.length === 0 ? block : `${block}\n${existing}`;
+  }
   await fs.writeFile(path, next, { mode: 0o600 });
   // Re-assert mode in case the file existed with broader perms.
   await fs.chmod(path, 0o600);
 }
 
 /**
- * True when `~/.ssh/config` already has a user-authored `Host <alias>` stanza
- * OUTSIDE our managed block. Because the alias is now the bare box name, such a
- * collision matters: OpenSSH applies the first value it sees per keyword, so an
- * earlier user entry can shadow the HostName/IdentityFile/User we append.
+ * Regenerate the AgentBox-owned `~/.agentbox/ssh/config` from `state.json`: one
+ * `Host <name>` block per box that carries a resolved `cloud.ssh` target. Reads
+ * only persisted state — no provider calls, never wakes a paused box — so a
+ * destroyed box's block simply disappears on the next sync. Also ensures the
+ * `Include` line in `~/.ssh/config`.
+ */
+export async function syncAgentboxSshConfig(statePath: string = stateFilePath()): Promise<void> {
+  const state = await readState(statePath);
+  const blocks: string[] = [];
+  for (const box of state.boxes) {
+    const ssh = box.cloud?.ssh;
+    if (!ssh) continue;
+    blocks.push(
+      buildBlock({
+        alias: agentboxAliasFor(box.name),
+        hostname: ssh.host,
+        user: ssh.user,
+        identityFile: ssh.identityFile,
+      }),
+    );
+  }
+  const header =
+    '# Managed by agentbox — regenerated on box create/start/destroy.\n' +
+    '# Do not edit; changes are overwritten. Disable with `agentbox config set ssh.autoConfig false`.\n\n';
+  const path = agentboxSshConfigPath();
+  await fs.mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  await fs.writeFile(path, header + blocks.join('\n'), { mode: 0o600 });
+  await fs.chmod(path, 0o600);
+  await ensureSshInclude();
+}
+
+/**
+ * True when `~/.ssh/config` has a user-authored `Host <alias>` stanza. With the
+ * Include prepended, AgentBox's entry is read first so it wins — but a foreign
+ * `Host <alias>` is still worth flagging to the user in case they expected their
+ * own entry to take effect.
  */
 export async function hasUnmanagedHostConflict(alias: string): Promise<boolean> {
-  const contents = await readConfig();
+  const contents = stripLegacyInlineBlocks(await readFileOrEmpty(sshConfigPath()));
   if (contents === '') return false;
-  // Drop our managed block first so we only see foreign `Host` lines.
-  const foreign = stripBlock(contents, alias);
-  return foreign.split('\n').some((line) => {
+  return contents.split('\n').some((line) => {
     const m = /^\s*Host\s+(.+?)\s*$/.exec(line);
     if (!m) return false;
     return m[1]!.split(/\s+/).includes(alias);
@@ -182,15 +230,15 @@ export function parseSshTarget(argv: readonly string[]): SshTarget | undefined {
 
 /**
  * Read back the `HostName` / `IdentityFile` from the managed block for `alias`
- * in `~/.ssh/config`, if one exists. Used by `inspect` to surface the SSH
- * connection details without re-deriving them from a provider (which would
+ * in `~/.agentbox/ssh/config`, if one exists. Used by `inspect` to surface the
+ * SSH connection details without re-deriving them from a provider (which would
  * require bringing the box online). Returns undefined when no managed block is
  * present for the alias.
  */
 export async function readAgentboxSshAlias(
   alias: string,
 ): Promise<{ hostName?: string; identityFile?: string } | undefined> {
-  const contents = await readConfig();
+  const contents = await readFileOrEmpty(agentboxSshConfigPath());
   if (contents === '') return undefined;
   const begin = beginMarker(alias);
   const end = endMarker(alias);
@@ -201,13 +249,4 @@ export async function readAgentboxSshAlias(
   const field = (name: string): string | undefined =>
     new RegExp(`^\\s*${name}\\s+(.+)$`, 'm').exec(body)?.[1]?.trim();
   return { hostName: field('HostName'), identityFile: field('IdentityFile') };
-}
-
-export async function removeAgentboxSshAlias(alias: string): Promise<void> {
-  const path = sshConfigPath();
-  const existing = await readConfig();
-  if (existing === '') return;
-  const next = stripBlock(stripBlock(existing, alias), legacyAliasFor(alias));
-  if (next === existing) return; // no managed block matched
-  await fs.writeFile(path, next, { mode: 0o600 });
 }
