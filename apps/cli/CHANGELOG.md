@@ -9,6 +9,15 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [0.23.2] - 2026-07-08
+
+### Fixed
+
+- First-run `agentbox create` no longer looks frozen while the pulled box
+  image extracts: `docker pull` prints nothing during the extraction phase
+  (minutes, for a multi-GB image), so create now emits a "still extracting"
+  keepalive after 20s of silence.
+
 ## [0.23.1] - 2026-07-08
 
 ### Breaking
