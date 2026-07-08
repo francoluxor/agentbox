@@ -13,6 +13,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -92,15 +93,24 @@ try {
 
   console.log('[pack-test] importing the installed package + checking exports');
   const mod = await import(pathToFileURL(entry).href);
+  // The packed artifact must carry the same SDK_API_VERSION as the source —
+  // read it from src/index.ts so a version bump can't silently ship stale dist.
+  const srcIndex = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
+  const m = /export const SDK_API_VERSION = (\d+);/.exec(srcIndex);
+  const expectedApiVersion = m ? Number(m[1]) : NaN;
   const missing = REQUIRED_EXPORTS.filter((name) => mod[name] === undefined);
   if (missing.length > 0) {
     failed = true;
     console.error(`[pack-test] FAIL — missing exports: ${missing.join(', ')}`);
-  } else if (mod.SDK_API_VERSION !== 1) {
+  } else if (!Number.isInteger(expectedApiVersion) || mod.SDK_API_VERSION !== expectedApiVersion) {
     failed = true;
-    console.error(`[pack-test] FAIL — unexpected SDK_API_VERSION: ${String(mod.SDK_API_VERSION)}`);
+    console.error(
+      `[pack-test] FAIL — unexpected SDK_API_VERSION: ${String(mod.SDK_API_VERSION)} (src says ${String(expectedApiVersion)})`,
+    );
   } else {
-    console.log(`[pack-test] OK — ${REQUIRED_EXPORTS.length} exports present, SDK_API_VERSION=1`);
+    console.log(
+      `[pack-test] OK — ${REQUIRED_EXPORTS.length} exports present, SDK_API_VERSION=${String(expectedApiVersion)}`,
+    );
   }
 } catch (err) {
   failed = true;

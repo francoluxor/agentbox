@@ -19,7 +19,7 @@
  * supported range includes this major (see `agentbox plugin add`). Bump on any
  * breaking change to `Provider` / `CloudBackend` / `ProviderModule`.
  */
-export const SDK_API_VERSION = 1;
+export const SDK_API_VERSION = 2;
 
 // ---- core provider contract (types) ----
 export type {

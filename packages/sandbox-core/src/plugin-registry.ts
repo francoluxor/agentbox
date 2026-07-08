@@ -28,7 +28,9 @@ export const PLUGINS_FILE = join(homedir(), '.agentbox', 'plugins.json');
  * (with a warning) rather than crashing the CLI. Extend this array when the CLI
  * keeps back-compat with an older provider contract.
  */
-export const SUPPORTED_SDK_API_VERSIONS: readonly number[] = [1];
+// v2: BoxRecord.cloud.ssh moved to top-level BoxRecord.ssh (+port, docker sshd
+// fields). v1 plugins still load — only ones reading box.cloud.ssh notice.
+export const SUPPORTED_SDK_API_VERSIONS: readonly number[] = [1, 2];
 
 export function isSupportedApiVersion(v: number): boolean {
   return SUPPORTED_SDK_API_VERSIONS.includes(v);

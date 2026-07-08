@@ -9,6 +9,62 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [0.23.0] - 2026-07-08
+
+### Added
+
+- **Every Docker box now runs an SSH server** — loopback-only (published on
+  `127.0.0.1` on an ephemeral port, never reachable off-host), authenticated by
+  a per-box ed25519 key, and written to a managed `~/.ssh/config` alias, so
+  `ssh <box>` just works and lands in `/workspace`. Boxes created before this
+  release predate the sshd — recreate them to get it.
+- **`agentbox open` live-mounts the box** — `/workspace` is mounted over sshfs
+  at `~/.agentbox/mounts/<box>/` and revealed in Finder, with edits flowing
+  both ways (Docker, Hetzner, and Daytona boxes); `--unmount` tears it down.
+  Needs `brew install macfuse sshfs` — `agentbox doctor` now checks both
+  (optional, warn-only). Vercel/E2B have no SSH and fail fast with a pointer to
+  `agentbox download`; pre-sshd Docker boxes keep the old rsync export.
+- **Open a box in the Claude desktop app: `agentbox open <box> --in claude`.**
+  Claude has no add-SSH deep link, so AgentBox writes the box's SSH alias into
+  the app's own settings (`sshConfigs` in `~/.claude/settings.json`) and
+  launches it — pick the box from the Environment dropdown, where the app can
+  also list and resume the Claude sessions already recorded inside the box.
+  Entries are upserted by id, never touch the rest of your settings, and
+  are pruned automatically once the box is gone. Docker + Hetzner boxes.
+- `--in codex` now works for Docker boxes too (was Hetzner-only), and `finder`
+  is a first-class target in `open --targets` so the tray/hub can offer it.
+- **Hub: "Apps" launchers on the box detail page** — open a box in Claude,
+  Codex, VS Code/Cursor, cmux, Herdr, iTerm2, or Finder from the web UI. Apps
+  show only when installed on the host and eligible for the box's provider;
+  localhost macOS hubs only. New `GET /api/v1/open-targets` and
+  `POST /api/v1/boxes/:id/open` endpoints.
+- **Hub: the create modal now tells the truth about the base image** — Docker
+  freshness is actually probed (was hardcoded "fresh"), a first-run or stale
+  base shows a bake note and auto-chains a streamed "Building base image…"
+  prepare job into the create, and a stale cloud base offers Rebuild & Create /
+  Use Existing Image.
+- **Hub REST widened for native clients** — `GET /api/v1/boxes` now carries
+  state, provider, project, git worktrees, and per-agent session/activity
+  fields (so the tray app can run on REST instead of shelling the CLI), and
+  `POST /api/v1/boxes/:id/start` starts a stopped box.
+- **Provider SDK 2.0.0 (breaking)** — `BoxRecord.cloud.ssh` moved to top-level
+  `BoxRecord.ssh` (now with `port`), plus the new Docker sshd fields.
+  `SDK_API_VERSION` is now `2`; v1 plugins still load. Plugin authors:
+  republish against `@madarco/agentbox-provider-sdk@2.0.0`.
+
+### Fixed
+
+- **`agentbox self-update` actually updates the package now.** A globally
+  installed CLI invoked from the shell was misdetected as "running from
+  source" (no npm user-agent, and argv is the bin symlink), so the
+  `npm install -g` step was silently skipped. Detection now resolves the bin
+  symlink (npm's `lib/node_modules`, pnpm's global dir; a project-local
+  install still skips), and the "newer version available" nudge only appears
+  when self-update can actually act.
+- VS Code/Cursor are detected — and launched — via the `.app` bundle when the
+  `code`/`cursor` PATH shim isn't installed, so the tray/hub Open-In menus no
+  longer hide VS Code on a freshly dragged-in install.
+
 ## [0.22.2] - 2026-07-08
 
 ### Added
