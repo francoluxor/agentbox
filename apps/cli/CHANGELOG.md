@@ -9,6 +9,16 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [0.23.3] - 2026-07-08
+
+### Fixed
+
+- Opening a box's VNC from the menu-bar app or the hub web UI now starts the
+  in-box browser first (pointed at the box's web app), so the desktop shows the
+  app instead of a blank X screen — previously only `agentbox screen` did this.
+  New hub action `POST /api/v1/boxes/{id}/screen` runs the prep for docker and
+  cloud boxes; the menu-bar app uses it from v0.1.5.
+
 ## [0.23.2] - 2026-07-08
 
 ### Fixed
