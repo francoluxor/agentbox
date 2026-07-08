@@ -72,6 +72,8 @@ function realSeams(): DetectSeams {
 
 export interface OpenTargetInfo {
   available: boolean;
+  /** Why the app is unavailable (install hint); present only when !available. */
+  reason?: string;
   /** Box providers this app can open; omitted = any box. */
   providers?: string[];
 }
@@ -180,6 +182,11 @@ export function resolveCmuxBinary(seams: DetectSeams = realSeams()): string | un
   return undefined;
 }
 
+/** `{ available, reason? }` — reason present only when unavailable. */
+function targetInfo(available: boolean, reason: string): Pick<OpenTargetInfo, 'available' | 'reason'> {
+  return available ? { available } : { available, reason };
+}
+
 /** Probe which `--in` targets are installed on this host. */
 export function detectOpenTargets(seams: DetectSeams = realSeams()): OpenTargetsReport {
   return {
@@ -187,35 +194,40 @@ export function detectOpenTargets(seams: DetectSeams = realSeams()): OpenTargets
       // Claude desktop has no add-SSH deep link; `open --in claude` writes the
       // box into the app's own settings (sshConfigs) instead — same persistent
       // SSH requirement as codex, since the app connects on its own later.
-      available: macAppInstalled('Claude.app', seams),
+      ...targetInfo(macAppInstalled('Claude.app', seams), 'Claude desktop is not installed'),
       providers: [...PERSISTENT_SSH_PROVIDERS],
     },
     codex: {
-      available: macAppInstalled('Codex.app', seams),
+      ...targetInfo(macAppInstalled('Codex.app', seams), 'Codex is not installed'),
       providers: [...PERSISTENT_SSH_PROVIDERS],
     },
-    herdr: {
-      available: pathHasBinary('herdr', seams) || defaultHerdrSocketPath(seams) !== undefined,
-    },
-    cmux: {
-      available: pathHasBinary('cmux', seams) || macAppInstalled('cmux.app', seams),
-    },
+    herdr: targetInfo(
+      pathHasBinary('herdr', seams) || defaultHerdrSocketPath(seams) !== undefined,
+      'Herdr is not installed',
+    ),
+    cmux: targetInfo(
+      pathHasBinary('cmux', seams) || macAppInstalled('cmux.app', seams),
+      'cmux is not installed',
+    ),
     vscode: {
       // PATH shim OR the .app bundle — a freshly-dragged VS Code/Cursor has no
       // `code`/`cursor` on PATH until the user runs the "Install 'code' command"
       // step, but `agentbox open --in vscode` can launch it from the bundle.
-      available: VSCODE_APPS.some(
-        (a) => pathHasBinary(a.cli, seams) || macAppInstalled(a.appName, seams),
+      ...targetInfo(
+        VSCODE_APPS.some((a) => pathHasBinary(a.cli, seams) || macAppInstalled(a.appName, seams)),
+        'VS Code / Cursor is not installed',
       ),
       providers: [...IDE_PROVIDERS],
     },
-    iterm2: {
-      available: macAppInstalled('iTerm.app', seams),
-    },
+    iterm2: targetInfo(macAppInstalled('iTerm.app', seams), 'iTerm2 is not installed'),
     finder: {
-      // The OS file-manager reveal always works (Finder on macOS, xdg-open
-      // elsewhere); provider gating is what limits `open` to SSH-capable boxes.
-      available: true,
+      // The file-manager reveal itself always works, but `open --in finder`
+      // mounts /workspace via sshfs first — without the sshfs binary the whole
+      // action fails, so sshfs presence IS the availability.
+      ...targetInfo(
+        pathHasBinary('sshfs', seams),
+        'sshfs is not installed — install with `brew install macfuse sshfs`',
+      ),
       providers: [...SSH_MOUNT_PROVIDERS],
     },
   };
@@ -229,7 +241,7 @@ export function codexAddUrl(alias: string): string {
 export function renderTargets(report: OpenTargetsReport): string {
   const lines = OPEN_IN_APPS.map((app) => {
     const info = report[app];
-    const status = info.available ? 'available' : 'not installed';
+    const status = info.available ? 'available' : (info.reason ?? 'not installed');
     const scope = info.providers ? ` (${info.providers.join(', ')} boxes)` : '';
     return `${app}: ${status}${info.available ? scope : ''}`;
   });

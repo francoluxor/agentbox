@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Icons } from '@/components/icons';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -50,10 +50,23 @@ function CopyButton({ url }: { url: string }) {
   );
 }
 
+// Wraps a disabled control so the reason still surfaces on hover: Button's
+// `disabled:pointer-events-none` suppresses the title tooltip on the button
+// itself, so the title lives on this span (same trick as create-box-modal).
+function DisabledTip({ reason, children }: { reason: string | null; children: ReactNode }) {
+  if (!reason) return <>{children}</>;
+  return (
+    <span title={reason} className="cursor-not-allowed">
+      {children}
+    </span>
+  );
+}
+
 // Launch the box in a host app by POSTing to the open endpoint (which re-shells
 // `agentbox open --in <app>`). Availability comes from the host probe
-// (`/api/v1/open-targets`); each app is offered only when installed AND eligible
-// for this box's provider (e.g. Codex is Hetzner-only).
+// (`/api/v1/open-targets`); every app is always listed, but disabled — with the
+// why as a hover tooltip — when not installed or not eligible for this box's
+// provider (e.g. Codex needs persistent SSH, so docker/hetzner only).
 function useOpenIn(box: Box) {
   const [targets, setTargets] = useState<OpenTargets | null>(null);
   const [pending, setPending] = useState<OpenInApp | null>(null);
@@ -97,86 +110,125 @@ function useOpenIn(box: Box) {
   );
 
   const report = targets?.supported ? targets.targets : null;
-  const eligible = report
-    ? APPS.filter(({ app }) => {
+  const apps = report
+    ? APPS.map(({ app, label, icon }) => {
         const info = report[app];
-        return info.available && (!info.providers || info.providers.includes(box.provider));
+        const disabledReason = !info.available
+          ? (info.reason ?? `${label} is not installed`)
+          : info.providers && !info.providers.includes(box.provider)
+            ? `Not available for ${box.provider} boxes`
+            : null;
+        return { app, label, icon, disabledReason };
       })
     : [];
 
-  return { eligible, pending, launch };
+  // False on a remote/non-mac hub (or probe failure) — host apps don't apply
+  // there at all, so the Apps row hides instead of rendering all-disabled noise.
+  const supported = report !== null;
+
+  return { apps, supported, pending, launch };
 }
 
 export function Access({ box }: { box: Box }) {
   const { webUrl, vncUrl } = box;
-  const { eligible, pending, launch } = useOpenIn(box);
+  const { apps, supported, pending, launch } = useOpenIn(box);
 
-  // Nothing to show: no reachable web/VNC endpoint and no launchable host app.
-  if (!webUrl && !vncUrl && eligible.length === 0) return null;
+  // Missing-URL reasons for the disabled Open web / Open VNC buttons.
+  const unreachableReason =
+    box.status === 'paused'
+      ? 'Box is paused — resume to access'
+      : box.status === 'stopped'
+        ? 'Box is stopped — start to access'
+        : null;
+  const webReason = webUrl ? null : (unreachableReason ?? 'No web service exposed');
+  const vncReason = vncUrl
+    ? null
+    : box.vncEnabled === false
+      ? 'VNC is not enabled for this box'
+      : (unreachableReason ?? 'VNC is not available');
+
+  // Hosted/remote profile with no reachable endpoint: everything would render
+  // permanently disabled — hide the card instead.
+  if (!supported && !webUrl && !vncUrl) return null;
 
   return (
     <>
       <SectionLabel>Access</SectionLabel>
       <Card className="divide-y divide-border/60 overflow-hidden">
-        {webUrl || vncUrl ? (
-          <div className="flex flex-wrap items-center gap-3 px-4.5 p-3.5">
-            <div className="min-w-[150px] flex-1">
-              <div className="text-[13.5px] font-medium">{webUrl ? 'Web' : 'VNC'}</div>
-              <div className="mt-0.5 break-all font-mono text-[11.5px] text-muted-foreground">{webUrl ?? 'Remote desktop'}</div>
+        <div className="flex flex-wrap items-center gap-3 px-4.5 p-3.5">
+          <div className="min-w-[150px] flex-1">
+            <div className="text-[13.5px] font-medium">{webUrl || !vncUrl ? 'Web' : 'VNC'}</div>
+            <div className="mt-0.5 break-all font-mono text-[11.5px] text-muted-foreground">
+              {webUrl ?? (vncUrl ? 'Remote desktop' : webReason)}
             </div>
-            <div className="flex flex-none flex-wrap gap-1.5">
-              {webUrl ? (
-                <Button variant="outline" size="sm" href={webUrl} target="_blank" rel="noreferrer">
+          </div>
+          <div className="flex flex-none flex-wrap gap-1.5">
+            {webUrl ? (
+              <Button variant="outline" size="sm" href={webUrl} target="_blank" rel="noreferrer">
+                <Icons.ext />
+                Open web
+              </Button>
+            ) : (
+              <DisabledTip reason={webReason}>
+                <Button variant="outline" size="sm" disabled>
                   <Icons.ext />
                   Open web
                 </Button>
-              ) : null}
-              {webUrl ? <CopyButton url={webUrl} /> : null}
-              {vncUrl ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  href={vncUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  onClick={() => {
-                    // Fire-and-forget prep: point the in-box browser at the web
-                    // app so the VNC desktop isn't a blank X screen. The link
-                    // opens synchronously (no popup-blocker risk); Chromium
-                    // appears in the view a moment later.
-                    void fetch(`/api/v1/boxes/${encodeURIComponent(box.id)}/screen`, {
-                      method: 'POST',
-                      credentials: 'same-origin',
-                    }).catch(() => {});
-                  }}
-                >
+              </DisabledTip>
+            )}
+            {webUrl ? <CopyButton url={webUrl} /> : null}
+            {vncUrl ? (
+              <Button
+                variant="outline"
+                size="sm"
+                href={vncUrl}
+                target="_blank"
+                rel="noreferrer"
+                onClick={() => {
+                  // Fire-and-forget prep: point the in-box browser at the web
+                  // app so the VNC desktop isn't a blank X screen. The link
+                  // opens synchronously (no popup-blocker risk); Chromium
+                  // appears in the view a moment later.
+                  void fetch(`/api/v1/boxes/${encodeURIComponent(box.id)}/screen`, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                  }).catch(() => {});
+                }}
+              >
+                <Icons.ext />
+                Open VNC
+              </Button>
+            ) : (
+              <DisabledTip reason={vncReason}>
+                <Button variant="outline" size="sm" disabled>
                   <Icons.ext />
                   Open VNC
                 </Button>
-              ) : null}
-            </div>
+              </DisabledTip>
+            )}
           </div>
-        ) : null}
-        {eligible.length > 0 ? (
+        </div>
+        {supported ? (
           <div className="flex flex-wrap items-center gap-3 px-4.5 p-3.5">
             <div className="min-w-[150px] flex-1">
               <div className="text-[13.5px] font-medium">Apps</div>
               <div className="mt-0.5 text-[11.5px] text-muted-foreground">Open the box project from the host</div>
             </div>
             <div className="flex flex-none flex-wrap justify-end gap-1.5">
-              {eligible.map(({ app, label, icon }) => {
+              {apps.map(({ app, label, icon, disabledReason }) => {
                 const Icon = Icons[icon];
                 return (
-                  <Button
-                    key={app}
-                    variant="outline"
-                    size="sm"
-                    disabled={pending !== null}
-                    onClick={() => void launch(app)}
-                  >
-                    <Icon />
-                    {label}
-                  </Button>
+                  <DisabledTip key={app} reason={disabledReason}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={disabledReason !== null || pending !== null}
+                      onClick={() => void launch(app)}
+                    >
+                      <Icon />
+                      {label}
+                    </Button>
+                  </DisabledTip>
                 );
               })}
             </div>

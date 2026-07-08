@@ -123,13 +123,33 @@ describe('detectOpenTargets', () => {
     expect(detectOpenTargets(seams({})).iterm2.available).toBe(false);
   });
 
-  it('finder is always available, gated to SSH-mount providers', () => {
-    expect(detectOpenTargets(seams({})).finder).toEqual({
+  it('finder requires sshfs on PATH, gated to SSH-mount providers', () => {
+    const withSshfs = seams({ path: '/usr/local/bin', existing: ['/usr/local/bin/sshfs'] });
+    expect(detectOpenTargets(withSshfs).finder).toEqual({
       available: true,
       providers: [...SSH_MOUNT_PROVIDERS],
     });
-    // Available on linux too (xdg-open reveal), unlike the macOS-only apps.
-    expect(detectOpenTargets(seams({ platform: 'linux' })).finder.available).toBe(true);
+    // sshfs is cross-platform — PATH presence is the gate on linux too.
+    const linux = seams({ platform: 'linux', path: '/usr/bin', existing: ['/usr/bin/sshfs'] });
+    expect(detectOpenTargets(linux).finder.available).toBe(true);
+    // Without sshfs the mount (and so `open --in finder`) fails — report why.
+    const without = detectOpenTargets(seams({})).finder;
+    expect(without.available).toBe(false);
+    expect(without.reason).toContain('sshfs');
+    expect(without.reason).toContain('brew install macfuse sshfs');
+  });
+
+  it('unavailable targets carry a reason; available ones omit it', () => {
+    const bare = detectOpenTargets(seams({}));
+    for (const info of Object.values(bare)) {
+      expect(info.available).toBe(false);
+      expect(info.reason).toBeTruthy();
+    }
+    const installed = detectOpenTargets(
+      seams({ path: '/bin', existing: ['/Applications/Claude.app', '/bin/sshfs'] }),
+    );
+    expect(installed.claude.reason).toBeUndefined();
+    expect(installed.finder.reason).toBeUndefined();
   });
 
   it('never throws on linux (no /Applications probes)', () => {
@@ -231,7 +251,11 @@ describe('renderTargets', () => {
       cmux: { available: true },
       vscode: { available: true, providers: ['docker', 'hetzner', 'daytona'] },
       iterm2: { available: true },
-      finder: { available: true, providers: ['docker', 'hetzner', 'daytona'] },
+      finder: {
+        available: false,
+        reason: 'sshfs is not installed',
+        providers: ['docker', 'hetzner', 'daytona'],
+      },
     });
     expect(out).toBe(
       'claude: available (docker, hetzner boxes)\n' +
@@ -240,7 +264,7 @@ describe('renderTargets', () => {
         'cmux: available\n' +
         'vscode: available (docker, hetzner, daytona boxes)\n' +
         'iterm2: available\n' +
-        'finder: available (docker, hetzner, daytona boxes)\n',
+        'finder: sshfs is not installed\n',
     );
   });
 });

@@ -27,8 +27,11 @@ That starts the hub (if it isn't already running) and opens it in your browser a
 - **Box detail** — a box's task, agent, branch, host, and timestamps, plus common
   box operations: **Access** (open the box's [web / VNC URL](/docs/web-apps-and-tunnels),
   and, on a local hub running on macOS, an **Apps** row that opens the box in a host
-  app — Codex, VS Code / Cursor, cmux, Herdr, or iTerm2, whichever are installed and
-  supported for the box's provider; the same as [`agentbox open --in`](/docs/access-your-box)),
+  app — Claude, Codex, VS Code / Cursor, cmux, Herdr, iTerm2, or Finder; the same as
+  [`agentbox open --in`](/docs/access-your-box). Every button is always shown —
+  ones that can't work right now (app not installed, sshfs missing for Finder, not
+  supported for the box's provider, box paused) are disabled with the reason as a
+  hover tooltip),
   **Git** (pull, push, [push to the host repo only](/docs/sync-and-git),
   change branch, create a new `agentbox/*` branch) and **Services** (live state of the
   box's [`agentbox.yaml` services](/docs/services-and-tasks), with restart-one and

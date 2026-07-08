@@ -19,6 +19,8 @@ export type OpenInApp = 'claude' | 'codex' | 'herdr' | 'cmux' | 'vscode' | 'iter
 // codex -> ['hetzner']); omitted means any provider.
 export interface OpenTargetInfo {
   available: boolean;
+  /** Why the app is unavailable (install hint); present only when !available. */
+  reason?: string;
   providers?: string[];
 }
 
