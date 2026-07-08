@@ -9,6 +9,37 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [0.23.1] - 2026-07-08
+
+### Breaking
+
+- **`agentbox install tray` is now `agentbox install app`** — matching the
+  `AgentBox.app` bundle and the `agentbox app` lifecycle command. The old name
+  errors (no alias); update any scripts.
+
+### Added
+
+- The hub's Settings page shows the running AgentBox version, and
+  `GET /api/v1/health` now includes a `version` field. The macOS menu-bar app
+  gained the same version footer in its Settings window.
+
+### Changed
+
+- `agentbox install <target>` with an unrecognized target now exits with an
+  error listing the valid targets (`cmux`, `herdr`, `codex`, `app`) instead of
+  silently ignoring it and launching the setup wizard.
+- The install wizard's compatibility check now names what warned — e.g.
+  `system warn: optional sshfs, macfuse` — instead of an opaque `system warn`,
+  and marks optional deps as such.
+- `agentbox doctor` reports missing Daytona credentials as a one-liner
+  (`not configured`, with the `agentbox daytona login` hint) like the other
+  cloud providers, instead of the SDK's env-var paragraph.
+
+### Fixed
+
+- The GitHub star prompt remembers any explicit answer — declining, or starring
+  via the browser fallback, no longer makes it re-ask after every self-update.
+
 ## [0.23.0] - 2026-07-08
 
 ### Added
