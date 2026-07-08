@@ -94,7 +94,7 @@ them. Run this check every time:
      (`packages/sandbox-core/src/plugin-registry.ts`).
    - Add a short SDK line to the changelog entry (under `Added` / `Changed` / `Breaking`).
    - Sanity-gate the artifact: `pnpm --filter @madarco/agentbox-provider-sdk pack:test`.
-   - When releasing (next section), stage `packages/provider-sdk/package.json` (+
+   - When releasing (section 8), stage `packages/provider-sdk/package.json` (+
      `src/index.ts` if `SDK_API_VERSION` changed, + the plugin-registry file) into the
      `release:` commit.
    - **Warn the user, prominently:** `@madarco/agentbox-provider-sdk@<new>` must be
@@ -106,7 +106,48 @@ them. Run this check every time:
      ```
      (`prepublishOnly` rebuilds dist; scoped `access: public` is already set.)
 
-## 7. Release (only when `$ARGUMENTS` named a bump)
+## 7. Menu-bar app — publish check (always run)
+
+The macOS menu-bar app lives in the sibling repo `../agentbox-tray` and is
+published **separately** from the CLI: signed + notarized artifacts on the
+public repo's moving **`tray-latest`** GitHub release (`madarco/agentbox`).
+The npm publish does **not** cover it, and `agentbox install tray`,
+`self-update`, and the daily update nudge all compare the release's
+`AgentBox.zip.sha256` sidecar — so a stale published build silently keeps
+users on the old app. Run this check every time:
+
+1. **Any app commits since its last release?**
+   ```
+   git -C ../agentbox-tray fetch origin --tags 2>/dev/null
+   anchor=$(git -C ../agentbox-tray describe --tags --abbrev=0 origin/main)
+   git -C ../agentbox-tray log "$anchor"..origin/main --oneline
+   ```
+   Empty → the published app is current; skip the rest. Non-empty → the app
+   needs a release.
+
+2. **Tell the user, prominently, in the same message as the changelog entry**
+   — they will usually want the app and the CLI to ship together. If the app
+   changes are user-visible, they likely already earned a changelog bullet in
+   section 3 (the app updates via the CLI, so its changes belong in this
+   changelog too).
+
+3. **Publish it** (when `$ARGUMENTS` named a bump, alongside section 8;
+   otherwise only after the user confirms). Next app version = bump the
+   `anchor` tag (the current version is in `../agentbox-tray/VERSION`):
+   ```
+   cd ../agentbox-tray && AGENTBOX_NOTARY_PROFILE=AGENTBOX_NOTARY ./scripts/publish-release.sh <next-app-version>
+   ```
+   - `AGENTBOX_NOTARY_PROFILE` is **load-bearing**: without it `release.sh`
+     builds signed-but-unnotarized and `publish-release.sh` refuses to publish.
+     Notarization waits on Apple (~a few minutes) — run it in the background.
+   - The script tags the tray repo `v<version>` and replaces the `tray-latest`
+     assets (dmg + zip + `.sha256` sidecars), but leaves its `VERSION` file
+     bump uncommitted — commit it afterwards (`release: v<version>`) and push
+     straight to the tray repo's main (no PR flow there).
+   - Verify: `gh release view tray-latest -R madarco/agentbox --json body`
+     shows the new version.
+
+## 8. Release (only when `$ARGUMENTS` named a bump)
 
 If `$ARGUMENTS` did **not** name a bump (`patch` / `minor` / `major`), stop here so
 the user can review and edit the changelog before releasing — do not bump or push.
