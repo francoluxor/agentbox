@@ -48,7 +48,13 @@ export function detectExecutionMethod(input: ExecMethodInput): ExecMethod {
     // Missing/synthetic path (unit tests, unusual launchers) — classify on
     // the literal path instead.
   }
-  if (real.includes('/.pnpm/')) {
+  // pnpm's global dir is project-shaped (<PNPM_HOME>/global/5/node_modules/
+  // .pnpm/...), so its store segment looks exactly like a project-local
+  // dependency's — match the global dir itself, not the .pnpm store. A
+  // project-local install (node_modules/.bin shim, local .pnpm store, or a
+  // custom PNPM_HOME we can't recognize) stays `direct`: self-update must
+  // skip the package step there, never run a global add over a local dep.
+  if (real.includes('/pnpm/global/')) {
     return 'pnpm';
   }
   if (real.includes('/lib/node_modules/')) {

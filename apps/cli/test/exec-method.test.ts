@@ -62,13 +62,17 @@ describe('detectExecutionMethod', () => {
     }
   });
 
-  it('detects a pnpm global install invoked from the shell (.pnpm store, no user-agent)', () => {
-    const root = mkdtempSync(join(tmpdir(), 'agentbox-exec-pnpm-'));
+  it('detects a pnpm global install invoked from the shell (PNPM_HOME/global, no user-agent)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'agentbox-exec-pnpm-'));
     try {
+      // pnpm's global dir is project-shaped: <PNPM_HOME>/global/5 holds a
+      // node_modules/.pnpm store just like a project would.
+      const home = join(tmp, 'Library', 'pnpm');
       const script = join(
-        root,
+        home,
         'global',
         '5',
+        'node_modules',
         '.pnpm',
         '@madarco+agentbox@0.22.1',
         'node_modules',
@@ -77,16 +81,34 @@ describe('detectExecutionMethod', () => {
         'dist',
         'index.js',
       );
-      mkdirSync(join(root, 'bin'), { recursive: true });
+      mkdirSync(home, { recursive: true });
       mkdirSync(join(script, '..'), { recursive: true });
       writeFileSync(script, '');
-      symlinkSync(script, join(root, 'bin', 'agentbox'));
+      symlinkSync(script, join(home, 'agentbox'));
       expect(
-        detectExecutionMethod({ argv1: join(root, 'bin', 'agentbox'), userAgent: undefined }),
+        detectExecutionMethod({ argv1: join(home, 'agentbox'), userAgent: undefined }),
       ).toBe('pnpm');
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(tmp, { recursive: true, force: true });
     }
+  });
+
+  it('treats a project-local install as direct (no global add over a local dep)', () => {
+    // A node_modules/.bin shim resolves into the project's own store — local
+    // pnpm layout first, plain local node_modules second.
+    expect(
+      detectExecutionMethod({
+        argv1:
+          '/Users/x/proj/node_modules/.pnpm/@madarco+agentbox@0.22.1/node_modules/@madarco/agentbox/dist/index.js',
+        userAgent: undefined,
+      }),
+    ).toBe('direct');
+    expect(
+      detectExecutionMethod({
+        argv1: '/Users/x/proj/node_modules/@madarco/agentbox/dist/index.js',
+        userAgent: undefined,
+      }),
+    ).toBe('direct');
   });
 
   it('classifies on the literal path when it does not exist (no user-agent)', () => {
