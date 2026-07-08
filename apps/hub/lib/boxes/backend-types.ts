@@ -167,6 +167,11 @@ export interface HubBackend {
   // Set (or clear, when displayName is empty) a box's cosmetic display label.
   // Pure state — does not touch the container, git branch, or URL.
   rename(id: string, displayName: string): Promise<ActionResult>;
+  // Point the box's in-box browser at its web app so the VNC desktop shows the
+  // app instead of a blank X screen (the `agentbox screen` prep step). Called
+  // by open-VNC surfaces (hub UI, tray) right before opening the viewer URL.
+  // Best-effort on the browser launch; only errors when the box is unusable.
+  screen(id: string): Promise<ActionResult>;
   // Answer a pending host-action approval; resolves the parked in-box RPC.
   answerApproval(id: string, answer: 'y' | 'n'): Promise<ActionResult>;
   // Provider list enriched with base-image freshness (`baseStatus`/

@@ -133,7 +133,23 @@ export function Access({ box }: { box: Box }) {
               ) : null}
               {webUrl ? <CopyButton url={webUrl} /> : null}
               {vncUrl ? (
-                <Button variant="outline" size="sm" href={vncUrl} target="_blank" rel="noreferrer">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  href={vncUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={() => {
+                    // Fire-and-forget prep: point the in-box browser at the web
+                    // app so the VNC desktop isn't a blank X screen. The link
+                    // opens synchronously (no popup-blocker risk); Chromium
+                    // appears in the view a moment later.
+                    void fetch(`/api/v1/boxes/${encodeURIComponent(box.id)}/screen`, {
+                      method: 'POST',
+                      credentials: 'same-origin',
+                    }).catch(() => {});
+                  }}
+                >
                   <Icons.ext />
                   Open VNC
                 </Button>

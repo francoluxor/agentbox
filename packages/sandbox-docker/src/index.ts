@@ -401,7 +401,13 @@ export {
   type BoxSshSetup,
   type SshLaunchResult,
 } from './ssh.js';
-export { browserSessionActive, ensureBoxBrowser, type BoxBrowserResult } from './browser.js';
+export {
+  browserSessionActive,
+  ensureBoxBrowser,
+  ensureBoxBrowserShowingApp,
+  type BoxBrowserAppResult,
+  type BoxBrowserResult,
+} from './browser.js';
 export {
   allocateShellSessionName,
   buildShellSessionAttachArgv,

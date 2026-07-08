@@ -11,7 +11,10 @@ const AGENTS = ['claude', 'codex', 'opencode', 'none'] as const;
 // that package out of the Next bundle, like AGENTS above). The backend enforces
 // that the chosen provider is actually configured on the host.
 const PROVIDERS = ['docker', 'daytona', 'hetzner', 'vercel', 'e2b'] as const;
-export const LIFECYCLE_ACTIONS = ['start', 'pause', 'resume', 'stop', 'destroy'] as const;
+// `screen` isn't lifecycle strictly speaking — it's the open-VNC prep step
+// (point the in-box browser at the web app) — but it shares the exact
+// POST /boxes/:id/:action shape and backend dispatch.
+export const LIFECYCLE_ACTIONS = ['start', 'pause', 'resume', 'stop', 'destroy', 'screen'] as const;
 export type LifecycleAction = (typeof LIFECYCLE_ACTIONS)[number];
 
 function isObject(v: unknown): v is Record<string, unknown> {

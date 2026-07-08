@@ -101,10 +101,10 @@ export function buildOpenApi(): Record<string, unknown> {
           tags: ['Boxes'],
           summary: 'Run a lifecycle action',
           description:
-            'One of start | pause | resume | stop | destroy. start brings a stopped box back up (resumes if paused, no-op if already running); it does not restart the agent session — that happens on the next attach.',
+            'One of start | pause | resume | stop | destroy | screen. start brings a stopped box back up (resumes if paused, no-op if already running); it does not restart the agent session — that happens on the next attach. screen is the open-VNC prep step: it points the in-box browser at the box’s web app so the VNC desktop shows the app instead of a blank X screen — call it right before opening the box’s vncUrl.',
           parameters: [
             { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
-            { name: 'action', in: 'path', required: true, schema: { type: 'string', enum: ['start', 'pause', 'resume', 'stop', 'destroy'] } },
+            { name: 'action', in: 'path', required: true, schema: { type: 'string', enum: ['start', 'pause', 'resume', 'stop', 'destroy', 'screen'] } },
           ],
           responses: {
             '200': { description: 'Done', content: { 'application/json': { schema: { type: 'object', properties: { ok: { const: true } }, required: ['ok'] } } } },

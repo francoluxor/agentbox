@@ -53,9 +53,15 @@ import {
 import {
   baseFreshnessFromFingerprints,
   currentCloudBaseFingerprint,
+  openWebAppOnVncScreen,
   type BaseStatus,
 } from '@agentbox/sandbox-cloud';
-import { listBoxes, mintHostInitiatedToken, type ListedBox } from '@agentbox/sandbox-docker';
+import {
+  ensureBoxBrowserShowingApp,
+  listBoxes,
+  mintHostInitiatedToken,
+  type ListedBox,
+} from '@agentbox/sandbox-docker';
 import type {
   ActionResult,
   BoxOpResult,
@@ -919,6 +925,21 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
         await hubWriteSshConfig(box, provider);
       }),
     stop: (id) => runLifecycle(id, (box, provider) => provider.stop(box)),
+    screen: (id) =>
+      runLifecycle(id, async (box, provider) => {
+        // The open-VNC prep step: mirror `agentbox screen` so the viewer shows
+        // the box's web app, not a blank X desktop. Browser-launch failures are
+        // logged, not thrown — the viewer URL still works without it.
+        if ((box.provider ?? 'docker') === 'docker') {
+          const br = await ensureBoxBrowserShowingApp(box);
+          if (!br.up) console.warn(`[hub] screen ${box.name}: in-box browser failed: ${br.reason ?? 'unknown'}`);
+        } else {
+          const br = await openWebAppOnVncScreen(box, provider);
+          if (!br.opened && br.reason && br.reason !== 'no web service') {
+            console.warn(`[hub] screen ${box.name}: in-box browser failed: ${br.reason}`);
+          }
+        }
+      }),
     destroy: (id) =>
       runLifecycle(id, async (box, provider) => {
         await provider.destroy(box);

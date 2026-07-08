@@ -34,6 +34,7 @@ export {
 } from './sync/claude-json-overlay.js';
 export { seedGitIdentity, type SeedGitIdentityOptions } from './sync/git-identity.js';
 export { bashScript, quoteShellArg, quoteShellArgv } from './shell.js';
+export { openWebAppOnVncScreen, type CloudVncBrowserResult } from './vnc-browser.js';
 export {
   makeMockCloudBackend,
   type MockCloudBackend,
