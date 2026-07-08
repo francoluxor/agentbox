@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { detectExecutionMethod } from '../src/exec-method.js';
 import { updateCommand } from '../src/commands/update.js';
@@ -35,6 +38,62 @@ describe('detectExecutionMethod', () => {
       detectExecutionMethod({
         argv1: '/opt/homebrew/lib/node_modules/agentbox/dist/index.js',
         userAgent: 'npm/10.2.0 node/v22.0.0 darwin arm64',
+      }),
+    ).toBe('npm');
+  });
+
+  // The common real-world case: a global bin invoked straight from the shell
+  // carries NO npm user-agent, and argv1 is the bin symlink. Detection must
+  // resolve the symlink instead of misreading it as a dev checkout — that
+  // misdetection made `self-update` skip the package update entirely.
+  it('detects an npm global install invoked from the shell (bin symlink, no user-agent)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentbox-exec-npm-'));
+    try {
+      const script = join(root, 'lib', 'node_modules', '@madarco', 'agentbox', 'dist', 'index.js');
+      mkdirSync(join(root, 'bin'), { recursive: true });
+      mkdirSync(join(script, '..'), { recursive: true });
+      writeFileSync(script, '');
+      symlinkSync(script, join(root, 'bin', 'agentbox'));
+      expect(
+        detectExecutionMethod({ argv1: join(root, 'bin', 'agentbox'), userAgent: undefined }),
+      ).toBe('npm');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('detects a pnpm global install invoked from the shell (.pnpm store, no user-agent)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentbox-exec-pnpm-'));
+    try {
+      const script = join(
+        root,
+        'global',
+        '5',
+        '.pnpm',
+        '@madarco+agentbox@0.22.1',
+        'node_modules',
+        '@madarco',
+        'agentbox',
+        'dist',
+        'index.js',
+      );
+      mkdirSync(join(root, 'bin'), { recursive: true });
+      mkdirSync(join(script, '..'), { recursive: true });
+      writeFileSync(script, '');
+      symlinkSync(script, join(root, 'bin', 'agentbox'));
+      expect(
+        detectExecutionMethod({ argv1: join(root, 'bin', 'agentbox'), userAgent: undefined }),
+      ).toBe('pnpm');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('classifies on the literal path when it does not exist (no user-agent)', () => {
+    expect(
+      detectExecutionMethod({
+        argv1: '/opt/homebrew/lib/node_modules/@madarco/agentbox/dist/index.js',
+        userAgent: undefined,
       }),
     ).toBe('npm');
   });
