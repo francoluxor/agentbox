@@ -57,7 +57,10 @@ import {
   registerBoxWithRelay,
   TERM_FALLBACK_SNIPPET,
 } from '@agentbox/sandbox-docker';
-import { ensureAgentVolumesForCloud } from './sync/agent-credentials.js';
+import {
+  ensureAgentVolumesForCloud,
+  reconcileAgentCredentials,
+} from './sync/agent-credentials.js';
 import {
   cloudSnapshotName,
   currentCloudBaseFingerprint,
@@ -500,6 +503,22 @@ export function createCloudProvider(
       } catch {
         // best-effort
       }
+    }
+    // A woken box carries pause-time credentials; if another box rotated the
+    // claude refresh token meanwhile, this copy is dead. Reconcile with the
+    // host backups (newest-wins both directions; codex/opencode host-wins).
+    // Best-effort — resume/start/reconnect never fail on this. Gated by the
+    // same box.credentialSync switch as the ctl watcher (the create stamped it
+    // into the sandbox env; re-read the config here since the host flag is
+    // what the user controls).
+    try {
+      const credentialSync = (await loadEffectiveConfig(box.workspacePath)).effective.box
+        .credentialSync;
+      if (credentialSync) {
+        await reconcileAgentCredentials(backend, h, { onLog: () => {} });
+      }
+    } catch {
+      // best-effort
     }
     return next;
   }
