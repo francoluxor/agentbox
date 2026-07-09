@@ -824,6 +824,8 @@ export async function createBox(opts: CreateBoxOptions): Promise<CreatedBox> {
     AGENTBOX: '1',
     AGENTBOX_BOX_NAME: name,
     AGENTBOX_HOST_WORKSPACE: workspace,
+    // Absent = enabled; the ctl credential watcher only checks for '0'.
+    ...(effectiveBoxCfg.credentialSync === false ? { AGENTBOX_CREDENTIAL_SYNC: '0' } : {}),
     ...(opts.projectRoot ? { AGENTBOX_PROJECT_ROOT: opts.projectRoot } : {}),
     ...(projectIndex !== undefined
       ? { AGENTBOX_PROJECT_INDEX: String(projectIndex) }

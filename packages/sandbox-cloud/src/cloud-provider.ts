@@ -605,10 +605,15 @@ export function createCloudProvider(
       // the per-service preview-URL map. Best-effort: [] when there's no yaml.
       const exposeServicePorts = await readExposedServicePorts(req.workspacePath);
 
+      const credentialSyncOff =
+        (await loadEffectiveConfig(req.projectRoot ?? req.workspacePath)).effective.box
+          .credentialSync === false;
       const provisionEnv = {
         AGENTBOX_BOX_ID: id,
         AGENTBOX_BOX_NAME: name,
         AGENTBOX_BOX_KIND: 'cloud',
+        // Absent = enabled; the ctl credential watcher only checks for '0'.
+        ...(credentialSyncOff ? { AGENTBOX_CREDENTIAL_SYNC: '0' } : {}),
         // In-sandbox relay is on the box's loopback at the in-box port.
         // 8788 is distinct from the host relay's 8787 so a nested agentbox
         // run inside the box can claim :8787 without colliding.
