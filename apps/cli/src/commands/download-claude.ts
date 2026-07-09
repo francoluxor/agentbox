@@ -5,15 +5,25 @@ import {
   pullClaudeExtras,
   resolveClaudeVolume,
   SHARED_CLAUDE_VOLUME,
+  stageItemsFromVolume,
 } from '@agentbox/sandbox-docker';
-import { pullClaudeExtrasViaTransport, type PullClaudeResult } from '@agentbox/sandbox-core';
+import {
+  agentBoxConfigDir,
+  claudeStagedItems,
+  pullClaudeExtrasViaTransport,
+  stageItemsViaTransport,
+  type PullClaudeResult,
+} from '@agentbox/sandbox-core';
+import type { SyncTransport } from '@agentbox/core';
 import { resolveBoxOrExit } from '../box-ref.js';
 import { cloudTransportForPull } from './_agent-pull.js';
+import { parsePropagateFlag, runPropagateStep } from './_agent-propagate.js';
 import { handleLifecycleError } from './_errors.js';
 
 interface DownloadClaudeOpts {
   yes?: boolean;
   dryRun?: boolean;
+  propagate?: string;
 }
 
 function tag(item: { category: string; name: string }): string {
@@ -23,7 +33,7 @@ function tag(item: { category: string; name: string }): string {
 
 export const downloadClaudeCommand = new Command('claude')
   .description(
-    'Download box-installed Claude skills/plugins/agents/commands back to host ~/.claude (additive)',
+    'Download box-installed Claude skills/plugins/agents/commands back to host ~/.claude (additive), optionally propagating them to other boxes',
   )
   .argument(
     '[box]',
@@ -31,27 +41,37 @@ export const downloadClaudeCommand = new Command('claude')
   )
   .option('-y, --yes', 'skip the confirmation prompt')
   .option('--dry-run', "list new items and exit; don't write")
+  .option(
+    '--propagate <scope>',
+    'also copy the pulled items into other boxes: project|all|none (default: ask)',
+  )
   .action(async (idOrName: string | undefined, opts: DownloadClaudeOpts) => {
     try {
+      const scopeFlag = parsePropagateFlag(opts.propagate);
       const box = await resolveBoxOrExit(idOrName);
 
       let pull: (dryRun: boolean) => Promise<PullClaudeResult>;
+      let transport: SyncTransport | undefined;
+      let volume: string | undefined;
+      let image = box.image || DEFAULT_BOX_IMAGE;
       if ((box.provider ?? 'docker') !== 'docker') {
         // Cloud: read the live box FS over the provider's SyncTransport.
-        const transport = await cloudTransportForPull(box);
-        pull = (dryRun) => pullClaudeExtrasViaTransport(transport, { dryRun });
+        transport = await cloudTransportForPull(box);
+        const t = transport;
+        pull = (dryRun) => pullClaudeExtrasViaTransport(t, { dryRun });
       } else {
         // Docker: we read the claude-config *volume*, not the container, so the
         // box can be stopped — no unpause/start dance (unlike `download`).
-        const volume =
+        volume =
           box.claudeConfigVolume ?? resolveClaudeVolume({ isolate: false, boxId: box.id }).volume;
         if (volume === SHARED_CLAUDE_VOLUME) {
           log.warn(
             `Reading the shared ${SHARED_CLAUDE_VOLUME} volume — it aggregates Claude extensions installed in ANY box, not just ${box.name}.`,
           );
         }
-        const image = box.image || DEFAULT_BOX_IMAGE;
-        pull = (dryRun) => pullClaudeExtras({ volume }, { image, dryRun });
+        image = box.image || DEFAULT_BOX_IMAGE;
+        const v = volume;
+        pull = (dryRun) => pullClaudeExtras({ volume: v }, { image, dryRun });
       }
 
       const preview = await pull(true);
@@ -75,23 +95,38 @@ export const downloadClaudeCommand = new Command('claude')
         return;
       }
 
-      if (!opts.yes) {
-        const ok = await confirm({
+      const applyToHost =
+        opts.yes ||
+        (await confirm({
           message: `Download ${preview.newItems.length} new Claude extension(s) into ~/.claude? (existing items are never overwritten)`,
           initialValue: false,
-        });
-        if (!ok) {
-          log.info('cancelled');
-          return;
-        }
+        }));
+      if (applyToHost) {
+        const result = await pull(false);
+        process.stdout.write(
+          `downloaded ${result.newItems.length} extension(s)` +
+            `${result.mergedRegistries.length > 0 ? `, merged ${result.mergedRegistries.join(', ')}` : ''}` +
+            ' into ~/.claude\n',
+        );
+      } else {
+        log.info('skipped the host ~/.claude write');
       }
 
-      const result = await pull(false);
-      process.stdout.write(
-        `downloaded ${result.newItems.length} extension(s)` +
-          `${result.mergedRegistries.length > 0 ? `, merged ${result.mergedRegistries.join(', ')}` : ''}` +
-          ' into ~/.claude\n',
-      );
+      // Propagation stages from the source (volume or live box), so it works
+      // whether or not the host write above was accepted.
+      const items = claudeStagedItems(preview);
+      await runPropagateStep({
+        agent: 'claude',
+        sourceBox: box,
+        items,
+        sourceRegistries: preview.sourceRegistries,
+        stage: (stagingDir) =>
+          transport
+            ? stageItemsViaTransport(transport, agentBoxConfigDir('claude'), items, stagingDir)
+            : stageItemsFromVolume(volume!, image, items, stagingDir),
+        scopeFlag,
+        yes: opts.yes,
+      });
     } catch (err) {
       handleLifecycleError(err);
     }

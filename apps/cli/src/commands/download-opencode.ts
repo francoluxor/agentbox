@@ -5,20 +5,29 @@ import {
   pullOpencodeConfig,
   resolveOpencodeVolume,
   SHARED_OPENCODE_VOLUME,
+  stageItemsFromVolume,
 } from '@agentbox/sandbox-docker';
-import { pullOpencodeConfigViaTransport } from '@agentbox/sandbox-core';
+import {
+  agentBoxConfigDir,
+  opencodeStagedItems,
+  pullOpencodeConfigViaTransport,
+  stageItemsViaTransport,
+} from '@agentbox/sandbox-core';
+import type { SyncTransport } from '@agentbox/core';
 import { resolveBoxOrExit } from '../box-ref.js';
 import { cloudTransportForPull } from './_agent-pull.js';
+import { parsePropagateFlag, runPropagateStep } from './_agent-propagate.js';
 import { handleLifecycleError } from './_errors.js';
 
 interface DownloadOpencodeOpts {
   yes?: boolean;
   dryRun?: boolean;
+  propagate?: string;
 }
 
 export const downloadOpencodeCommand = new Command('opencode')
   .description(
-    'Download box-side OpenCode config/auth (auth.json, opencode.json, agents, commands, themes) back to host ~/.config + ~/.local/share opencode (additive)',
+    'Download box-side OpenCode config/auth (auth.json, opencode.json, agents, commands, themes) back to host ~/.config + ~/.local/share opencode (additive), optionally propagating them to other boxes',
   )
   .argument(
     '[box]',
@@ -26,27 +35,37 @@ export const downloadOpencodeCommand = new Command('opencode')
   )
   .option('-y, --yes', 'skip the confirmation prompt')
   .option('--dry-run', "list new items and exit; don't write")
+  .option(
+    '--propagate <scope>',
+    'also copy the pulled items into other boxes: project|all|none (default: ask)',
+  )
   .action(async (idOrName: string | undefined, opts: DownloadOpencodeOpts) => {
     try {
+      const scopeFlag = parsePropagateFlag(opts.propagate);
       const box = await resolveBoxOrExit(idOrName);
 
       let pull: (dryRun: boolean) => Promise<{ newItems: string[] }>;
+      let transport: SyncTransport | undefined;
+      let volume: string | undefined;
+      let image = box.image || DEFAULT_BOX_IMAGE;
       if ((box.provider ?? 'docker') !== 'docker') {
         // Cloud: read the live box FS over the provider's SyncTransport.
-        const transport = await cloudTransportForPull(box);
-        pull = (dryRun) => pullOpencodeConfigViaTransport(transport, { dryRun });
+        transport = await cloudTransportForPull(box);
+        const t = transport;
+        pull = (dryRun) => pullOpencodeConfigViaTransport(t, { dryRun });
       } else {
         // Docker: we read the opencode-config *volume*, not the container, so
         // the box can be stopped — no unpause/start dance.
-        const volume =
+        volume =
           box.opencodeConfigVolume ?? resolveOpencodeVolume({ isolate: false, boxId: box.id }).volume;
         if (volume === SHARED_OPENCODE_VOLUME) {
           log.warn(
             `Reading the shared ${SHARED_OPENCODE_VOLUME} volume — it aggregates OpenCode config from ANY box, not just ${box.name}.`,
           );
         }
-        const image = box.image || DEFAULT_BOX_IMAGE;
-        pull = (dryRun) => pullOpencodeConfig({ volume }, { image, dryRun });
+        image = box.image || DEFAULT_BOX_IMAGE;
+        const v = volume;
+        pull = (dryRun) => pullOpencodeConfig({ volume: v }, { image, dryRun });
       }
 
       const preview = await pull(true);
@@ -65,19 +84,33 @@ export const downloadOpencodeCommand = new Command('opencode')
         return;
       }
 
-      if (!opts.yes) {
-        const ok = await confirm({
+      const applyToHost =
+        opts.yes ||
+        (await confirm({
           message: `Download ${preview.newItems.length} OpenCode item(s) into ~/.config + ~/.local/share opencode? (existing items are never overwritten)`,
           initialValue: false,
-        });
-        if (!ok) {
-          log.info('cancelled');
-          return;
-        }
+        }));
+      if (applyToHost) {
+        const result = await pull(false);
+        process.stdout.write(`downloaded ${result.newItems.length} item(s)\n`);
+      } else {
+        log.info('skipped the host write');
       }
 
-      const result = await pull(false);
-      process.stdout.write(`downloaded ${result.newItems.length} item(s)\n`);
+      // Propagation stages from the source (volume or live box), so it works
+      // whether or not the host write above was accepted.
+      const items = opencodeStagedItems(preview.newItems);
+      await runPropagateStep({
+        agent: 'opencode',
+        sourceBox: box,
+        items,
+        stage: (stagingDir) =>
+          transport
+            ? stageItemsViaTransport(transport, agentBoxConfigDir('opencode'), items, stagingDir)
+            : stageItemsFromVolume(volume!, image, items, stagingDir),
+        scopeFlag,
+        yes: opts.yes,
+      });
     } catch (err) {
       handleLifecycleError(err);
     }

@@ -48,6 +48,24 @@ export {
   type PullClaudeResult,
   type FlatInventoryEntry,
 } from './agent-pull.js';
+export {
+  agentBoxConfigDir,
+  claudeStagedItems,
+  codexStagedItems,
+  opencodeStagedItems,
+  makeStagingDir,
+  removeStagingDir,
+  stageItemsViaTransport,
+  transportSettingsTarget,
+  propagateStagedSettings,
+  planPropagateTargets,
+  type StagedItem,
+  type StagedSettings,
+  type SettingsTarget,
+  type PropagateTargetResult,
+  type PropagateBoxLike,
+  type PropagatePlan,
+} from './agent-propagate.js';
 export type {
   AgentId,
   AgentSyncSpec,

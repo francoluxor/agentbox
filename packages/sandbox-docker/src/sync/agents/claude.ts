@@ -1419,11 +1419,13 @@ export async function pullClaudeExtras(
 
   // Delta + registry merges are computed host-side (the host ~/.claude is
   // directly accessible — only the volume needed a container).
-  const plan = await computeClaudePullPlan(parseClaudeInventory((inv.stdout ?? '').toString()));
+  const inventory = parseClaudeInventory((inv.stdout ?? '').toString());
+  const plan = await computeClaudePullPlan(inventory);
   const { newItems, mergedRegistries } = plan;
+  const sourceRegistries = inventory.registries;
 
   if (opts.dryRun || (newItems.length === 0 && mergedRegistries.length === 0)) {
-    return { newItems, mergedRegistries };
+    return { newItems, mergedRegistries, sourceRegistries };
   }
 
   // Apply pass: rsync each new item dir from the volume into the host
@@ -1465,5 +1467,5 @@ export async function pullClaudeExtras(
   // Registry JSONs are written host-side — only when the merge added keys.
   await writeClaudeMergedRegistries(plan);
 
-  return { newItems, mergedRegistries };
+  return { newItems, mergedRegistries, sourceRegistries };
 }

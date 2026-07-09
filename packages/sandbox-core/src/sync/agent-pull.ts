@@ -47,6 +47,13 @@ export interface PullClaudeResult {
   newItems: Array<{ category: string; name: string }>;
   /** Registry JSONs that gained box-only entries (e.g. `known_marketplaces.json`). */
   mergedRegistries: string[];
+  /**
+   * The source's raw plugin registries (container-prefixed paths), keyed
+   * `installed_plugins` / `known_marketplaces`. Carried so a subsequent
+   * propagate step can additively merge them into *other* boxes (same
+   * container prefix on both sides — no path rewrite).
+   */
+  sourceRegistries?: Record<string, unknown>;
 }
 
 /**
@@ -238,12 +245,12 @@ export async function pullClaudeExtrasViaTransport(
       `failed to inventory ${boxDir} in the box: ${inv.stderr.trim() || `exit ${String(inv.exitCode)}`}`,
     );
   }
-  const plan = await computeClaudePullPlan(parseClaudeInventory(inv.stdout), {
-    hostHome: opts.hostHome,
-  });
+  const inventory = parseClaudeInventory(inv.stdout);
+  const plan = await computeClaudePullPlan(inventory, { hostHome: opts.hostHome });
   const result: PullClaudeResult = {
     newItems: plan.newItems,
     mergedRegistries: plan.mergedRegistries,
+    sourceRegistries: inventory.registries,
   };
   if (opts.dryRun || (plan.newItems.length === 0 && plan.mergedRegistries.length === 0)) {
     return result;
