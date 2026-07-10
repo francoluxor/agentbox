@@ -135,6 +135,13 @@ export function buildBootstrapEnv(args: KickCloudBootstrapArgs): {
   if (lease) {
     boxEnvFile.push(`AGENTBOX_GIT_LEASE=1`);
   }
+  // `direct`: the box holds a copy of the user's git credentials (dropped by
+  // carry at create time). The login-shell `git push`/`fetch` runs real git
+  // against the credentialed remote — no relay, no host. Works with the PC off.
+  // (gh/PR ops still route through the relay in v1: the box has no real gh.)
+  if (pushMode === 'direct') {
+    boxEnvFile.push(`AGENTBOX_GIT_DIRECT=1`);
+  }
 
   return { env, boxEnvFile };
 }

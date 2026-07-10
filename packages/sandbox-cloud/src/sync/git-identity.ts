@@ -56,6 +56,55 @@ export async function seedGitIdentity(
   log(`git: configured committer identity ${name} <${email}>`);
 }
 
+/**
+ * Configure a cloud box to use git credentials copied INTO it (`git.pushMode=
+ * direct` / `--with-credentials`). The secret files themselves (`~/.git-credentials`,
+ * the SSH key, gh `hosts.yml`) are dropped by the carry apply path; this sets the
+ * git config that makes them take effect:
+ *
+ * - `credential.helper store` so an HTTPS `git push`/`fetch` reads the token from
+ *   the carried `~/.git-credentials`.
+ * - `core.sshCommand` with `StrictHostKeyChecking=accept-new` so an SSH remote's
+ *   first push doesn't hang on the host-key prompt (the box is non-interactive).
+ * - commit signing (SSH format) mirrored from the host, rewriting a host
+ *   `user.signingkey` PATH to the box location the key was carried to
+ *   (`/home/vscode/.ssh/<basename>`). A non-path (literal `key::…`) value is set
+ *   verbatim. GPG-format signing is skipped (v1 copies SSH signing keys only).
+ *
+ * Idempotent (re-runs on resume). Best-effort: a failure never blocks the box.
+ */
+export async function seedGitCredentials(
+  backend: CloudBackend,
+  handle: CloudHandle,
+  opts: SeedGitIdentityOptions = {},
+): Promise<void> {
+  const log = opts.onLog ?? (() => {});
+  const cmds: string[] = [
+    `git config --global credential.helper store`,
+    `git config --global core.sshCommand ${quoteShellArg('ssh -o StrictHostKeyChecking=accept-new')}`,
+  ];
+
+  const gpgsign = (await readHostGitConfig('commit.gpgsign', opts.hostRepo))?.toLowerCase();
+  const format = (await readHostGitConfig('gpg.format', opts.hostRepo))?.toLowerCase();
+  const signingKey = await readHostGitConfig('user.signingkey', opts.hostRepo);
+  if (gpgsign === 'true' && signingKey && format === 'ssh') {
+    // Rewrite a filesystem path to the box location the key was carried to; a
+    // literal `key::ssh-…` value (or a bare public-key string) is set verbatim.
+    const looksLikePath = signingKey.includes('/') && !signingKey.startsWith('key::');
+    const boxKey = looksLikePath ? `/home/vscode/.ssh/${signingKey.split('/').pop() ?? ''}` : signingKey;
+    cmds.push(`git config --global gpg.format ssh`);
+    cmds.push(`git config --global user.signingkey ${quoteShellArg(boxKey)}`);
+    cmds.push(`git config --global commit.gpgsign true`);
+  }
+
+  const r = await backend.exec(handle, bashScript(cmds.join(' && ')));
+  if (r.exitCode !== 0) {
+    log(`git: credential config failed (exit ${String(r.exitCode)}): ${(r.stderr || r.stdout).trim()}`);
+    return;
+  }
+  log('git: configured box-held credentials (direct push mode)');
+}
+
 /** Read a host git config value (effective: system + global + repo-local). */
 async function readHostGitConfig(key: string, hostRepo?: string): Promise<string | null> {
   const args = hostRepo ? ['-C', hostRepo, 'config', key] : ['config', key];

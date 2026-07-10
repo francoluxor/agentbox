@@ -59,6 +59,7 @@ import {
 import { cloudAgentAttach, cloudAgentStartDetached } from './_cloud-attach.js';
 import { cloudAgentCreate } from './_cloud-agent-create.js';
 import { runCarryGate, runQueuedCarryGate } from '../lib/carry-gate.js';
+import { resolveGitCredsCarry } from '../lib/git-creds-gate.js';
 import { FromBranchError, UseBranchError, resolveBranchSelection } from '../lib/from-branch.js';
 import { providerForBox, providerForCreate } from '../provider/registry.js';
 import {
@@ -188,6 +189,10 @@ interface ClaudeCreateOptions {
   carryYes?: boolean;
   /** --carry <mode>: 'skip' disables carry for this run (also AGENTBOX_CARRY=skip). */
   carry?: 'skip' | 'ask';
+  /** --with-credentials: copy git credentials into the box (git.pushMode=direct); cloud only. */
+  withCredentials?: boolean;
+  /** --with-credentials-yes (or AGENTBOX_WITH_CREDENTIALS_YES=1): auto-approve the copy prompt. */
+  withCredentialsYes?: boolean;
   vnc?: boolean; // commander: --no-vnc => false; default true (undefined treated as true)
   resync?: boolean; // commander: --no-resync => false; default true (config box.resyncOnStart)
   sharedDockerCache?: boolean;
@@ -246,6 +251,7 @@ function buildClaudeCliOverrides(opts: ClaudeCreateOptions): Partial<UserConfig>
   if (Object.keys(box).length > 0) out.box = box;
   if (Object.keys(claude).length > 0) out.claude = claude;
   if (opts.portless !== undefined) out.portless = { enabled: opts.portless };
+  if (opts.withCredentials === true) out.git = { pushMode: 'direct' };
   const attachIn = resolveAttachInOption(opts);
   if (attachIn !== undefined) out.attach = { openIn: attachIn };
   return out;
@@ -456,6 +462,14 @@ export const claudeCommand = new Command('claude')
     'ask',
   )
   .option(
+    '--with-credentials',
+    "copy your git credentials (token + SSH/signing key) INTO the box so it can push/pull/sign on its own with your PC off. DANGEROUS: credentials then live in the box and its snapshots. Cloud providers only; you'll be asked to confirm. Sets git.pushMode=direct.",
+  )
+  .option(
+    '--with-credentials-yes',
+    'auto-approve the --with-credentials copy prompt (also AGENTBOX_WITH_CREDENTIALS_YES=1). Required for non-TTY use.',
+  )
+  .option(
     '--isolate-claude-config',
     'use a per-box ~/.claude volume instead of the shared agentbox-claude-config',
   )
@@ -617,6 +631,14 @@ export const claudeCommand = new Command('claude')
     const providerName = opts.provider ?? cfg.effective.box.provider ?? 'docker';
     const isCloud = providerName !== 'docker';
 
+    if (cfg.effective.git.pushMode === 'direct' && !isCloud) {
+      log.error(
+        'git.pushMode=direct / --with-credentials is not applicable to docker boxes (they run on your host and bind-mount the host .git). Use a cloud provider (e.g. --provider hetzner|e2b|vercel|daytona).',
+      );
+      cmdLog.close();
+      process.exit(1);
+    }
+
     // When a control plane is configured, make sure this project's repo is
     // authorized on its GitHub App so the box can lease push tokens.
     await ensureProjectRepoOnControlPlane({
@@ -651,9 +673,17 @@ export const claudeCommand = new Command('claude')
       // Carry gate runs here on the host (same gate as the foreground path) so
       // the user approves the host-secrets copy while submitting; the approved
       // entries ride the queue job and the worker applies them at create time.
-      const carryForQueue = await runQueuedCarryGate({
+      const carryForQueue = await resolveGitCredsCarry({
+        pushMode: cfg.effective.git.pushMode,
         projectRoot,
-        opts,
+        existing: await runQueuedCarryGate({
+          projectRoot,
+          opts,
+          onLog: (line) => cmdLog.write(line),
+          onClose: () => cmdLog.close(),
+        }),
+        yes: !!opts.yes,
+        withCredentialsYes: opts.withCredentialsYes ? true : undefined,
         onLog: (line) => cmdLog.write(line),
         onClose: () => cmdLog.close(),
       });
@@ -767,6 +797,18 @@ export const claudeCommand = new Command('claude')
       cmdLog.close();
       process.exit(1);
     }
+
+    // git.pushMode=direct (--with-credentials): copy the user's git credentials
+    // into the box (gated), riding the same carry apply path.
+    carryEntries = await resolveGitCredsCarry({
+      pushMode: cfg.effective.git.pushMode,
+      projectRoot,
+      existing: carryEntries,
+      yes: !!opts.yes,
+      withCredentialsYes: opts.withCredentialsYes ? true : undefined,
+      onLog: (line) => cmdLog.write(line),
+      onClose: () => cmdLog.close(),
+    });
 
     // First-run wizard: when no agentbox.yaml exists, offer to inject an
     // initial user-message so claude reads /agentbox-setup and writes one.

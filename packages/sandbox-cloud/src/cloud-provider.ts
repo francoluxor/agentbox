@@ -76,6 +76,7 @@ import { downloadFromCloudBox, pullCloudDirContents, uploadToCloudBox } from './
 import { kickCloudBootstrap } from './bootstrap-launch.js';
 import { readGitOriginUrl, registerBoxWithPlane } from './plane-register.js';
 import { quoteShellArgv } from './shell.js';
+import { seedGitCredentials } from './sync/git-identity.js';
 import { seedCloudWorkspace } from './sync/workspace-seed.js';
 import type { SeedCloudWorkspaceResult } from './sync/workspace-seed.js';
 
@@ -805,6 +806,16 @@ export function createCloudProvider(
           if (result.applied.length > 0) {
             carrySummary = { count: result.applied.length, entries: result.applied };
           }
+        }
+
+        // git.pushMode=direct: the credential files were just carried in; wire
+        // the git config (credential.helper, ssh host-key policy, SSH signing)
+        // that makes the box push/pull/sign with them, with the host off.
+        if (req.gitPushMode === 'direct') {
+          await seedGitCredentials(backend, handle, {
+            hostRepo: req.workspacePath,
+            onLog: log,
+          });
         }
 
         // Per-box VNC password (default-on, matching Docker). Threaded into the

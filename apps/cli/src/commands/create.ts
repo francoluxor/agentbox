@@ -18,6 +18,7 @@ import {
 import { Command } from 'commander';
 import { execSync, spawnSync } from 'node:child_process';
 import { runCarryGate } from '../lib/carry-gate.js';
+import { resolveGitCredsCarry } from '../lib/git-creds-gate.js';
 import { cloudSizingProviderOptions } from '../lib/cloud-sizing.js';
 import { FromBranchError, UseBranchError, resolveBranchSelection } from '../lib/from-branch.js';
 import { openCommandLog } from '../lib/log-file.js';
@@ -80,6 +81,10 @@ interface CreateOptions {
   verbose?: boolean;
   /** --no-credential-sync => false; default true (config box.credentialSync). */
   credentialSync?: boolean;
+  /** --with-credentials: copy git credentials into the box (git.pushMode=direct); cloud only. */
+  withCredentials?: boolean;
+  /** --with-credentials-yes (or AGENTBOX_WITH_CREDENTIALS_YES=1): auto-approve the copy prompt. */
+  withCredentialsYes?: boolean;
 }
 
 function buildCliOverrides(opts: CreateOptions): Partial<UserConfig> {
@@ -96,6 +101,9 @@ function buildCliOverrides(opts: CreateOptions): Partial<UserConfig> {
   const out: Partial<UserConfig> = {};
   if (Object.keys(box).length > 0) out.box = box;
   if (opts.portless !== undefined) out.portless = { enabled: opts.portless };
+  // --with-credentials selects the direct push mode (box holds a copy of your
+  // git credentials). The actual copy is gated by a confirmation prompt later.
+  if (opts.withCredentials === true) out.git = { pushMode: 'direct' };
   return out;
 }
 
@@ -232,6 +240,14 @@ export const createCommand = new Command('create')
     'disable automatic credential sync for this box (the in-box watcher that fans refreshed agent tokens out to your other boxes)',
   )
   .option(
+    '--with-credentials',
+    "copy your git credentials (token + SSH/signing key) INTO the box so it can push/pull/sign entirely on its own -- it keeps working with your PC off, needs no hub. DANGEROUS: the credentials then live inside the box and in any snapshot of it. Cloud providers only; you'll be asked to confirm. Sets git.pushMode=direct.",
+  )
+  .option(
+    '--with-credentials-yes',
+    'auto-approve the --with-credentials copy prompt (also AGENTBOX_WITH_CREDENTIALS_YES=1). Required for non-TTY use.',
+  )
+  .option(
     '-v, --verbose',
     'also stream the raw provider output (docker build / Daytona snapshot create) to stderr. The same content always lands in ~/.agentbox/logs/create.log — pass -v when you want to watch it live without tailing the log.',
   )
@@ -253,6 +269,16 @@ export const createCommand = new Command('create')
       /* best-effort project registration */
     }
     const providerName = opts.provider ?? cfg.effective.box.provider ?? 'docker';
+    // `direct` push mode (box holds a copy of your git credentials) is only
+    // meaningful for cloud boxes: a docker box runs on your host machine and
+    // bind-mounts the host `.git`, so it is never independent of the host.
+    if (cfg.effective.git.pushMode === 'direct' && providerName === 'docker') {
+      log.error(
+        'git.pushMode=direct / --with-credentials is not applicable to docker boxes (they run on your host and bind-mount the host .git). Use a cloud provider (e.g. --provider hetzner|e2b|vercel|daytona).',
+      );
+      cmdLog.close();
+      process.exit(1);
+    }
     const checkpointRef = resolveCheckpointRef(
       opts,
       resolveDefaultCheckpoint(
@@ -323,6 +349,20 @@ export const createCommand = new Command('create')
       cmdLog.close();
       process.exit(1);
     }
+
+    // git.pushMode=direct (--with-credentials): copy the user's git credentials
+    // into the box so it pushes/pulls/signs on its own (PC-off). Gated by its
+    // own confirmation + security warning; the approved secret files ride the
+    // same carry apply path as the carry: block above.
+    carryEntries = await resolveGitCredsCarry({
+      pushMode: cfg.effective.git.pushMode,
+      projectRoot,
+      existing: carryEntries,
+      yes: !!opts.yes,
+      withCredentialsYes: opts.withCredentialsYes ? true : undefined,
+      onLog: (line) => cmdLog.write(line),
+      onClose: () => cmdLog.close(),
+    });
 
     // First-run wizard: when no agentbox.yaml exists, optionally hand off to
     // `agentbox claude` so the agent can interactively generate one. The

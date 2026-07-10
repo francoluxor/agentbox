@@ -34,11 +34,16 @@ export type ClaudeInstallMethod = 'native' | 'npm';
  * - `lease` — the relay/plane leases a short-lived GitHub-App token and the box
  *   pushes directly with it (keeps working with the laptop off). Needs a
  *   reachable relay/plane with a GitHub App configured.
+ * - `direct` — the box holds a COPY of your git credentials (token + SSH key)
+ *   and pushes/pulls/signs entirely on its own, so it keeps working with the
+ *   laptop off and needs no hub. Selected via `--with-credentials`, which copies
+ *   the credentials in behind a confirmation prompt. Dangerous: the credentials
+ *   live inside the box and in any snapshot/checkpoint of it. Cloud boxes only.
  * - `auto` (default) — lease when a control plane is configured for the box
  *   (`relay.controlPlaneUrl`), else relay. Today's behavior.
  * Docker boxes ignore this (always `relay` — they bind-mount the host `.git`).
  */
-export type GitPushMode = 'auto' | 'relay' | 'lease';
+export type GitPushMode = 'auto' | 'relay' | 'lease' | 'direct';
 /** Where `agentbox claude|codex|opencode` opens the attached session when the host
  *  shell is running inside tmux, cmux, Herdr, or iTerm2. `same` keeps today's inline behavior. */
 export type AttachOpenIn = 'split' | 'window' | 'tab' | 'same';
@@ -864,9 +869,9 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
   {
     key: 'git.pushMode',
     type: 'enum',
-    enumValues: ['auto', 'relay', 'lease'] as const,
+    enumValues: ['auto', 'relay', 'lease', 'direct'] as const,
     description:
-      "How a box's `git push` reaches GitHub: `relay` (the host relay pushes with your host credentials — they never enter the box), `lease` (the relay/plane leases a short-lived GitHub-App token and the box pushes directly, so it works with the laptop off), or `auto` (default — lease when `relay.controlPlaneUrl` is set for the box, else relay). Only affects cloud boxes; docker boxes always use `relay`. Forcing `relay` needs a reachable host relay for the box; forcing `lease` needs a reachable relay/plane with a GitHub App.",
+      "How a box's `git push` reaches GitHub: `relay` (the host relay pushes with your host credentials — they never enter the box), `lease` (the relay/plane leases a short-lived GitHub-App token and the box pushes directly, so it works with the laptop off), `direct` (the box holds a COPY of your git credentials and pushes/pulls/signs entirely on its own — needs no host or hub, but the credentials live inside the box and its snapshots; set via `--with-credentials`, which copies them in behind a confirmation), or `auto` (default — lease when `relay.controlPlaneUrl` is set for the box, else relay). Only affects cloud boxes; docker boxes always use `relay`. Forcing `relay` needs a reachable host relay for the box; forcing `lease` needs a reachable relay/plane with a GitHub App; `direct` needs credentials to have been copied into the box at create time.",
   },
   {
     key: 'vnc.containerPort',

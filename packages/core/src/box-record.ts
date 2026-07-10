@@ -166,11 +166,12 @@ export interface CloudBoxFields {
    */
   controlPlaneUrl?: string;
   /**
-   * Git push routing (`git.pushMode`): `'auto' | 'relay' | 'lease'`. Persisted
-   * (not re-derived from config) so a resume re-kick re-threads `AGENTBOX_GIT_LEASE`
-   * correctly even if the host config changed. Mirrors config's `GitPushMode`.
+   * Git push routing (`git.pushMode`): `'auto' | 'relay' | 'lease' | 'direct'`.
+   * Persisted (not re-derived from config) so a resume re-kick re-threads
+   * `AGENTBOX_GIT_LEASE` / `AGENTBOX_GIT_DIRECT` correctly even if the host
+   * config changed. Mirrors config's `GitPushMode`.
    */
-  gitPushMode?: 'auto' | 'relay' | 'lease';
+  gitPushMode?: 'auto' | 'relay' | 'lease' | 'direct';
 }
 
 /**

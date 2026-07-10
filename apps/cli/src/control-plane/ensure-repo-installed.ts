@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execa } from 'execa';
+import type { GitPushMode } from '@agentbox/config';
 import { GitHubAppLeaser, loadGitHubAppConfig, parseGitRemote } from '@agentbox/relay';
 import { hostOpenCommand } from '@agentbox/sandbox-core';
 
@@ -128,15 +129,16 @@ function writeReposState(state: ReposState): void {
  */
 export async function ensureProjectRepoOnControlPlane(args: {
   controlPlaneUrl: string | undefined;
-  gitPushMode?: 'auto' | 'relay' | 'lease';
+  gitPushMode?: GitPushMode;
   projectRoot: string;
   yes?: boolean;
 }): Promise<void> {
   const { controlPlaneUrl, projectRoot } = args;
   if (!controlPlaneUrl) return;
-  // `relay` push mode never leases, so the repo doesn't need to be authorized on
-  // the control plane's GitHub App — skip the check/nag.
-  if (args.gitPushMode === 'relay') return;
+  // `relay` and `direct` push modes never lease from the plane, so the repo
+  // doesn't need to be authorized on the control plane's GitHub App — skip the
+  // check/nag. (`direct` uses credentials copied straight into the box.)
+  if (args.gitPushMode === 'relay' || args.gitPushMode === 'direct') return;
   const ownerRepo = await resolveOwnerRepo(projectRoot);
   if (!ownerRepo) return;
   const { owner, repo } = ownerRepo;

@@ -237,5 +237,13 @@ async function pollParkedResult(raw202: string, prefix: string): Promise<RelayRp
     }
     // null (transient transport error) or pending → keep polling.
   }
-  return { exitCode: 124, stdout: '', stderr: `${prefix}: timed out waiting for host approval\n` };
+  return {
+    exitCode: 124,
+    stdout: '',
+    stderr:
+      `${prefix}: timed out after 10m waiting for the host.\n` +
+      `This action runs on your PC (host relay): either your PC/relay isn't running, or a host\n` +
+      `approval prompt went unanswered. Operations like cp, download, and checkpoint need your PC\n` +
+      `on even for an independent (git.pushMode=direct) box — only git push/pull run in the box.\n`,
+  };
 }
