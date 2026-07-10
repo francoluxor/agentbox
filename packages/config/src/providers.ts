@@ -56,7 +56,7 @@ export const PROVIDERS = [
     rebuildMinutes: '7',
     blurb: 'Daytona Cloud sandboxes',
     sizeDesc:
-      'Per-provider override of `box.size` for daytona. `cpu-memory-disk` GB spec (e.g. `4-8-20`). Only honored on the image/Dockerfile create path; Daytona rejects custom resources on snapshot-resume.',
+      'Per-provider override of `box.size` for daytona. `cpu-memory-disk` GB spec (e.g. `4-8-20`). Only honored on the image/Dockerfile create path; on the snapshot path the size is fixed at bake time (Daytona rejects custom resources on snapshot-resume).',
     imageDesc:
       'Per-provider override of `box.image` for daytona (named snapshot, e.g. `agentbox-base-<fingerprint>`). Written by `agentbox prepare --provider daytona`.',
   },
@@ -80,7 +80,7 @@ export const PROVIDERS = [
     rebuildMinutes: '5-10',
     blurb: 'Vercel Sandboxes',
     sizeDesc:
-      'Per-provider override of `box.size` for vercel. Reserved — vercel sizing is controlled via `box.vercelVcpus`.',
+      'Per-provider override of `box.size` for vercel. vCPU count — one of `1`, `2`, `4`, `8` (Vercel couples RAM at 2048 MB/vCPU). Default 2.',
     imageDesc:
       'Per-provider override of `box.image` for vercel (snapshot id, e.g. `snap_…`). Written by `agentbox prepare --provider vercel`.',
   },
@@ -92,7 +92,7 @@ export const PROVIDERS = [
     rebuildMinutes: '2',
     blurb: 'E2B microVMs',
     sizeDesc:
-      'Per-provider override of `box.size` for e2b. Reserved — e2b sizing is template-level (set at `agentbox prepare --provider e2b` time via --vcpus / --memory).',
+      'Per-provider override of `box.size` for e2b. `cpu-memory` GB spec (e.g. `4-8`). Template-level: baked by `agentbox prepare --provider e2b --size <spec>`; E2B rejects per-create resources.',
     imageDesc:
       'Per-provider override of `box.image` for e2b (template id or `name:tag`, e.g. `agentbox-base:latest`). Written by `agentbox prepare --provider e2b`.',
   },

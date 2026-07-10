@@ -70,9 +70,10 @@ export interface UserConfig {
     /**
      * Generic VM-size fallback for cloud providers. Provider-interpreted:
      * Hetzner = server type string (e.g. `cx33`); Daytona = `cpu-memory-disk`
-     * GB spec (e.g. `4-8-20`). Per-provider `size{Provider}` wins over this.
-     * Docker/Vercel ignore it (Docker uses `memory`/`cpus`/`disk`; Vercel uses
-     * `vercelVcpus`).
+     * GB spec (e.g. `4-8-20`); Vercel = vCPU count (`1`/`2`/`4`/`8`);
+     * E2B = `cpu-memory` GB spec (e.g. `4-8`), applied at `prepare` time.
+     * Per-provider `size{Provider}` wins over this. Docker ignores it (it uses
+     * `memory`/`cpus`/`disk`).
      */
     size?: string;
     sizeDocker?: string;
@@ -113,7 +114,7 @@ export interface UserConfig {
     pidsLimit?: number;
     disk?: string;
     bundleDepth?: number;
-    vercelVcpus?: number;
+    hetznerLocation?: string;
     vercelTimeoutMs?: number;
     vercelNetworkPolicy?: string;
     e2bTimeoutMs?: number;
@@ -266,7 +267,7 @@ export interface EffectiveConfig {
     pidsLimit: number;
     disk: string;
     bundleDepth: number | undefined;
-    vercelVcpus: number;
+    hetznerLocation: string;
     vercelTimeoutMs: number;
     vercelNetworkPolicy: string;
     e2bTimeoutMs: number;
@@ -426,7 +427,7 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     pidsLimit: 0,
     disk: '',
     bundleDepth: undefined,
-    vercelVcpus: 2,
+    hetznerLocation: 'nbg1',
     vercelTimeoutMs: 2_700_000,
     vercelNetworkPolicy: '',
     e2bTimeoutMs: 2_700_000,
@@ -595,7 +596,7 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     key: 'box.size',
     type: 'string',
     description:
-      'Default VM size for cloud providers. Provider-interpreted: hetzner = server type (e.g. `cx33`); daytona = `cpu-memory-disk` GB (e.g. `4-8-20`). Used as fallback when no per-provider override is set. Docker/Vercel ignore it.',
+      'Default VM size for cloud providers. Provider-interpreted: hetzner = server type (e.g. `cx33`); daytona = `cpu-memory-disk` GB (e.g. `4-8-20`); vercel = vCPU count (1, 2, 4, 8); e2b = `cpu-memory` GB (e.g. `4-8`). Used as fallback when no per-provider override is set. Docker ignores it.',
   },
   ...perProviderSizeKeys(),
   {
@@ -712,10 +713,10 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
       'Cap git bundle history shipped to cloud sandboxes (daytona, hetzner). 0 = full history. Unset = adaptive default (last 200 commits; re-bundle at 100 if the bundle exceeds 20 MB). Ignored for docker (which bind-mounts .git/).',
   },
   {
-    key: 'box.vercelVcpus',
-    type: 'int',
+    key: 'box.hetznerLocation',
+    type: 'string',
     description:
-      'vCPUs for new --provider vercel boxes (Vercel couples RAM at 2048 MB/vCPU). Default 2. Vercel only accepts specific counts (e.g. 1, 2, 4, 8) — an unsupported value fails create with a 400. Vercel-only; ignored by other providers.',
+      'Hetzner datacenter location new --provider hetzner boxes are created in (e.g. `nbg1`, `fsn1`, `hel1`, `ash`). Default `nbg1`. Overridable per-create with `--location`. Hetzner-only; ignored by other providers.',
   },
   {
     key: 'box.vercelTimeoutMs',

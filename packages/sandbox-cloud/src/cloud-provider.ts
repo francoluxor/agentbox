@@ -542,15 +542,10 @@ export function createCloudProvider(
       const image = opts.provisionImage
         ? await opts.provisionImage(req)
         : (req.image ?? FALLBACK_IMAGE);
-      // Per-create overrides (currently vercel's box.vercelVcpus / vercelTimeoutMs,
-      // threaded through providerOptions). Fall back to the provider's static
-      // defaults so daytona/hetzner are unaffected.
-      const baseResources = opts.defaultResources ?? { cpu: 2, memory: 4, disk: 8 };
-      const vcpuOverride = req.providerOptions?.['vcpus'];
-      const resources =
-        typeof vcpuOverride === 'number' && vcpuOverride > 0
-          ? { ...baseResources, cpu: vcpuOverride }
-          : baseResources;
+      // Per-create overrides threaded through providerOptions (see the CLI's
+      // `cloudSizingProviderOptions`). Fall back to the provider's static
+      // defaults.
+      const resources = opts.defaultResources ?? { cpu: 2, memory: 4, disk: 8 };
       const timeoutOverride = req.providerOptions?.['timeoutMs'];
       const timeoutMs =
         typeof timeoutOverride === 'number' && timeoutOverride > 0 ? timeoutOverride : undefined;
@@ -561,11 +556,17 @@ export function createCloudProvider(
           : undefined;
       // Generic VM-size string, resolved per-provider by the call site
       // (`resolveBoxSize` + `--size` flag). Each backend interprets it natively
-      // (hetzner: server type; daytona: cpu-mem-disk GB); empty/undefined ⇒
-      // backend uses its built-in default.
+      // (hetzner: server type; daytona: cpu-mem-disk GB; vercel: vCPUs);
+      // empty/undefined ⇒ backend uses its built-in default.
       const sizeOpt = req.providerOptions?.['size'];
       const size =
         typeof sizeOpt === 'string' && sizeOpt.trim() !== '' ? sizeOpt.trim() : undefined;
+      // Datacenter / region (hetzner's `--location` / `box.hetznerLocation`).
+      const locationOpt = req.providerOptions?.['location'];
+      const location =
+        typeof locationOpt === 'string' && locationOpt.trim() !== ''
+          ? locationOpt.trim()
+          : undefined;
 
       // Per-box tokens: `relayToken` authenticates the in-box agent to its
       // in-sandbox relay (`/events`, `/rpc` bearer); `bridgeToken` separately
@@ -656,6 +657,7 @@ export function createCloudProvider(
           snapshot,
           resources,
           size,
+          location,
           timeoutMs,
           exposePorts: exposeServicePorts,
           networkPolicy,

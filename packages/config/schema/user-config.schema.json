@@ -45,7 +45,7 @@
         "pidsLimit": { "type": "integer", "minimum": 0 },
         "disk": { "type": "string" },
         "bundleDepth": { "type": "integer", "minimum": 0 },
-        "vercelVcpus": { "type": "integer", "minimum": 1 },
+        "hetznerLocation": { "type": "string", "minLength": 1 },
         "vercelTimeoutMs": { "type": "integer", "minimum": 1 },
         "vercelNetworkPolicy": { "type": "string" },
         "cpMaxBytes": { "type": "integer", "minimum": 1 }

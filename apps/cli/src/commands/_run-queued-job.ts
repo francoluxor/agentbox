@@ -49,6 +49,7 @@ import { toSyncKind } from '@agentbox/core';
 import { resolveClaudeAuth } from '../auth.js';
 import { claudeCredStatus } from '../lib/queue/assert-creds.js';
 import { runClaudeLogin } from '../lib/claude-login-run.js';
+import { cloudSizingProviderOptions } from '../lib/cloud-sizing.js';
 import { resolveLimits } from '../limits.js';
 import { openCommandLog } from '../lib/log-file.js';
 import { buildPromptArgs } from '../lib/queue/build-prompt-args.js';
@@ -520,6 +521,9 @@ async function runCloudJob(
     carry: opts.carry,
     projectRoot,
     onLog: (line) => log.write(line),
+    // Same size / location / session-lifetime resolution the foreground
+    // `agentbox create` does, so a queued box isn't sized differently.
+    providerOptions: cloudSizingProviderOptions(providerName, cfg.effective),
   });
   log.write(`box created: ${result.record.id}`);
 
