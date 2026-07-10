@@ -84,6 +84,32 @@ case "$1" in
     ;;
   clone)
     shift
+    # A clone whose source is a filesystem path or `file://` URL needs no host
+    # credentials, and `agentbox-ctl git clone` only speaks github — so relaying
+    # it would be wrong, not merely strict. Fall through to the real git before
+    # the flag gate. agentbox's own cloud workspace seeding does exactly this
+    # (`git clone --no-checkout --quiet file:///workspace <tmp>`), which is how
+    # `agentbox create --provider <cloud>` runs from inside a box.
+    # Only --branch/--depth take a separate value; any other `-*` is a bare flag
+    # here (strict_flags rejects it below if we take the relay path).
+    clone_src=''
+    skip_value=0
+    for arg in "$@"; do
+      if [ "$skip_value" = "1" ]; then
+        skip_value=0
+        continue
+      fi
+      case "$arg" in
+        --branch|--depth) skip_value=1 ;;
+        --) ;;
+        -*) ;;
+        *) clone_src="$arg"; break ;;
+      esac
+    done
+    case "$clone_src" in
+      file://*|/*|./*|../*|~/*) exec "$REAL_GIT" clone "$@" ;;
+    esac
+
     strict_flags "git clone" "--branch|--depth" "$@"
     # Walk argv: split into (url, dir, flags) so we can hand them to ctl
     # in commander's expected shape (positionals first, then options).
