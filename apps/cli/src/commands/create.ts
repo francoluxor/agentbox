@@ -442,6 +442,7 @@ export const createCommand = new Command('create')
         envFilesToImport: wiz.envFilesToImport,
         carry: carryEntries,
         vnc: { enabled: cfg.effective.box.vnc },
+        credentialSync: cfg.effective.box.credentialSync,
         limits: resolveLimits(cfg.effective.box, opts),
         bundleDepth: cfg.effective.box.bundleDepth,
         fromBranch,

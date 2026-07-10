@@ -85,6 +85,7 @@ export const dockerProvider: Provider = {
       portlessStateDir: po.portlessStateDir,
       projectRoot: req.projectRoot,
       limits: req.limits ?? undefined,
+      credentialSync: req.credentialSync,
     };
     const result = await createBox(opts);
     return {

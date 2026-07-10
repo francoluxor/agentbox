@@ -624,9 +624,12 @@ export function createCloudProvider(
       // the per-service preview-URL map. Best-effort: [] when there's no yaml.
       const exposeServicePorts = await readExposedServicePorts(req.workspacePath);
 
+      // Caller-resolved value wins (it sees CLI overrides like
+      // --no-credential-sync that this local config load can't).
       const credentialSyncOff =
-        (await loadEffectiveConfig(req.projectRoot ?? req.workspacePath)).effective.box
-          .credentialSync === false;
+        (req.credentialSync ??
+          (await loadEffectiveConfig(req.projectRoot ?? req.workspacePath)).effective.box
+            .credentialSync) === false;
       const provisionEnv = {
         AGENTBOX_BOX_ID: id,
         AGENTBOX_BOX_NAME: name,
