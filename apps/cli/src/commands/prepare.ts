@@ -50,6 +50,7 @@ interface PrepareOptions {
   yes?: boolean;
   status?: boolean;
   claudeInstall?: string;
+  location?: string;
 }
 
 interface DockerStatus {
@@ -302,6 +303,11 @@ export interface RunPrepareOptions {
    * `box.claudeInstall` config key; falls back to the effective config.
    */
   claudeInstall?: 'native' | 'npm';
+  /**
+   * Datacenter / region the bake VPS runs in (Hetzner only). CLI override of
+   * `box.hetznerLocation`; other providers ignore it.
+   */
+  location?: string;
 }
 
 /**
@@ -341,6 +347,8 @@ export async function runPrepare(
   const registry = providerName === 'docker' ? cfg?.effective.box.imageRegistry : undefined;
   // Bake-time Claude install method: CLI flag wins over the config key.
   const claudeInstall = opts.claudeInstall ?? cfg?.effective.box.claudeInstall ?? 'native';
+  // Bake-time datacenter (Hetzner only): CLI flag wins over box.hetznerLocation.
+  const location = opts.location?.trim() || cfg?.effective.box.hetznerLocation || undefined;
   const sp = spinner();
   sp.start(`preparing ${providerName}…`);
   try {
@@ -351,6 +359,7 @@ export async function runPrepare(
       allowPull: opts.build ? false : undefined,
       registry,
       claudeInstall,
+      location,
       onLog: (line) => sp.message(line.slice(0, 80)),
     });
     if (result.snapshotName !== undefined) {
@@ -437,6 +446,10 @@ export const prepareCommand = new Command('prepare')
     '--claude-install <mode>',
     'install Claude Code into the base image via the native installer (default) or npm (native | npm)',
   )
+  .option(
+    '--location <name>',
+    'Hetzner datacenter the bake VPS runs in (e.g. nbg1, fsn1, hel1, ash). Overrides box.hetznerLocation. Hetzner-only.',
+  )
   .action(async (opts: PrepareOptions) => {
     // Status-only path: no provider, or explicit --status.
     if (!opts.provider || opts.status) {
@@ -465,6 +478,7 @@ export const prepareCommand = new Command('prepare')
       build: opts.build,
       yes: opts.yes,
       claudeInstall,
+      location: opts.location,
     });
   });
 

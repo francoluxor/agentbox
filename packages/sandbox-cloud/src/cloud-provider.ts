@@ -697,6 +697,17 @@ export function createCloudProvider(
         }
       }
 
+      // Surface the real provisioned resources when the backend reports them
+      // (Hetzner reads them from the create response). Best-effort log only.
+      if (handle.resources) {
+        const r = handle.resources;
+        const parts: string[] = [];
+        if (typeof r.cpu === 'number') parts.push(`${String(r.cpu)} vCPU`);
+        if (typeof r.memory === 'number') parts.push(`${String(r.memory)} GB RAM`);
+        if (typeof r.disk === 'number') parts.push(`${String(r.disk)} GB disk`);
+        if (parts.length > 0) log(`provisioned ${parts.join(' / ')}`);
+      }
+
       // Optional in-box clone: when the caller passes a leased, token-bearing
       // URL (the plane / cloud-IDE path), the box clones /workspace itself at
       // bootstrap instead of the host seeding it. The laptop path omits this and
@@ -1061,6 +1072,9 @@ export function createCloudProvider(
             snapshotRef: resolvedCheckpointRef,
             lastState: 'running',
             sessionTimeoutMs: timeoutMs,
+            // Real resources the backend reported (Hetzner: the plan's actual
+            // cores/memory/disk). Absent → readers fall back to defaultResources.
+            resources: handle.resources,
             // Only host-seeded boxes share a fork base with the host, so only
             // they can be resynced back to the host tip on session start (7.5).
             // inBoxClone / plane boxes clone from a leased URL — left unset.

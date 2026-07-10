@@ -123,6 +123,13 @@ export interface CloudBoxFields {
    */
   sessionTimeoutMs?: number;
   /**
+   * Actual resources the backend provisioned, read back from the create
+   * response (Hetzner reports the real `server_type` cores/memory/disk). Shown
+   * by `agentbox status --inspect`. Absent on backends that can't report it and
+   * on pre-feature records → readers fall back to the provider's static defaults.
+   */
+  resources?: { cpu?: number; memory?: number; disk?: number };
+  /**
    * True when this box's `/workspace` was seeded from the host checkout (the
    * laptop `create` path), i.e. it has a real fork base shared with the host.
    * Left unset for `inBoxClone` / plane boxes (they clone in-box from a leased

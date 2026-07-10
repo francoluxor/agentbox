@@ -53,6 +53,7 @@ import {
   syncFirewallSource,
 } from './firewall.js';
 import { pollUntil } from './poll.js';
+import { mapHetznerProvisionError, validateServerChoice } from './preflight.js';
 import { readPreparedState } from './prepared-state.js';
 import { ensureHetznerBaseSnapshot } from './prepare.js';
 import { mintSshKey } from './ssh-key.js';
@@ -341,6 +342,20 @@ export const hetznerBackend: CloudBackend = {
     await ensureHetznerBaseSnapshot();
     const imageRef = await resolveImageId(c, req);
 
+    // 1b. Preflight the server-type + location choice against the live catalog
+    // BEFORE creating any billable resources (firewall, SSH key, server). A bad
+    // `--size cax31` / `--size cx99` / `--location atlantis` fails fast here with
+    // a clear message instead of a late, opaque API error after cleanup churn.
+    const serverType = (req.size && req.size.trim()) || HETZNER_DEFAULT_SERVER_TYPE;
+    const location = (req.location && req.location.trim()) || HETZNER_DEFAULT_LOCATION;
+    const choice = { serverType, location };
+    // The base image's disk_size gates the min server disk. We only have it for
+    // numeric snapshot refs; stock string refs (e.g. `ubuntu-24.04`) skip the
+    // disk check (image null).
+    const image = typeof imageRef === 'number' ? await c.getImage(imageRef) : null;
+    const catalog = await c.listServerTypes();
+    validateServerChoice(choice, catalog, image);
+
     // 2. Detect egress IP + normalize firewall source.
     const egressOverride =
       req.env?.AGENTBOX_HETZNER_FIREWALL_SOURCE ?? process.env.AGENTBOX_HETZNER_FIREWALL_SOURCE;
@@ -388,31 +403,37 @@ export const hetznerBackend: CloudBackend = {
         boxEnv: Object.keys(boxEnv).length > 0 ? boxEnv : undefined,
       });
 
-      // 6. Create the server.
-      const serverType = (req.size && req.size.trim()) || HETZNER_DEFAULT_SERVER_TYPE;
+      // 6. Create the server. Map late Hetzner provision errors (account limit,
+      // out-of-capacity) to actionable guidance while preserving the original.
       progress(
-        `creating VPS '${req.name}' from image ${String(imageRef)} (${serverType} / ${HETZNER_DEFAULT_LOCATION})`,
+        `creating VPS '${req.name}' from image ${String(imageRef)} (${serverType} / ${location})`,
       );
-      const created = await withHetznerRetry(
-        { method: 'createServer', retryOnAmbiguous: false, attemptTimeoutMs: 120_000 },
-        () =>
-          c.createServer({
-            name: `agentbox-${req.name}-${stamp}`,
-            server_type: serverType,
-            image: imageRef,
-            location: HETZNER_DEFAULT_LOCATION,
-            user_data: cloudInit,
-            firewalls: [{ firewall: firewall.id }],
-            labels: {
-              'agentbox.managed': 'true',
-              'agentbox.role': 'box',
-              'agentbox.box': req.name,
-              'agentbox.firewall': String(firewall.id),
-            },
-            start_after_create: true,
-          }),
-      );
+      let created;
+      try {
+        created = await withHetznerRetry(
+          { method: 'createServer', retryOnAmbiguous: false, attemptTimeoutMs: 120_000 },
+          () =>
+            c.createServer({
+              name: `agentbox-${req.name}-${stamp}`,
+              server_type: serverType,
+              image: imageRef,
+              location,
+              user_data: cloudInit,
+              firewalls: [{ firewall: firewall.id }],
+              labels: {
+                'agentbox.managed': 'true',
+                'agentbox.role': 'box',
+                'agentbox.box': req.name,
+                'agentbox.firewall': String(firewall.id),
+              },
+              start_after_create: true,
+            }),
+        );
+      } catch (createErr) {
+        throw mapHetznerProvisionError(createErr, choice);
+      }
       serverId = created.server.id;
+      const provisioned = created.server.server_type;
       const vpsIp = created.server.public_net.ipv4?.ip;
       if (!vpsIp) {
         throw new Error(`hetzner: server ${String(serverId)} came up without an IPv4 address`);
@@ -448,7 +469,18 @@ export const hetznerBackend: CloudBackend = {
       // `exec` over the live ControlMaster — the symlinks baked into
       // install-box.sh route ~/.claude/.credentials.json etc. through to
       // `~/.agentbox-creds/<agent>/`.
-      return { sandboxId };
+      //
+      // Report the REAL resources from the create response (the plan's
+      // cores/memory/disk), not our static defaults — the record + the cloud
+      // scaffold's `provisioned …` log line read this.
+      return {
+        sandboxId,
+        resources: {
+          cpu: provisioned.cores,
+          memory: provisioned.memory,
+          disk: provisioned.disk,
+        },
+      };
     } catch (err) {
       // Cleanup on failure: server + firewall + temp ssh dir.
       if (serverId !== null) {

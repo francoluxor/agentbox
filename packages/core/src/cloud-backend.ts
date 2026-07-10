@@ -75,6 +75,13 @@ export interface CloudProvisionRequest {
 /** Opaque handle to a provisioned sandbox. `sandboxId` is persisted on the box record. */
 export interface CloudHandle {
   sandboxId: string;
+  /**
+   * Actual resources the backend provisioned, read back from the create
+   * response (Hetzner reports the real `server_type` cores/memory/disk;
+   * Vercel echoes its vCPU count). Optional: backends that can't report it, and
+   * older records, omit it and readers fall back to `defaultResources`.
+   */
+  resources?: { cpu?: number; memory?: number; disk?: number };
 }
 
 export type CloudState = 'running' | 'paused' | 'stopped' | 'missing';

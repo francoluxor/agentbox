@@ -271,4 +271,12 @@ describe('parseVercelVcpus', () => {
     expect(() => parseVercelVcpus('4-8')).toThrow(/expected a vCPU count/);
     expect(() => parseVercelVcpus('cx33')).toThrow(/expected a vCPU count/);
   });
+
+  it('names the rejected value and points at box.sizeVercel / box.size', () => {
+    // A foreign generic box.size (e.g. hetzner cx33) should get an actionable
+    // message: the offending value, the per-provider key, and the escape hatch.
+    expect(() => parseVercelVcpus('cx33')).toThrow(/"cx33"/);
+    expect(() => parseVercelVcpus('cx33')).toThrow(/box\.sizeVercel/);
+    expect(() => parseVercelVcpus('cx33')).toThrow(/box\.size/);
+  });
 });

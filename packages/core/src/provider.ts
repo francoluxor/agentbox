@@ -324,6 +324,12 @@ export interface PrepareOptions {
    */
   claudeInstall?: 'native' | 'npm';
   /**
+   * Datacenter / region the bake VPS is created in. Hetzner reads it (defaults
+   * to `box.hetznerLocation`, else `nbg1`); other providers ignore it (their
+   * base template/snapshot has no per-region placement at bake time).
+   */
+  location?: string;
+  /**
    * Progress sink for the build-side log stream (Docker BuildKit output,
    * Daytona's `onLogs` chunks). Wired to the CLI spinner / latest.log.
    */

@@ -106,8 +106,14 @@ export {
   type HetznerImage,
   type HetznerServer,
   type HetznerServerStatus,
+  type HetznerServerType,
   type HetznerSshKey,
 } from './client.js';
+export {
+  validateServerChoice,
+  mapHetznerProvisionError,
+  type ServerChoice,
+} from './preflight.js';
 export { detectEgressIp, type DetectEgressIpOptions } from './egress-ip.js';
 export {
   createPerBoxFirewall,

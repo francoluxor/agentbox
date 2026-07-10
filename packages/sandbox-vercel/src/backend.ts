@@ -123,7 +123,10 @@ export function parseVercelVcpus(spec: string | undefined): VercelVcpus | undefi
   if (match === undefined) {
     throw new Error(
       `invalid vercel size ${JSON.stringify(v)}: expected a vCPU count (${VERCEL_VCPUS.join(', ')}). ` +
-        'Vercel couples RAM at 2048 MB/vCPU. Set it with `--size 4` or `agentbox config set box.sizeVercel 4`.',
+        'Vercel couples RAM at 2048 MB/vCPU. This often means a generic `box.size` meant for ' +
+        'another provider reached vercel: set a vercel-specific size with ' +
+        '`agentbox config set box.sizeVercel 4` (or `--size 4`), or clear the generic one with ' +
+        '`agentbox config unset box.size`.',
     );
   }
   return match;
