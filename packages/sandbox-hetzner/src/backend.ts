@@ -71,7 +71,7 @@ export const HETZNER_DEFAULT_BOX_IMAGE_REF = 'agentbox-base';
  */
 const SCAFFOLDING_FALLBACK_IMAGE = 'agentbox/box:dev';
 const VPS_USER = 'vscode';
-const PROVISION_SSH_DEADLINE_MS = 5 * 60_000;
+const PROVISION_SSH_DEADLINE_MS = 10 * 60_000;
 const ACTION_DEADLINE_MS = 5 * 60_000;
 const SNAPSHOT_DEADLINE_MS = 20 * 60_000;
 // `cx22` was deprecated by Hetzner in early 2026; `cx23` is the drop-in
@@ -457,7 +457,12 @@ export const hetznerBackend: CloudBackend = {
       // 8. Wait for sshd to accept the new key.
       const up = await waitForSsh(buildSshTarget(state, vpsIp), PROVISION_SSH_DEADLINE_MS);
       if (!up) {
-        throw new Error(`hetzner: ssh on ${vpsIp} did not come up within ${String(PROVISION_SSH_DEADLINE_MS / 1000)}s`);
+        throw new Error(
+          `hetzner: ssh on ${vpsIp} did not come up within ${String(PROVISION_SSH_DEADLINE_MS / 1000)}s; ` +
+            `the server has been deleted. This is usually transient — just retry the create. ` +
+            `If it keeps failing, check that your host's egress IP is stable (the box firewall is ` +
+            `locked to it, so a mid-provision IP change blocks ssh).`,
+        );
       }
 
       // 9. Open ControlMaster.
@@ -558,7 +563,9 @@ export const hetznerBackend: CloudBackend = {
     const up = await waitForSsh(buildSshTarget(state, vpsIp), PROVISION_SSH_DEADLINE_MS);
     if (!up) {
       throw new Error(
-        `hetzner: ssh on ${vpsIp} did not come up within ${String(PROVISION_SSH_DEADLINE_MS / 1000)}s after start`,
+        `hetzner: ssh on ${vpsIp} did not come up within ${String(PROVISION_SSH_DEADLINE_MS / 1000)}s after start. ` +
+          `This is usually transient — retry (\`agentbox start\` / \`agentbox recover\`). If it persists, check ` +
+          `that your host's egress IP is stable (the box firewall is locked to it, so an IP change blocks ssh).`,
       );
     }
   },
