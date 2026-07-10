@@ -93,11 +93,29 @@ See [run an agent](/docs/run-an-agent), [access your box](/docs/access-your-box)
 
 ## Sizes and regions
 
-The default VM is `cx23` (2 vCPU / 4 GB / 40 GB, ~€4/mo while running) in location `nbg1` (Nuremberg). Change the size per box with `--size`, or pin it with `box.sizeHetzner` — see [configuration](/docs/configuration).
+The default VM is `cx23` (2 vCPU / 4 GB / 40 GB, ~€4/mo while running) in location `nbg1` (Nuremberg). On Hetzner, `--size` is the **server type** and `--location` is the **datacenter**. Change them per box, or pin them with `box.sizeHetzner` and `box.hetznerLocation` (precedence: flag > `box.size<Provider>` > `box.size` / `box.hetznerLocation`) — see [configuration](/docs/configuration).
 
 ```bash
-agentbox create -y --provider hetzner --size cx33
+agentbox create -y --provider hetzner --size cx33 --location fsn1
 ```
+
+Locations are `nbg1` (Nuremberg), `fsn1` (Falkenstein), `hel1` (Helsinki), and `ash` (Ashburn, US). `--location` on a non-hetzner provider is ignored with a warning. The bake VPS location can be set the same way: `agentbox prepare --provider hetzner --location fsn1`.
+
+After the box comes up, AgentBox reports the **real** provisioned resources read back from Hetzner — e.g. `provisioned 4 vCPU / 16 GB RAM / 160 GB disk` — rather than a static guess, and stores them on the box record.
+
+### Preflight validation
+
+Before AgentBox creates any billable resource (firewall, SSH key, server), it validates your server-type + location choice against Hetzner's live `/server_types` catalog and fails fast with an actionable message — so a typo never bills you for a half-created box:
+
+- **Unknown type** (`--size cx99`) → lists valid non-deprecated x86 types.
+- **ARM type** (`--size cax31`) → rejected; AgentBox base snapshots are x86-only, so `cax*` types aren't supported.
+- **Deprecated type** (e.g. the old `cx22`) → rejected, with current alternatives.
+- **Type not offered in the location** (`--size ccx23 --location nbg1`) → lists where it *is* offered and reminds you of `--location`.
+- **Disk too small** for the base snapshot → asks for a larger type.
+
+<Callout type="warn" title="Dedicated (ccx) types and account limits">
+New Hetzner accounts start with a low server limit, and the dedicated-vCPU `ccx*` types count against it quickly. If Hetzner refuses the create with `resource_limit_exceeded`, AgentBox surfaces the account-limits explanation and points you at the [Hetzner Console](https://console.hetzner.cloud/) → your project → **Limits** to request an increase. An out-of-capacity error (`resource_unavailable`) suggests trying another `--location`.
+</Callout>
 
 ## Firewall
 

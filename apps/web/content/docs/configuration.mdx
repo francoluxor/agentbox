@@ -119,9 +119,10 @@ See [local Docker](/docs/local-docker), [Hetzner](/docs/hetzner), [Daytona](/doc
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `box.size` | string | empty | generic cloud size; hetzner reads a server type (`cx33`), daytona reads `cpu-memory-disk` GB (`4-8-20`); docker and vercel ignore it |
-| `box.sizeDaytona` / `box.sizeHetzner` | string (advanced) | empty | per-provider override of `box.size` |
-| `box.sizeDocker` / `box.sizeVercel` | string (advanced) | empty | reserved — docker uses memory/cpus/disk; vercel uses `vercelVcpus` |
+| `box.size` | string | empty | generic cloud size, provider-interpreted: hetzner = server type (`cx33`), daytona = `cpu-memory-disk` GB (`4-8-20`), vercel = vCPU count (`1`/`2`/`4`/`8`), e2b = `cpu-memory` GB (`4-8`, baked at `prepare` time); docker ignores it |
+| `box.sizeDaytona` / `box.sizeHetzner` / `box.sizeVercel` / `box.sizeE2b` | string (advanced) | empty | per-provider override of `box.size` |
+| `box.sizeDocker` | string (advanced) | empty | reserved — docker uses `box.memory` / `box.cpus` / `box.disk` |
+| `box.hetznerLocation` | string | `nbg1` | Hetzner datacenter new boxes are created in (`nbg1`, `fsn1`, `hel1`, `ash`); override per box with `--location`. Hetzner-only |
 
 ### Box image
 
@@ -172,7 +173,6 @@ See [teleport a project](/docs/teleport-a-project), [environment](/docs/environm
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `box.vercelVcpus` | int | `2` | vCPUs (RAM is coupled at 2048 MB/vCPU); only 1/2/4/8 are accepted |
 | `box.vercelTimeoutMs` | int | `2700000` (45 min) | max session length before auto-snapshot; persistent mode auto-resumes |
 | `box.vercelNetworkPolicy` | string | empty (`allow-all`) | egress lock: `allow-all`, `deny-all`, or a comma-separated domain allowlist (`github.com,*.npmjs.org`) |
 | `box.e2bTimeoutMs` | int | `2700000` (45 min) | session timeout a new `--provider e2b` box is created with before E2B auto-pauses it on inactivity; the host keepalive holds it open while the agent works (Hobby caps total session at ~1 h) |
