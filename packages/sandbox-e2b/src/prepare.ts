@@ -59,6 +59,12 @@ export interface PrepareE2bOptions {
   hostWorkspace?: string;
   /** Force re-bake even when an up-to-date template id is recorded. */
   force?: boolean;
+  /**
+   * Bake-time `cpu-memory` GB size (e.g. `4-8`). Wins over `cpuCount`/`memoryMB`
+   * when set. A third `-disk` slot is accepted with a warning (E2B has no disk
+   * knob). Resolved by the CLI from `--size` / `box.sizeE2b` / `box.size`.
+   */
+  size?: string;
   /** vCPUs for the baked template (default 2). E2B applies this per-sandbox at boot. */
   cpuCount?: number;
   /** Memory in MiB for the baked template (default 4096). */
@@ -83,6 +89,45 @@ const DEFAULT_TAG = 'latest';
 const DEFAULT_CPU = 2;
 const DEFAULT_MEMORY_MB = 4096;
 
+/**
+ * Parse a `cpu-memory` GB size spec (e.g. `4-8`) into E2B's
+ * `{ cpuCount, memoryMB }`. A third `-disk` slot is accepted but ignored with a
+ * warning (E2B's `Template.build` has no disk knob). Returns `undefined` for an
+ * empty/unset spec (caller keeps its defaults); throws on a malformed spec so
+ * `prepare` surfaces it rather than silently baking the default size.
+ *
+ * Exported for unit tests.
+ */
+export function parseE2bSize(
+  spec: string | undefined,
+  warn?: (msg: string) => void,
+): { cpuCount: number; memoryMB: number } | undefined {
+  const trimmed = (spec ?? '').trim();
+  if (trimmed === '') return undefined;
+  const parts = trimmed.split('-');
+  const bad = (): never => {
+    throw new Error(
+      `invalid --size '${trimmed}' for e2b: expected 'cpu-memory' GB, e.g. '4-8'.`,
+    );
+  };
+  if (parts.length < 2 || parts.length > 3) bad();
+  const nums = parts.map((p) => Number(p));
+  // Every present slot must be a positive integer (rejects '4-8-', 'a-b', '0-8').
+  if (nums.some((n) => !Number.isInteger(n) || n <= 0)) bad();
+  if (parts.length === 3) {
+    warn?.(
+      `e2b: ignoring the disk slot in size '${trimmed}' — E2B templates have no disk knob; ` +
+        `only cpu-memory (${String(nums[0])}-${String(nums[1])}) is applied.`,
+    );
+  }
+  return { cpuCount: nums[0]!, memoryMB: nums[1]! * 1024 };
+}
+
+/** Normalize a parsed E2B size back to a canonical `cpu-memGB` key for the prepared state. */
+function e2bSizeKey(parsed: { cpuCount: number; memoryMB: number }): string {
+  return `${String(parsed.cpuCount)}-${String(parsed.memoryMB / 1024)}`;
+}
+
 export async function prepareE2b(
   opts: PrepareE2bOptions = {},
 ): Promise<PrepareE2bResult> {
@@ -101,6 +146,12 @@ export async function prepareE2b(
     claudeInstall,
   );
 
+  // Bake-time size. A `--size` / `box.sizeE2b` like `4-8` overrides the default
+  // cpu/memory (E2B rejects per-create resources, so it MUST be baked). The
+  // normalized `cpu-memGB` key gates skip-fast so a re-sized bake rebuilds.
+  const parsedSize = parseE2bSize(opts.size, (m) => log(m));
+  const sizeKey = parsedSize ? e2bSizeKey(parsedSize) : undefined;
+
   // Skip-fast: existing template + matching fingerprint.
   //
   // Probe the persisted templateId itself, not TEMPLATE_NAME. If someone
@@ -110,7 +161,8 @@ export async function prepareE2b(
   // forms, so we pass the exact id we'd later hand to `provision`.
   const existing = readPreparedState();
   if (!opts.force && existing.base) {
-    if (existing.base.contextSha256 === contextSha) {
+    const bakedSize = existing.base.size;
+    if (existing.base.contextSha256 === contextSha && bakedSize === sizeKey) {
       const stillThere = await templateExists(existing.base.templateId, apiKey);
       if (stillThere) {
         progress(
@@ -119,6 +171,10 @@ export async function prepareE2b(
         return { snapshotName: existing.base.templateId };
       }
       progress(`recorded template ${existing.base.templateId} is gone on E2B; rebuilding`);
+    } else if (existing.base.contextSha256 === contextSha && bakedSize !== sizeKey) {
+      progress(
+        `size changed (was ${bakedSize ?? 'default'}, now ${sizeKey ?? 'default'}); rebuilding`,
+      );
     } else {
       progress(
         `build context changed (was ${existing.base.contextSha256?.slice(0, 12) ?? '<none>'}, now ${contextSha.slice(0, 12)}); rebuilding`,
@@ -188,8 +244,10 @@ export async function prepareE2b(
       'test -x /usr/local/bin/agentbox-ctl',
     );
 
-    const cpuCount = opts.cpuCount ?? DEFAULT_CPU;
-    const memoryMB = opts.memoryMB ?? DEFAULT_MEMORY_MB;
+    // Parsed `--size` wins over the explicit cpuCount/memoryMB options, which
+    // win over the built-in defaults.
+    const cpuCount = parsedSize?.cpuCount ?? opts.cpuCount ?? DEFAULT_CPU;
+    const memoryMB = parsedSize?.memoryMB ?? opts.memoryMB ?? DEFAULT_MEMORY_MB;
     progress(
       `running Template.build('${TEMPLATE_NAME}', { cpuCount: ${String(cpuCount)}, memoryMB: ${String(memoryMB)} })`,
     );
@@ -220,6 +278,7 @@ export async function prepareE2b(
         // and produced `agentbox-base:latest:latest` in the status display.
         templateName: info.name,
         contextSha256: contextSha,
+        ...(sizeKey ? { size: sizeKey } : {}),
         cliVersion: cliStamp.cliVersion,
         cliCommit: cliStamp.cliCommit,
         createdAt: new Date().toISOString(),
@@ -304,6 +363,7 @@ export const prepareE2bProvider: NonNullable<Provider['prepare']> = (req) =>
     name: req.name,
     hostWorkspace: req.hostWorkspace ?? process.cwd(),
     force: req.force,
+    size: req.size,
     claudeInstall: req.claudeInstall,
     onLog: req.onLog,
   });

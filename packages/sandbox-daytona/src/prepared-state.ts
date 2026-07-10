@@ -27,7 +27,14 @@ import { resolveDaytonaCustomClaudeMd, resolveDockerfileContext } from './docker
 
 const SCHEMA = 1 as const;
 
-export type PreparedDaytonaState = PreparedBaseSnapshot<string, never>;
+/** Provider-specific extras baked into the daytona snapshot. `size` is the
+ *  normalized `cpu-memory-disk` spec the snapshot was created with (absent =
+ *  a default-resource bake). */
+export interface DaytonaPreparedExtras {
+  size?: string;
+}
+
+export type PreparedDaytonaState = PreparedBaseSnapshot<string, DaytonaPreparedExtras>;
 
 /**
  * Resolve every file that influences the daytona base snapshot: the docker
@@ -118,12 +125,14 @@ export function readPreparedDaytonaState(): PreparedDaytonaState | null {
   if (raw === null || typeof raw !== 'object') return null;
   const parsed = raw as Partial<PreparedDaytonaState>;
   if (parsed.schema !== SCHEMA) return null;
-  return { schema: SCHEMA, base: parsed.base };
+  return { schema: SCHEMA, base: parsed.base, extras: parsed.extras };
 }
 
 export function writePreparedDaytonaState(opts: {
   snapshotName: string;
   contextSha256: string;
+  /** Normalized `cpu-memory-disk` size the snapshot was baked with (absent = default). */
+  size?: string;
 }): void {
   const stamp = readCliStamp();
   const state: PreparedDaytonaState = {
@@ -135,13 +144,24 @@ export function writePreparedDaytonaState(opts: {
       cliCommit: stamp.cliCommit,
       createdAt: new Date().toISOString(),
     },
+    ...(opts.size ? { extras: { size: opts.size } } : {}),
   };
   writePreparedStateRaw('daytona', state);
 }
 
+/**
+ * A prepared snapshot matches when its build-context fingerprint AND its baked
+ * size both equal the requested ones. `size` is deliberately NOT folded into
+ * `contextSha256` — the live freshness check (`currentDaytonaBaseFingerprintLive`)
+ * compares fingerprints only, and folding size in would make every sized bake
+ * read as "context drifted". An absent baked size matches an absent request
+ * (the default-resource bake).
+ */
 export function preparedMatches(
   state: PreparedDaytonaState | null,
   current: string,
+  size?: string,
 ): boolean {
-  return state?.base?.contextSha256 === current;
+  if (state?.base?.contextSha256 !== current) return false;
+  return (state?.extras?.size ?? undefined) === (size ?? undefined);
 }

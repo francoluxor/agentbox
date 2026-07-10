@@ -26,6 +26,8 @@ export interface PreparedE2bBase {
   templateName?: string;
   /** Deterministic SHA-256 of the build context (build script + assets). */
   contextSha256?: string;
+  /** Normalized `cpu-memory` GB size the template was baked with (absent = default resources). */
+  size?: string;
   /** CLI version that produced this template (informational). */
   cliVersion?: string;
   /** Git short SHA of the CLI build (informational). */

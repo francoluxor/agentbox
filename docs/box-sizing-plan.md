@@ -4,7 +4,7 @@ Implementation plan — one session per phase; update the status list as phases 
 
 - [x] Phase 1 — Unified size surface (config + CLI + vercel)
 - [x] Phase 2 — Hetzner preflight, error mapping, location, real resources
-- [ ] Phase 3 — Prepare-time sizing (daytona, e2b)
+- [x] Phase 3 — Prepare-time sizing (daytona, e2b)
 - [ ] Phase 4 — Test backfill + docs sweep
 
 ## Context

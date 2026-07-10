@@ -26,6 +26,7 @@ import {
   boxImageConfigKey,
   isProviderKind,
   loadEffectiveConfig,
+  resolveBoxSize,
   setConfigValue,
   unsetConfigValue,
 } from '@agentbox/config';
@@ -51,6 +52,7 @@ interface PrepareOptions {
   status?: boolean;
   claudeInstall?: string;
   location?: string;
+  size?: string;
 }
 
 interface DockerStatus {
@@ -308,6 +310,12 @@ export interface RunPrepareOptions {
    * `box.hetznerLocation`; other providers ignore it.
    */
   location?: string;
+  /**
+   * Bake-time VM size for the snapshot/template providers (daytona:
+   * `cpu-memory-disk` GB; e2b: `cpu-memory` GB). CLI override of
+   * `box.size<Provider>` / `box.size`; docker/hetzner/vercel ignore it.
+   */
+  size?: string;
 }
 
 /**
@@ -349,6 +357,11 @@ export async function runPrepare(
   const claudeInstall = opts.claudeInstall ?? cfg?.effective.box.claudeInstall ?? 'native';
   // Bake-time datacenter (Hetzner only): CLI flag wins over box.hetznerLocation.
   const location = opts.location?.trim() || cfg?.effective.box.hetznerLocation || undefined;
+  // Bake-time size (daytona/e2b): CLI flag wins over the cascaded box.size /
+  // box.size<Provider>. Empty resolves to undefined so the provider bakes its
+  // default resources.
+  const size =
+    opts.size?.trim() || (cfg ? resolveBoxSize(cfg.effective, providerName) : '') || undefined;
   const sp = spinner();
   sp.start(`preparing ${providerName}…`);
   try {
@@ -360,6 +373,7 @@ export async function runPrepare(
       registry,
       claudeInstall,
       location,
+      size,
       onLog: (line) => sp.message(line.slice(0, 80)),
     });
     if (result.snapshotName !== undefined) {
@@ -450,6 +464,10 @@ export const prepareCommand = new Command('prepare')
     '--location <name>',
     'Hetzner datacenter the bake VPS runs in (e.g. nbg1, fsn1, hel1, ash). Overrides box.hetznerLocation. Hetzner-only.',
   )
+  .option(
+    '--size <spec>',
+    'bake-time VM size. daytona: cpu-memory-disk GB (e.g. 4-8-20). e2b: cpu-memory GB (e.g. 4-8). Overrides box.size / box.size<Provider>. Ignored by docker/hetzner/vercel.',
+  )
   .action(async (opts: PrepareOptions) => {
     // Status-only path: no provider, or explicit --status.
     if (!opts.provider || opts.status) {
@@ -479,6 +497,7 @@ export const prepareCommand = new Command('prepare')
       yes: opts.yes,
       claudeInstall,
       location: opts.location,
+      size: opts.size,
     });
   });
 

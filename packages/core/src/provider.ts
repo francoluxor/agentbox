@@ -324,6 +324,14 @@ export interface PrepareOptions {
    */
   claudeInstall?: 'native' | 'npm';
   /**
+   * Bake-time VM size for providers whose resources are fixed at snapshot/
+   * template-build time (daytona: `cpu-memory-disk` GB, e.g. `4-8-20`; e2b:
+   * `cpu-memory` GB, e.g. `4-8`). Resolved by the CLI from `--size` /
+   * `box.size<Provider>` / `box.size`. Docker/hetzner/vercel ignore it (their
+   * size is a per-create knob, not baked).
+   */
+  size?: string;
+  /**
    * Datacenter / region the bake VPS is created in. Hetzner reads it (defaults
    * to `box.hetznerLocation`, else `nbg1`); other providers ignore it (their
    * base template/snapshot has no per-region placement at bake time).
