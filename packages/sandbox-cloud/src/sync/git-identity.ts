@@ -73,7 +73,13 @@ export async function seedGitIdentity(
  *
  * All copied creds are re-owned to the box user first (carry chowns to a fixed
  * uid 1000, but the box user is 1001/1002 on some providers). Idempotent on
- * resume; best-effort (a failure never blocks the box).
+ * resume.
+ *
+ * **Fatal on failure** (throws): this only runs in `git.pushMode=direct`, where a
+ * usable credential is the whole point. If the config step fails, or no
+ * credential actually landed (a best-effort carry upload dropped it), we must
+ * NOT finish the create with a box stamped `AGENTBOX_GIT_DIRECT=1` that can't
+ * push — better to fail the create loudly so the user retries.
  */
 export async function seedGitCredentials(
   backend: CloudBackend,
@@ -127,16 +133,21 @@ export async function seedGitCredentials(
     `HOST=${qHost}`,
     // Token mode iff ~/.git-credentials landed; SSH mode iff ANY private key
     // landed (default OR custom basename — the old `id_*`-only check missed a
-    // key copied from an `IdentityFile`). The gate aborts the create when no
-    // credential is copied, so exactly one branch fires.
+    // key copied from an `IdentityFile`). If NEITHER landed the credential carry
+    // failed: exit non-zero so create fails rather than stamping a broken direct
+    // box.
     `AGB_HAS_KEY() { find "$HOME/.ssh" -maxdepth 1 -type f ! -name '*.pub' ! -name 'config' ! -name 'known_hosts*' ! -name 'authorized_keys' 2>/dev/null | grep -q .; }`,
-    `if [ -f "$HOME/.git-credentials" ]; then ${tokenCfg}; elif AGB_HAS_KEY; then ${sshCfg}; fi`,
+    `if [ -f "$HOME/.git-credentials" ]; then ${tokenCfg}; ` +
+      `elif AGB_HAS_KEY; then ${sshCfg}; ` +
+      `else echo "agentbox: no git credential landed in the box (carry upload failed?)" >&2; exit 3; fi`,
   ].join('\n');
 
   const r = await backend.exec(handle, bashScript(script));
   if (r.exitCode !== 0) {
-    log(`git: credential config failed (exit ${String(r.exitCode)}): ${(r.stderr || r.stdout).trim()}`);
-    return;
+    // Fatal for direct mode — see the doc comment. Fail the create.
+    throw new Error(
+      `git.pushMode=direct: configuring box-held credentials failed (exit ${String(r.exitCode)}): ${(r.stderr || r.stdout).trim()}`,
+    );
   }
   log('git: configured box-held credentials (direct push mode)');
 }
