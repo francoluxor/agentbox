@@ -98,15 +98,23 @@ export async function seedGitCredentials(
     `git config --global --add ${httpsKey} ${quoteShellArg(`ssh://git@${host}/`)}`,
   ].join(' && ');
 
-  // SSH mode: accept the host key non-interactively, force SSH transport, and
-  // enable signing only when the signing key can sign without a passphrase.
+  // SSH mode: accept the host key non-interactively, force SSH transport, point
+  // ssh at the copied key (which may have a NON-default basename when it came
+  // from an `ssh -G` / `IdentityFile`), and enable signing only when the key can
+  // sign without a passphrase. Prefer a default id_* key for -i (the common auth
+  // key), else the single copied custom key.
+  // Joined with `;` (not `&&`): these are independent best-effort config steps,
+  // and a false test (e.g. a default key IS present) must not short-circuit the
+  // rest.
   const sshCfg = [
-    `git config --global core.sshCommand ${quoteShellArg('ssh -o StrictHostKeyChecking=accept-new')}`,
     `git config --global --replace-all ${sshKey} ${quoteShellArg(`https://${host}/`)}`,
+    `AGB_KEY=$(ls "$HOME"/.ssh/id_ed25519 "$HOME"/.ssh/id_rsa "$HOME"/.ssh/id_ecdsa 2>/dev/null | head -1)`,
+    `if [ -z "$AGB_KEY" ]; then AGB_KEY=$(find "$HOME/.ssh" -maxdepth 1 -type f ! -name '*.pub' ! -name 'config' ! -name 'known_hosts*' ! -name 'authorized_keys' 2>/dev/null | head -1); fi`,
+    `git config --global core.sshCommand "ssh\${AGB_KEY:+ -i $AGB_KEY} -o StrictHostKeyChecking=accept-new"`,
     await buildSigningSnippet(opts.hostRepo),
   ]
     .filter(Boolean)
-    .join(' && ');
+    .join('; ');
 
   const script = [
     // carry chowns to a fixed uid (1000); the box user is 1001/1002 elsewhere.
@@ -114,10 +122,15 @@ export async function seedGitCredentials(
     `sudo -n chown -R "$(id -u):$(id -g)" "$HOME/.git-credentials" "$HOME/.ssh" 2>/dev/null || true`,
     `chmod 600 "$HOME/.git-credentials" 2>/dev/null || true`,
     `chmod 700 "$HOME/.ssh" 2>/dev/null || true`,
-    `chmod 600 "$HOME"/.ssh/id_* 2>/dev/null || true`,
+    // Any copied key (default OR custom basename) must be 0600 for ssh.
+    `find "$HOME/.ssh" -maxdepth 1 -type f -exec chmod 600 {} + 2>/dev/null || true`,
     `HOST=${qHost}`,
-    `if [ -f "$HOME/.git-credentials" ]; then ${tokenCfg}; ` +
-      `elif ls "$HOME"/.ssh/id_* >/dev/null 2>&1; then ${sshCfg}; fi`,
+    // Token mode iff ~/.git-credentials landed; SSH mode iff ANY private key
+    // landed (default OR custom basename — the old `id_*`-only check missed a
+    // key copied from an `IdentityFile`). The gate aborts the create when no
+    // credential is copied, so exactly one branch fires.
+    `AGB_HAS_KEY() { find "$HOME/.ssh" -maxdepth 1 -type f ! -name '*.pub' ! -name 'config' ! -name 'known_hosts*' ! -name 'authorized_keys' 2>/dev/null | grep -q .; }`,
+    `if [ -f "$HOME/.git-credentials" ]; then ${tokenCfg}; elif AGB_HAS_KEY; then ${sshCfg}; fi`,
   ].join('\n');
 
   const r = await backend.exec(handle, bashScript(script));
