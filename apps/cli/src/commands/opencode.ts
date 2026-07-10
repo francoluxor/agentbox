@@ -537,6 +537,15 @@ export const opencodeCommand = new Command('opencode')
           : undefined;
 
     if (opts.initialPrompt && opts.initialPrompt.length > 0) {
+      // --with-credentials is foreground-only (the queue worker doesn't thread
+      // git.pushMode=direct, and copying a credential needs a human at the prompt).
+      if (cfg.effective.git.pushMode === 'direct') {
+        log.error(
+          '--with-credentials is not supported with -i / background runs — run it in the foreground so you can confirm the credential copy interactively.',
+        );
+        cmdLog.close();
+        process.exit(1);
+      }
       try {
         await assertAgentCredsAvailable({
           agent: 'opencode',
@@ -555,15 +564,9 @@ export const opencodeCommand = new Command('opencode')
       const maxWorkingOverride = parseMaxOption('--max-working', opts.maxWorking);
       // Carry gate runs here on the host (same gate as the foreground path); the
       // approved entries ride the queue job and the worker applies them.
-      const carryForQueue = await resolveGitCredsCarry({
-        pushMode: cfg.effective.git.pushMode,
+      const carryForQueue = await runQueuedCarryGate({
         projectRoot,
-        existing: await runQueuedCarryGate({
-          projectRoot,
-          opts,
-          onLog: (line) => cmdLog.write(line),
-          onClose: () => cmdLog.close(),
-        }),
+        opts,
         onLog: (line) => cmdLog.write(line),
         onClose: () => cmdLog.close(),
       });

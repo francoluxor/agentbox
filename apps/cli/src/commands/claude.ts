@@ -649,6 +649,17 @@ export const claudeCommand = new Command('claude')
     // (docker bakes the prompt into `tmux new-session`; cloud pre-starts a
     // detached tmux session via `buildAttach({ detached: true })`).
     if (opts.initialPrompt && opts.initialPrompt.length > 0) {
+      // --with-credentials is foreground-only: the queue worker (a separate
+      // process) doesn't thread git.pushMode=direct into provider.create, so a
+      // queued box would carry the secret but never use it. And copying a
+      // credential is meant to require a human at the prompt, not a background run.
+      if (cfg.effective.git.pushMode === 'direct') {
+        log.error(
+          '--with-credentials is not supported with -i / background runs — run it in the foreground so you can confirm the credential copy interactively.',
+        );
+        cmdLog.close();
+        process.exit(1);
+      }
       try {
         await assertAgentCredsAvailable({
           agent: 'claude-code',
@@ -668,15 +679,9 @@ export const claudeCommand = new Command('claude')
       // Carry gate runs here on the host (same gate as the foreground path) so
       // the user approves the host-secrets copy while submitting; the approved
       // entries ride the queue job and the worker applies them at create time.
-      const carryForQueue = await resolveGitCredsCarry({
-        pushMode: cfg.effective.git.pushMode,
+      const carryForQueue = await runQueuedCarryGate({
         projectRoot,
-        existing: await runQueuedCarryGate({
-          projectRoot,
-          opts,
-          onLog: (line) => cmdLog.write(line),
-          onClose: () => cmdLog.close(),
-        }),
+        opts,
         onLog: (line) => cmdLog.write(line),
         onClose: () => cmdLog.close(),
       });

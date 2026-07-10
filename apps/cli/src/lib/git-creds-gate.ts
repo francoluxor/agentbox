@@ -367,7 +367,18 @@ export async function resolveGitCredsCarry(args: {
       args.onClose?.();
       process.exit(0);
     }
-    return gate.decision === 'approve' ? [...args.existing, ...gate.entries] : args.existing;
+    if (gate.decision === 'skip') {
+      // No credential was resolvable. Proceeding would create a box stamped
+      // git.pushMode=direct with no secret — independent push/pull can't work.
+      // Abort rather than hand back a broken box (the gate already explained why).
+      log.warn(
+        'with-credentials: no credential to copy — not creating the box. Set up `gh auth login` ' +
+          'or an SSH key and retry, or drop --with-credentials to use the host relay.',
+      );
+      args.onClose?.();
+      process.exit(0);
+    }
+    return [...args.existing, ...gate.entries];
   } catch (err) {
     log.error(err instanceof Error ? err.message : String(err));
     args.onClose?.();
