@@ -57,21 +57,23 @@ export async function seedGitIdentity(
 }
 
 /**
- * Configure a cloud box to use git credentials copied INTO it (`git.pushMode=
- * direct` / `--with-credentials`). The secret files themselves (`~/.git-credentials`,
- * the SSH key, gh `hosts.yml`) are dropped by the carry apply path; this sets the
- * git config that makes them take effect:
+ * Configure a cloud box to use the git credential copied INTO it (`git.pushMode=
+ * direct` / `--with-credentials`). The user chose ONE of two shapes at create
+ * time and the corresponding secret already rode the carry path; this sets the
+ * git config that makes it take effect, driven by which file actually landed:
  *
- * - `credential.helper store` so an HTTPS `git push`/`fetch` reads the token from
- *   the carried `~/.git-credentials`.
- * - `core.sshCommand` with `StrictHostKeyChecking=accept-new` so an SSH remote's
- *   first push doesn't hang on the host-key prompt (the box is non-interactive).
- * - commit signing (SSH format) mirrored from the host, rewriting a host
- *   `user.signingkey` PATH to the box location the key was carried to
- *   (`/home/vscode/.ssh/<basename>`). A non-path (literal `key::…`) value is set
- *   verbatim. GPG-format signing is skipped (v1 copies SSH signing keys only).
+ * - **token** (`~/.git-credentials` present): `credential.helper store` + a
+ *   `url.insteadOf` rewrite so a github SSH-form remote pushes over HTTPS with
+ *   the token — the box needs no SSH key. Commits are unsigned.
+ * - **ssh** (an `~/.ssh/id_*` key present): `core.sshCommand` accept-new + a
+ *   `url.insteadOf` rewrite so an HTTPS remote pushes over SSH, plus commit
+ *   signing — but only when the key is usable NON-interactively (a
+ *   passphrase-protected key can't sign in the box, and forcing `commit.gpgsign`
+ *   would break every commit, so we probe `ssh-keygen -y -P ''` and skip if not).
  *
- * Idempotent (re-runs on resume). Best-effort: a failure never blocks the box.
+ * All copied creds are re-owned to the box user first (carry chowns to a fixed
+ * uid 1000, but the box user is 1001/1002 on some providers). Idempotent on
+ * resume; best-effort (a failure never blocks the box).
  */
 export async function seedGitCredentials(
   backend: CloudBackend,
@@ -79,52 +81,88 @@ export async function seedGitCredentials(
   opts: SeedGitIdentityOptions = {},
 ): Promise<void> {
   const log = opts.onLog ?? (() => {});
-  const cmds: string[] = [
-    // The credential files rode the carry path, which chowns to a fixed uid
-    // (1000). The box's own user is not 1000 on every provider (vercel/e2b use
-    // 1001/1002), so re-own the copied creds to whoever WE are — else the box
-    // can't read its own 0600 token/keys. Provider-agnostic: uses `id -u`.
+  const host = await readHostOriginHost(opts.hostRepo);
+  const qHost = quoteShellArg(host);
+
+  const httpsKey = quoteShellArg(`url.https://${host}/.insteadOf`);
+  const sshKey = quoteShellArg(`url.git@${host}:.insteadOf`);
+
+  // Token mode: force the origin over HTTPS so the carried token authenticates.
+  // insteadOf is multi-valued (scp-form `git@h:` AND `ssh://git@h/`), so use
+  // --add — a plain `git config` on the same key would overwrite. --unset-all
+  // first keeps a resume re-run idempotent (no duplicate values).
+  const tokenCfg = [
+    `git config --global credential.helper store`,
+    `git config --global --unset-all ${httpsKey} 2>/dev/null || true`,
+    `git config --global --add ${httpsKey} ${quoteShellArg(`git@${host}:`)}`,
+    `git config --global --add ${httpsKey} ${quoteShellArg(`ssh://git@${host}/`)}`,
+  ].join(' && ');
+
+  // SSH mode: accept the host key non-interactively, force SSH transport, and
+  // enable signing only when the signing key can sign without a passphrase.
+  const sshCfg = [
+    `git config --global core.sshCommand ${quoteShellArg('ssh -o StrictHostKeyChecking=accept-new')}`,
+    `git config --global --replace-all ${sshKey} ${quoteShellArg(`https://${host}/`)}`,
+    await buildSigningSnippet(opts.hostRepo),
+  ]
+    .filter(Boolean)
+    .join(' && ');
+
+  const script = [
+    // carry chowns to a fixed uid (1000); the box user is 1001/1002 elsewhere.
+    // Re-own so the box can read its own 0600 creds. Provider-agnostic.
     `sudo -n chown -R "$(id -u):$(id -g)" "$HOME/.git-credentials" "$HOME/.ssh" 2>/dev/null || true`,
     `chmod 600 "$HOME/.git-credentials" 2>/dev/null || true`,
     `chmod 700 "$HOME/.ssh" 2>/dev/null || true`,
     `chmod 600 "$HOME"/.ssh/id_* 2>/dev/null || true`,
-    `git config --global credential.helper store`,
-    `git config --global core.sshCommand ${quoteShellArg('ssh -o StrictHostKeyChecking=accept-new')}`,
-  ];
+    `HOST=${qHost}`,
+    `if [ -f "$HOME/.git-credentials" ]; then ${tokenCfg}; ` +
+      `elif ls "$HOME"/.ssh/id_* >/dev/null 2>&1; then ${sshCfg}; fi`,
+  ].join('\n');
 
-  const gpgsign = (await readHostGitConfig('commit.gpgsign', opts.hostRepo))?.toLowerCase();
-  const format = (await readHostGitConfig('gpg.format', opts.hostRepo))?.toLowerCase();
-  const signingKey = await readHostGitConfig('user.signingkey', opts.hostRepo);
-  if (gpgsign === 'true' && signingKey && format === 'ssh') {
-    // Rewrite a filesystem path to the box location the key was carried to; a
-    // literal `key::ssh-…` value (or a bare public-key string) is set verbatim.
-    const looksLikePath = signingKey.includes('/') && !signingKey.startsWith('key::');
-    const boxKey = looksLikePath ? `/home/vscode/.ssh/${signingKey.split('/').pop() ?? ''}` : signingKey;
-    cmds.push(`git config --global gpg.format ssh`);
-    cmds.push(`git config --global user.signingkey ${quoteShellArg(boxKey)}`);
-    // Only enable commit.gpgsign if the private key is usable NON-interactively.
-    // A passphrase-protected key can't be decrypted without an agent/askpass in
-    // the box, so forcing gpgsign would make EVERY `git commit` fail. Guard on a
-    // passphrase-less probe (`ssh-keygen -y -P ''`) and warn if we skip it.
-    const priv = looksLikePath
-      ? `/home/vscode/.ssh/${(signingKey.split('/').pop() ?? '').replace(/\.pub$/, '')}`
-      : boxKey;
-    cmds.push(
-      `if ssh-keygen -y -P '' -f ${quoteShellArg(priv)} >/dev/null 2>&1; then ` +
-        `git config --global commit.gpgsign true; ` +
-        `else ` +
-        `git config --global --unset commit.gpgsign 2>/dev/null || true; ` +
-        `echo "agentbox: signing key ${priv} needs a passphrase — leaving commit signing OFF so in-box commits do not fail" >&2; ` +
-        `fi`,
-    );
-  }
-
-  const r = await backend.exec(handle, bashScript(cmds.join(' && ')));
+  const r = await backend.exec(handle, bashScript(script));
   if (r.exitCode !== 0) {
     log(`git: credential config failed (exit ${String(r.exitCode)}): ${(r.stderr || r.stdout).trim()}`);
     return;
   }
   log('git: configured box-held credentials (direct push mode)');
+}
+
+/** Bash that enables SSH commit signing iff the host signs and the key is usable. */
+async function buildSigningSnippet(hostRepo?: string): Promise<string> {
+  const gpgsign = (await readHostGitConfig('commit.gpgsign', hostRepo))?.toLowerCase();
+  const format = (await readHostGitConfig('gpg.format', hostRepo))?.toLowerCase();
+  const signingKey = await readHostGitConfig('user.signingkey', hostRepo);
+  if (gpgsign !== 'true' || !signingKey || format !== 'ssh') return '';
+  const looksLikePath = signingKey.includes('/') && !signingKey.startsWith('key::');
+  const boxKey = looksLikePath ? `/home/vscode/.ssh/${signingKey.split('/').pop() ?? ''}` : signingKey;
+  const priv = looksLikePath
+    ? `/home/vscode/.ssh/${(signingKey.split('/').pop() ?? '').replace(/\.pub$/, '')}`
+    : boxKey;
+  return (
+    `git config --global gpg.format ssh && ` +
+    `git config --global user.signingkey ${quoteShellArg(boxKey)} && ` +
+    // Passphrase-protected keys can't sign non-interactively (no agent in the
+    // box); forcing gpgsign would break every commit, so probe first.
+    `if ssh-keygen -y -P '' -f ${quoteShellArg(priv)} >/dev/null 2>&1; then ` +
+    `git config --global commit.gpgsign true; ` +
+    `else ` +
+    `git config --global --unset commit.gpgsign 2>/dev/null || true; ` +
+    `echo "agentbox: signing key needs a passphrase — leaving commit signing OFF so in-box commits do not fail" >&2; ` +
+    `fi`
+  );
+}
+
+/** Read the host repo's origin URL and extract its host (defaults to github.com). */
+async function readHostOriginHost(hostRepo?: string): Promise<string> {
+  const args = hostRepo ? ['-C', hostRepo, 'remote', 'get-url', 'origin'] : ['remote', 'get-url', 'origin'];
+  const r = await execa('git', args, { reject: false });
+  const url = r.exitCode === 0 ? (r.stdout ?? '').trim() : '';
+  // scheme://[user@]host[:port]/… , scp-form user@host:… , or bare host.
+  const m =
+    /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]+@)?([^/:]+)/i.exec(url) ?? /^(?:[^@/]+@)?([^/:]+):/i.exec(url);
+  const host = m?.[1];
+  return host && host.length > 0 ? host : 'github.com';
 }
 
 /** Read a host git config value (effective: system + global + repo-local). */

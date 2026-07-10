@@ -163,22 +163,27 @@ Only affects cloud boxes. Forcing `relay` needs a reachable host relay for the b
 
 ### Independent boxes — `--with-credentials`
 
-The relay and lease modes both keep your credentials off the box — but relay needs your PC on, and lease needs a hosted control plane. For a cloud box you intend to leave running unattended (Hetzner, or a pause/resume box on E2B/Vercel/Daytona), **`--with-credentials`** copies your own git credentials **into the box** so it can push, pull, and sign commits on its own, with your PC off and no hub:
+The relay and lease modes both keep your credentials off the box — but relay needs your PC on, and lease needs a hosted control plane. For a cloud box you intend to leave running unattended (Hetzner, or a pause/resume box on E2B/Vercel/Daytona), **`--with-credentials`** copies one git credential **into the box** so it can push and pull on its own, with your PC off and no hub:
 
 ```bash
-agentbox create --provider hetzner --with-credentials
-agentbox claude  --provider e2b     --with-credentials
+agentbox create --provider hetzner --with-credentials         # asks which credential
+agentbox claude  --provider e2b     --with-credentials token   # or pick up front
 ```
 
-At create time AgentBox detects what the repo's origin needs and, **after a confirmation prompt**, copies it into the box: a token (for HTTPS remotes, read from your git credential helper or `gh`), your SSH key (for SSH remotes), and your SSH signing key (if commit signing is on). Inside the box, `git push`/`fetch`/`pull` then run real git against the credentialed remote — the relay is never involved.
+At create time it asks **which** credential to copy — the choice is a security trade-off:
 
-<Callout type="warn" title="This copies real credentials into the box">
-Unlike every other mode, `--with-credentials` places your credentials **inside the box** — where its user has passwordless sudo (no boundary) — and they are captured in **any snapshot or checkpoint** of it. Only use it for a box you trust to run unattended. On a non-TTY (CI) the copy never happens silently: pass `--with-credentials-yes` or set `AGENTBOX_WITH_CREDENTIALS_YES=1` to opt in.
+- **`token`** (recommended) — copies just a GitHub token (read from your git credential helper or `gh`). The box pushes over **HTTPS**; a github SSH remote (`git@github.com:…`) is transparently rewritten to HTTPS, so **no SSH key is ever copied**. Commits are **unsigned**. Smallest secret to expose.
+- **`ssh`** — copies your **SSH private key**. The box pushes over SSH and **signs commits**. This is the riskiest option: use a key dedicated to git, **not** the key you use to log into other servers.
+
+Inside the box, `git push`/`fetch`/`pull` then run real git against the credentialed remote — the relay is never involved.
+
+<Callout type="warn" title="This copies a real credential into the box">
+`--with-credentials` places a credential **inside the box** — where its user has passwordless sudo (no boundary) — and it is captured in **any snapshot or checkpoint** of it. Only use it for a box you trust to run unattended. The bare flag prompts on a TTY; on a non-TTY (CI) you must pick explicitly (`--with-credentials token` / `--with-credentials ssh`, or `AGENTBOX_WITH_CREDENTIALS=token|ssh`) — it never copies a secret silently.
 </Callout>
 
 What still needs your PC: `agentbox cp`/`download`, `checkpoint`, and pull-request ops (`gh pr create`) remain host-relay operations — with the PC off they fail with a clear message rather than hanging. Only `git push`/`fetch`/`pull` are independent. `--with-credentials` is cloud-only (a docker box already runs on your host).
 
-For an **SSH remote**, the box needs a passphrase-less key to push non-interactively (there's no ssh-agent in the box) — an HTTPS remote sidesteps this by using a token. Commit signing is enabled only when your signing key is usable without a passphrase; otherwise in-box commits are simply left unsigned so they never fail.
+Notes: **token** mode can't sign commits (a token authenticates, it doesn't sign) — pick **ssh** if you need signed commits. In **ssh** mode the key must be passphrase-less (there's no ssh-agent in the box); a passphrase-protected signing key leaves signing off so commits never fail.
 
 ## Pull requests
 

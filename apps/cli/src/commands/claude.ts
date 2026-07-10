@@ -59,7 +59,7 @@ import {
 import { cloudAgentAttach, cloudAgentStartDetached } from './_cloud-attach.js';
 import { cloudAgentCreate } from './_cloud-agent-create.js';
 import { runCarryGate, runQueuedCarryGate } from '../lib/carry-gate.js';
-import { resolveGitCredsCarry } from '../lib/git-creds-gate.js';
+import { resolveGitCredsCarry, resolveGitCredsMode } from '../lib/git-creds-gate.js';
 import { FromBranchError, UseBranchError, resolveBranchSelection } from '../lib/from-branch.js';
 import { providerForBox, providerForCreate } from '../provider/registry.js';
 import {
@@ -189,10 +189,8 @@ interface ClaudeCreateOptions {
   carryYes?: boolean;
   /** --carry <mode>: 'skip' disables carry for this run (also AGENTBOX_CARRY=skip). */
   carry?: 'skip' | 'ask';
-  /** --with-credentials: copy git credentials into the box (git.pushMode=direct); cloud only. */
-  withCredentials?: boolean;
-  /** --with-credentials-yes (or AGENTBOX_WITH_CREDENTIALS_YES=1): auto-approve the copy prompt. */
-  withCredentialsYes?: boolean;
+  /** --with-credentials [mode]: copy a git credential into the box (git.pushMode=direct); cloud only. */
+  withCredentials?: boolean | string;
   vnc?: boolean; // commander: --no-vnc => false; default true (undefined treated as true)
   resync?: boolean; // commander: --no-resync => false; default true (config box.resyncOnStart)
   sharedDockerCache?: boolean;
@@ -251,7 +249,7 @@ function buildClaudeCliOverrides(opts: ClaudeCreateOptions): Partial<UserConfig>
   if (Object.keys(box).length > 0) out.box = box;
   if (Object.keys(claude).length > 0) out.claude = claude;
   if (opts.portless !== undefined) out.portless = { enabled: opts.portless };
-  if (opts.withCredentials === true) out.git = { pushMode: 'direct' };
+  if (opts.withCredentials) out.git = { pushMode: 'direct' };
   const attachIn = resolveAttachInOption(opts);
   if (attachIn !== undefined) out.attach = { openIn: attachIn };
   return out;
@@ -462,12 +460,8 @@ export const claudeCommand = new Command('claude')
     'ask',
   )
   .option(
-    '--with-credentials',
-    "copy your git credentials (token + SSH/signing key) INTO the box so it can push/pull/sign on its own with your PC off. DANGEROUS: credentials then live in the box and its snapshots. Cloud providers only; you'll be asked to confirm. Sets git.pushMode=direct.",
-  )
-  .option(
-    '--with-credentials-yes',
-    'auto-approve the --with-credentials copy prompt (also AGENTBOX_WITH_CREDENTIALS_YES=1). Required for non-TTY use.',
+    '--with-credentials [mode]',
+    "copy a git credential INTO the box so it can push with your PC off. Choose 'token' (HTTPS, unsigned commits, smallest exposure) or 'ssh' (copies your SSH private key, signs commits, riskiest). Bare flag prompts on a TTY; pass a value on non-TTY. DANGEROUS: the credential lives in the box and its snapshots. Cloud only. Sets git.pushMode=direct.",
   )
   .option(
     '--isolate-claude-config',
@@ -675,6 +669,7 @@ export const claudeCommand = new Command('claude')
       // entries ride the queue job and the worker applies them at create time.
       const carryForQueue = await resolveGitCredsCarry({
         pushMode: cfg.effective.git.pushMode,
+        mode: resolveGitCredsMode(opts.withCredentials),
         projectRoot,
         existing: await runQueuedCarryGate({
           projectRoot,
@@ -682,8 +677,6 @@ export const claudeCommand = new Command('claude')
           onLog: (line) => cmdLog.write(line),
           onClose: () => cmdLog.close(),
         }),
-        yes: !!opts.yes,
-        withCredentialsYes: opts.withCredentialsYes ? true : undefined,
         onLog: (line) => cmdLog.write(line),
         onClose: () => cmdLog.close(),
       });
@@ -802,10 +795,9 @@ export const claudeCommand = new Command('claude')
     // into the box (gated), riding the same carry apply path.
     carryEntries = await resolveGitCredsCarry({
       pushMode: cfg.effective.git.pushMode,
+      mode: resolveGitCredsMode(opts.withCredentials),
       projectRoot,
       existing: carryEntries,
-      yes: !!opts.yes,
-      withCredentialsYes: opts.withCredentialsYes ? true : undefined,
       onLog: (line) => cmdLog.write(line),
       onClose: () => cmdLog.close(),
     });

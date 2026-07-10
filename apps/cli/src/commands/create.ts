@@ -18,7 +18,7 @@ import {
 import { Command } from 'commander';
 import { execSync, spawnSync } from 'node:child_process';
 import { runCarryGate } from '../lib/carry-gate.js';
-import { resolveGitCredsCarry } from '../lib/git-creds-gate.js';
+import { resolveGitCredsCarry, resolveGitCredsMode } from '../lib/git-creds-gate.js';
 import { cloudSizingProviderOptions } from '../lib/cloud-sizing.js';
 import { FromBranchError, UseBranchError, resolveBranchSelection } from '../lib/from-branch.js';
 import { openCommandLog } from '../lib/log-file.js';
@@ -81,10 +81,9 @@ interface CreateOptions {
   verbose?: boolean;
   /** --no-credential-sync => false; default true (config box.credentialSync). */
   credentialSync?: boolean;
-  /** --with-credentials: copy git credentials into the box (git.pushMode=direct); cloud only. */
-  withCredentials?: boolean;
-  /** --with-credentials-yes (or AGENTBOX_WITH_CREDENTIALS_YES=1): auto-approve the copy prompt. */
-  withCredentialsYes?: boolean;
+  /** --with-credentials [mode]: copy git creds into the box (git.pushMode=direct); cloud only.
+   *  true (bare) => ask; 'token' | 'ssh' pick without prompting. */
+  withCredentials?: boolean | string;
 }
 
 function buildCliOverrides(opts: CreateOptions): Partial<UserConfig> {
@@ -102,8 +101,8 @@ function buildCliOverrides(opts: CreateOptions): Partial<UserConfig> {
   if (Object.keys(box).length > 0) out.box = box;
   if (opts.portless !== undefined) out.portless = { enabled: opts.portless };
   // --with-credentials selects the direct push mode (box holds a copy of your
-  // git credentials). The actual copy is gated by a confirmation prompt later.
-  if (opts.withCredentials === true) out.git = { pushMode: 'direct' };
+  // git credentials). The actual copy is gated by a choice prompt later.
+  if (opts.withCredentials) out.git = { pushMode: 'direct' };
   return out;
 }
 
@@ -240,12 +239,8 @@ export const createCommand = new Command('create')
     'disable automatic credential sync for this box (the in-box watcher that fans refreshed agent tokens out to your other boxes)',
   )
   .option(
-    '--with-credentials',
-    "copy your git credentials (token + SSH/signing key) INTO the box so it can push/pull/sign entirely on its own -- it keeps working with your PC off, needs no hub. DANGEROUS: the credentials then live inside the box and in any snapshot of it. Cloud providers only; you'll be asked to confirm. Sets git.pushMode=direct.",
-  )
-  .option(
-    '--with-credentials-yes',
-    'auto-approve the --with-credentials copy prompt (also AGENTBOX_WITH_CREDENTIALS_YES=1). Required for non-TTY use.',
+    '--with-credentials [mode]',
+    "copy a git credential INTO the box so it can push with your PC off (needs no hub). Choose 'token' (push over HTTPS, commits unsigned, smallest exposure) or 'ssh' (copies your SSH private key, signs commits, riskiest). Bare flag prompts on a TTY; pass a value on non-TTY. DANGEROUS: the credential lives in the box and its snapshots. Cloud providers only. Sets git.pushMode=direct.",
   )
   .option(
     '-v, --verbose',
@@ -356,10 +351,9 @@ export const createCommand = new Command('create')
     // same carry apply path as the carry: block above.
     carryEntries = await resolveGitCredsCarry({
       pushMode: cfg.effective.git.pushMode,
+      mode: resolveGitCredsMode(opts.withCredentials),
       projectRoot,
       existing: carryEntries,
-      yes: !!opts.yes,
-      withCredentialsYes: opts.withCredentialsYes ? true : undefined,
       onLog: (line) => cmdLog.write(line),
       onClose: () => cmdLog.close(),
     });

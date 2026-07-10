@@ -7,29 +7,45 @@ import type { ResolvedCarryEntry } from '@agentbox/core';
 import { log, select } from './prompt.js';
 
 /**
- * Host-side gate for `git.pushMode=direct` (`--with-credentials`): detect the
- * git credentials this box needs to push/pull/sign on its own, confirm the copy
- * with a loud security warning, and hand back carry entries (secret files at
- * mode 0600, owned by the box `vscode` user) that ride the normal carry apply
- * path into the box.
+ * Host-side gate for `git.pushMode=direct` (`--with-credentials`): the box needs
+ * ONE credential to push on its own. We ask the user which to copy in — a
+ * GitHub token (push over HTTPS, commits unsigned, smallest exposure) or their
+ * SSH private key (push over SSH + sign commits, but the riskiest secret) — and
+ * hand back carry entries (0600, box-user owned) that ride the normal carry
+ * apply path.
  *
  * This deliberately breaks AgentBox's usual "credentials never enter the box"
  * invariant — the whole point of `direct` mode is a box that works with your PC
- * off, which requires it to hold real credentials. So the prompt is explicit and
- * the non-TTY path fails closed (mirrors the `carry:` gate), never silently
- * copying secrets.
+ * off, which requires it to hold a real credential. So the choice is explicit
+ * and the non-TTY path fails closed (mirrors the `carry:` gate), never silently
+ * copying a secret.
  */
 
 const BOX_HOME = '/home/vscode';
 const BOX_UID = 1000;
 
+/** Which credential the box carries to push on its own. */
+export type GitCredsMode = 'ask' | 'token' | 'ssh';
+
+/**
+ * Resolve the `--with-credentials [mode]` flag value (true when passed bare,
+ * or the string 'token'/'ssh') into a mode. Bare (or via config) → 'ask'
+ * (prompt on a TTY). Also honors `AGENTBOX_WITH_CREDENTIALS=token|ssh`. Throws
+ * on an unknown value.
+ */
+export function resolveGitCredsMode(flag: boolean | string | undefined): GitCredsMode {
+  const raw = typeof flag === 'string' ? flag : process.env.AGENTBOX_WITH_CREDENTIALS;
+  if (!raw) return 'ask';
+  const v = raw.toLowerCase();
+  if (v === 'token' || v === 'ssh' || v === 'ask') return v;
+  throw new Error(`--with-credentials: unknown mode "${raw}" (expected token, ssh, or no value to be asked)`);
+}
+
 export interface GitCredsGateArgs {
   /** Absolute project root (the git repo whose origin the box pushes to). */
   projectRoot: string;
-  /** Generic `-y/--yes` — does NOT auto-approve the copy (same rule as carry). */
-  yes: boolean;
-  /** `--with-credentials-yes` or AGENTBOX_WITH_CREDENTIALS_YES=1 — auto-approves. */
-  withCredentialsYes?: boolean;
+  /** Which credential to copy; 'ask' prompts on a TTY, errors on non-TTY. */
+  mode: GitCredsMode;
   onLog?: (line: string) => void;
   /** Test seam. */
   isTTY?: boolean;
@@ -40,11 +56,9 @@ export type GitCredsGateResult =
   | { decision: 'skip'; entries: [] }
   | { decision: 'cancel' };
 
-/** One credential we plan to copy, for the prompt (never holds the secret). */
+/** One credential we plan to copy, for the summary (never holds the secret). */
 interface CredPlanItem {
-  /** Human label shown in the prompt (no secret material). */
   label: string;
-  /** Box destination path (`~/…`). */
   dest: string;
 }
 
@@ -66,15 +80,20 @@ async function git(projectRoot: string, args: string[], opts?: { input?: string 
   }
 }
 
-/** True when the origin URL is an HTTPS remote (vs scp/ssh). */
-function isHttpsRemote(origin: string): boolean {
-  return /^https?:\/\//i.test(origin.trim());
+/** The host the box will push to (derived from origin; defaults to github.com). */
+async function originHost(projectRoot: string): Promise<string | null> {
+  const origin = await git(projectRoot, ['remote', 'get-url', 'origin']);
+  if (!origin) return null;
+  try {
+    return parseGitRemote(origin).host;
+  } catch {
+    return 'github.com';
+  }
 }
 
 /**
  * Ask git's configured credential helper for the token backing an HTTPS remote
  * (works across osxkeychain / store / manager). Falls back to `gh auth token`.
- * Returns `{ username, password }` or null.
  */
 async function fillHttpsToken(
   projectRoot: string,
@@ -88,7 +107,6 @@ async function fillHttpsToken(
     const password = /^password=(.*)$/m.exec(filled)?.[1] ?? '';
     if (password) return { username: username || 'x-access-token', password };
   }
-  // gh fallback (github.com only).
   if (host.toLowerCase() === 'github.com') {
     try {
       const r = await execa('gh', ['auth', 'token'], { reject: false });
@@ -132,39 +150,6 @@ async function fileExists(p: string): Promise<boolean> {
   }
 }
 
-/**
- * Given a path to either half of an SSH key pair (private key or `.pub`),
- * synthesize carry entries for BOTH the private key and the public key into
- * `~/.ssh/`, skipping any already queued. Copying the private key is essential:
- * SSH auth AND SSH commit signing both need it — a lone `.pub` can't sign or
- * authenticate. Returns the box path of the private key (for signingkey rewrite).
- */
-async function pushKeyPair(
-  keyPath: string,
-  entries: ResolvedCarryEntry[],
-  items: CredPlanItem[],
-  labelKind: string,
-): Promise<string | null> {
-  const priv = keyPath.endsWith('.pub') ? keyPath.slice(0, -4) : keyPath;
-  const pub = `${priv}.pub`;
-  let copiedPriv: string | null = null;
-  if (await fileExists(priv)) {
-    const name = basename(priv);
-    if (!entries.some((e) => e.rawDest === `~/.ssh/${name}`)) {
-      entries.push(await fileEntry(priv, `~/.ssh/${name}`));
-      items.push({ label: `${labelKind} ${priv.replace(homedir(), '~')}`, dest: `~/.ssh/${name}` });
-    }
-    copiedPriv = `${BOX_HOME}/.ssh/${name}`;
-  }
-  if (await fileExists(pub)) {
-    const pubName = basename(pub);
-    if (!entries.some((e) => e.rawDest === `~/.ssh/${pubName}`)) {
-      entries.push(await fileEntry(pub, `~/.ssh/${pubName}`));
-    }
-  }
-  return copiedPriv;
-}
-
 /** A carry entry for an existing host file, mode 0600, owned by the box user. */
 async function fileEntry(absSrc: string, dest: string): Promise<ResolvedCarryEntry> {
   const bytes = (await stat(absSrc)).size;
@@ -187,166 +172,185 @@ async function contentEntry(
   fileName: string,
   content: string,
   dest: string,
-  label: string,
-): Promise<{ entry: ResolvedCarryEntry; label: string }> {
+): Promise<ResolvedCarryEntry> {
   const absSrc = join(tmpDir, fileName);
   await writeFile(absSrc, content, { mode: 0o600 });
   await chmod(absSrc, 0o600);
-  const bytes = Buffer.byteLength(content);
   return {
-    label,
-    entry: {
-      rawSrc: label,
-      rawDest: dest,
-      absSrc,
-      absDest: dest.replace(/^~(?=\/)/, BOX_HOME),
-      kind: 'file',
-      bytes,
-      mode: 0o600,
-      user: BOX_UID,
-      optional: false,
-    } as ResolvedCarryEntry,
-  };
+    rawSrc: fileName,
+    rawDest: dest,
+    absSrc,
+    absDest: dest.replace(/^~(?=\/)/, BOX_HOME),
+    kind: 'file',
+    bytes: Buffer.byteLength(content),
+    mode: 0o600,
+    user: BOX_UID,
+    optional: false,
+  } as ResolvedCarryEntry;
 }
 
 /**
- * Build the credential-copy plan from the repo's origin. HTTPS remotes get a
- * `~/.git-credentials` (+ gh `hosts.yml` for `gh pr create`); SSH remotes get
- * the identity key. Commit signing (SSH format) copies the signing key too.
+ * Given a path to either half of an SSH key pair, synthesize carry entries for
+ * BOTH the private and public key into `~/.ssh/`, skipping duplicates. Copying
+ * the private key is essential: SSH auth AND signing both need it.
  */
-async function planGitCredentials(projectRoot: string, onLog: (l: string) => void): Promise<CredPlan> {
-  const origin = await git(projectRoot, ['remote', 'get-url', 'origin']);
-  if (!origin) {
-    onLog('with-credentials: repo has no origin remote; nothing to copy');
+async function pushKeyPair(
+  keyPath: string,
+  entries: ResolvedCarryEntry[],
+  items: CredPlanItem[],
+  labelKind: string,
+): Promise<void> {
+  const priv = keyPath.endsWith('.pub') ? keyPath.slice(0, -4) : keyPath;
+  const pub = `${priv}.pub`;
+  if (await fileExists(priv)) {
+    const name = basename(priv);
+    if (!entries.some((e) => e.rawDest === `~/.ssh/${name}`)) {
+      entries.push(await fileEntry(priv, `~/.ssh/${name}`));
+      items.push({ label: `${labelKind} ${priv.replace(homedir(), '~')}`, dest: `~/.ssh/${name}` });
+    }
+  }
+  if (await fileExists(pub)) {
+    const pubName = basename(pub);
+    if (!entries.some((e) => e.rawDest === `~/.ssh/${pubName}`)) {
+      entries.push(await fileEntry(pub, `~/.ssh/${pubName}`));
+    }
+  }
+}
+
+/** Token plan: copy just `~/.git-credentials` (box pushes over HTTPS). */
+async function planTokenCreds(projectRoot: string, onLog: (l: string) => void): Promise<CredPlan> {
+  const host = (await originHost(projectRoot)) ?? 'github.com';
+  const creds = await fillHttpsToken(projectRoot, host);
+  if (!creds) {
+    onLog(`with-credentials: could not obtain a token for ${host} (credential helper + gh both empty)`);
     return { entries: [], items: [] };
   }
-  let host = 'github.com';
-  try {
-    host = parseGitRemote(origin).host;
-  } catch {
-    /* keep default */
-  }
-
   const tmpDir = await mkdtemp(join(tmpdir(), 'agentbox-gitcreds-'));
   await chmod(tmpDir, 0o700);
+  const line = `https://${encodeURIComponent(creds.username)}:${encodeURIComponent(creds.password)}@${host}`;
+  const entries: ResolvedCarryEntry[] = [
+    await contentEntry(tmpDir, 'git-credentials', `${line}\n`, '~/.git-credentials'),
+  ];
+  return {
+    entries,
+    items: [{ label: `${host} token (from your credential helper)`, dest: '~/.git-credentials' }],
+  };
+}
 
+/** SSH plan: copy the identity key (+ signing key) — push over SSH, sign commits. */
+async function planSshCreds(projectRoot: string, onLog: (l: string) => void): Promise<CredPlan> {
+  const host = (await originHost(projectRoot)) ?? 'github.com';
   const entries: ResolvedCarryEntry[] = [];
   const items: CredPlanItem[] = [];
 
-  if (isHttpsRemote(origin)) {
-    const creds = await fillHttpsToken(projectRoot, host);
-    if (creds) {
-      const line = `https://${encodeURIComponent(creds.username)}:${encodeURIComponent(creds.password)}@${host}`;
-      const gitCred = await contentEntry(
-        tmpDir,
-        'git-credentials',
-        `${line}\n`,
-        '~/.git-credentials',
-        `git token for ${host} (from your credential helper)`,
-      );
-      entries.push(gitCred.entry);
-      items.push({ label: gitCred.label, dest: gitCred.entry.rawDest });
-      // NOTE: `gh` (PR create/view/…) is intentionally NOT wired for direct
-      // mode in v1 — the box ships only the relay `gh` shim, no real `gh`
-      // binary, so PR ops keep routing through the host relay (need the PC on,
-      // like cp/download). Baking `gh` or an API-based PR creator is a follow-up.
-    } else {
-      onLog(`with-credentials: could not obtain a token for ${host} (credential helper + gh both empty)`);
-    }
+  const key = await resolveSshIdentity(host);
+  if (key) {
+    await pushKeyPair(key, entries, items, 'SSH key');
   } else {
-    // SSH remote: copy the identity key ssh would use (private + public).
-    const key = await resolveSshIdentity(host);
-    if (key) {
-      await pushKeyPair(key, entries, items, 'SSH key');
-    } else {
-      onLog(`with-credentials: no SSH identity found for ${host}`);
-    }
+    onLog(`with-credentials: no SSH identity found for ${host}`);
   }
 
-  // Commit signing (SSH format): copy the signing key so in-box commits sign.
+  // Also copy an SSH signing key if commit signing uses one and it differs.
   const gpgsign = (await git(projectRoot, ['config', '--get', 'commit.gpgsign'])).toLowerCase();
   const format = (await git(projectRoot, ['config', '--get', 'gpg.format'])).toLowerCase();
   const signingKey = await git(projectRoot, ['config', '--get', 'user.signingkey']);
-  if (gpgsign === 'true' && signingKey) {
-    if (format === 'ssh') {
-      // user.signingkey may be a path (often the `.pub`), or a literal `key::…`
-      // value. For a path, copy the whole pair — signing needs the PRIVATE key,
-      // even when signingkey names the `.pub`.
-      const path = signingKey.replace(/^~(?=\/)/, homedir());
-      if (path.includes('/') && (await fileExists(path))) {
-        await pushKeyPair(path, entries, items, 'SSH signing key');
-      }
-    } else {
-      onLog(
-        `with-credentials: commit signing uses gpg.format=${format || 'openpgp'} — GPG signing keys are not copied (v1 supports SSH signing only); in-box commits will be unsigned`,
-      );
-    }
+  if (gpgsign === 'true' && signingKey && format === 'ssh' && signingKey.includes('/')) {
+    const path = signingKey.replace(/^~(?=\/)/, homedir());
+    if (await fileExists(path)) await pushKeyPair(path, entries, items, 'SSH signing key');
+  } else if (gpgsign === 'true' && format && format !== 'ssh') {
+    onLog(
+      `with-credentials: commit signing uses gpg.format=${format} — GPG signing keys are not copied (SSH signing only); in-box commits will be unsigned`,
+    );
   }
-
   return { entries, items };
 }
 
-/** Render the confirmation table + security warning. */
-function printSummary(items: CredPlanItem[]): void {
+/** Render the chosen-mode summary + security warning. */
+function printSummary(mode: 'token' | 'ssh', items: CredPlanItem[]): void {
   const destW = Math.max(4, ...items.map((i) => i.dest.length));
   const rows = [`  ${pad('dest', destW)}   what`];
   for (const i of items) rows.push(`  ${pad(i.dest, destW)}   ${i.label}`);
   log.message(rows.join('\n'));
-  log.warn(
-    'These credentials will be COPIED INTO the box so it can push/pull/sign with your PC off.\n' +
-      'Danger: they then live inside the box (its vscode user has passwordless sudo — no boundary\n' +
-      'there) and are captured in any snapshot/checkpoint of the box. Only do this for a box you\n' +
-      'trust to keep running unattended.',
-  );
+  if (mode === 'ssh') {
+    log.warn(
+      'Copying your SSH PRIVATE KEY into the box. This is the riskiest option — the box user\n' +
+        'has passwordless sudo (no boundary), and the key is captured in any snapshot/checkpoint.\n' +
+        'Use a key dedicated to git, NOT the key you use to log into other servers.',
+    );
+  } else {
+    log.warn(
+      'Copying a GitHub token into the box so it can push with your PC off. Commits will be\n' +
+        'UNSIGNED. The token lives in the box and in any snapshot/checkpoint of it.',
+    );
+  }
 }
 
 function pad(s: string, w: number): string {
   return s.length >= w ? s : s + ' '.repeat(w - s.length);
 }
 
+/** Prompt for which credential to copy (TTY only). */
+async function askMode(): Promise<'token' | 'ssh' | 'cancel'> {
+  return select<'token' | 'ssh' | 'cancel'>({
+    message: 'This box will push with your PC off — what credential should it hold?',
+    options: [
+      {
+        value: 'token',
+        label: 'GitHub token (recommended)',
+        hint: 'push over HTTPS; commits unsigned; smallest exposure',
+      },
+      {
+        value: 'ssh',
+        label: 'SSH private key',
+        hint: 'push over SSH + sign commits; DANGEROUS — use a dedicated key, not your server-login key',
+      },
+      { value: 'cancel', label: 'No — cancel', hint: "don't copy any credential" },
+    ],
+    initialValue: 'token',
+  });
+}
+
 /**
- * Run the git-credentials gate once for a `create`/launcher command in
- * `git.pushMode=direct`. Returns the carry entries to merge into the box's
- * carry payload (empty on skip), or signals cancel.
+ * Run the git-credentials gate for a `create`/launcher command in
+ * `git.pushMode=direct`. Resolves the mode (asking on a TTY), builds the plan,
+ * and returns the carry entries to merge into the box's carry payload.
  */
 export async function runGitCredsGate(args: GitCredsGateArgs): Promise<GitCredsGateResult> {
   const onLog = args.onLog ?? (() => {});
-  const plan = await planGitCredentials(args.projectRoot, onLog);
+  const tty = args.isTTY ?? process.stdin.isTTY;
+
+  let mode: 'token' | 'ssh';
+  if (args.mode === 'ask') {
+    if (!tty) {
+      throw new Error(
+        'with-credentials: on a non-TTY you must choose the credential explicitly — pass ' +
+          '`--with-credentials token` (push over HTTPS, recommended) or `--with-credentials ssh` ' +
+          '(copies your SSH private key).',
+      );
+    }
+    const choice = await askMode();
+    if (choice === 'cancel') return { decision: 'cancel' };
+    mode = choice;
+  } else {
+    mode = args.mode;
+  }
+
+  const plan = mode === 'token' ? await planTokenCreds(args.projectRoot, onLog) : await planSshCreds(args.projectRoot, onLog);
   if (plan.entries.length === 0) {
-    // Nothing to copy — direct mode can't work, but that's a user-visible
-    // warning, not a hard failure of the create.
     log.warn(
-      'with-credentials: found no git credentials to copy (no reachable token and no SSH key). ' +
-        'The box will not be able to push on its own.',
+      mode === 'token'
+        ? 'with-credentials: no GitHub token found (credential helper + gh both empty). The box ' +
+            'will not be able to push on its own. Run `gh auth login` or configure a git credential helper.'
+        : 'with-credentials: no SSH key found. The box will not be able to push on its own.',
     );
     return { decision: 'skip', entries: [] };
   }
 
-  const tty = args.isTTY ?? process.stdin.isTTY;
-  const autoYes = args.withCredentialsYes ?? process.env.AGENTBOX_WITH_CREDENTIALS_YES === '1';
-
-  if (!autoYes) {
-    if (!tty) {
-      throw new Error(
-        'with-credentials: requires approval but stdin is not a TTY and --with-credentials-yes was not set. ' +
-          'Set AGENTBOX_WITH_CREDENTIALS_YES=1 to opt in to copying your git credentials into this box.',
-      );
-    }
-    printSummary(plan.items);
-    const choice = await select<'approve' | 'skip-this-run' | 'cancel'>({
-      message: 'Copy these git credentials into the box?',
-      options: [
-        { value: 'approve', label: 'yes' },
-        { value: 'skip-this-run', label: 'skip' },
-        { value: 'cancel', label: 'cancel' },
-      ],
-      initialValue: 'approve',
-    });
-    if (choice === 'cancel') return { decision: 'cancel' };
-    if (choice === 'skip-this-run') return { decision: 'skip', entries: [] };
-  }
-
-  onLog(`with-credentials: copying ${String(plan.entries.length)} credential file(s) into the box`);
+  // On a TTY, show what will be copied + the security warning before proceeding.
+  // (When the mode came from an explicit flag on a non-TTY, that flag is the
+  // opt-in — same rule as `--carry-yes`.)
+  if (tty) printSummary(mode, plan.items);
+  onLog(`with-credentials: mode=${mode}, copying ${String(plan.entries.length)} file(s) into the box`);
   return { decision: 'approve', entries: plan.entries };
 }
 
@@ -354,15 +358,13 @@ export async function runGitCredsGate(args: GitCredsGateArgs): Promise<GitCredsG
  * Shared create-path helper: when `pushMode === 'direct'`, run the gate and
  * return `existing` carry entries with the approved credential files appended;
  * on cancel, log + call `onClose` + exit(0); on hard error, log + exit(1). When
- * not in direct mode, returns `existing` untouched. Used by `create` and every
- * agent launcher so `--with-credentials` behaves identically everywhere.
+ * not in direct mode, returns `existing` untouched.
  */
 export async function resolveGitCredsCarry(args: {
   pushMode: string;
+  mode: GitCredsMode;
   projectRoot: string;
   existing: ResolvedCarryEntry[];
-  yes: boolean;
-  withCredentialsYes?: boolean;
   onLog?: (line: string) => void;
   onClose?: () => void;
 }): Promise<ResolvedCarryEntry[]> {
@@ -370,8 +372,7 @@ export async function resolveGitCredsCarry(args: {
   try {
     const gate = await runGitCredsGate({
       projectRoot: args.projectRoot,
-      yes: args.yes,
-      withCredentialsYes: args.withCredentialsYes,
+      mode: args.mode,
       onLog: args.onLog,
     });
     if (gate.decision === 'cancel') {

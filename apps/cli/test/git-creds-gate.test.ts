@@ -3,7 +3,7 @@ import { execa } from 'execa';
 import { chmod, mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runGitCredsGate } from '../src/lib/git-creds-gate.js';
+import { resolveGitCredsMode, runGitCredsGate } from '../src/lib/git-creds-gate.js';
 
 // The gate shells out to real `git` (credential fill, config reads) but never
 // touches the network or docker: an HTTPS origin + a fake credential helper
@@ -43,8 +43,7 @@ describe('runGitCredsGate', () => {
 
     const res = await runGitCredsGate({
       projectRoot: dir,
-      yes: false,
-      withCredentialsYes: true, // non-interactive auto-approve
+      mode: 'token',
       isTTY: false,
     });
 
@@ -67,8 +66,7 @@ describe('runGitCredsGate', () => {
     const dir = await initRepo('git@github.com:acme/widgets.git');
     const res = await runGitCredsGate({
       projectRoot: dir,
-      yes: false,
-      withCredentialsYes: true,
+      mode: 'ssh',
       isTTY: false,
     });
 
@@ -103,8 +101,7 @@ describe('runGitCredsGate', () => {
 
     const res = await runGitCredsGate({
       projectRoot: dir,
-      yes: false,
-      withCredentialsYes: true,
+      mode: 'ssh',
       isTTY: false,
     });
     expect(res.decision).toBe('approve');
@@ -116,7 +113,16 @@ describe('runGitCredsGate', () => {
     expect(res.entries.find((e) => e.rawDest === '~/.ssh/id_rsa.pub')).toBeDefined();
   });
 
-  it('non-TTY without --with-credentials-yes throws fail-loud (never silently copies)', async () => {
+  it('resolveGitCredsMode: bare flag -> ask, values pass through, unknown throws', () => {
+    expect(resolveGitCredsMode(true)).toBe('ask');
+    expect(resolveGitCredsMode(undefined)).toBe('ask');
+    expect(resolveGitCredsMode('token')).toBe('token');
+    expect(resolveGitCredsMode('ssh')).toBe('ssh');
+    expect(resolveGitCredsMode('SSH')).toBe('ssh');
+    expect(() => resolveGitCredsMode('bogus')).toThrow(/unknown mode/);
+  });
+
+  it("non-TTY with mode 'ask' throws fail-loud (must pick token|ssh explicitly)", async () => {
     const dir = await initRepo('https://github.com/acme/widgets.git', async (d) => {
       await execa('git', [
         '-C',
@@ -127,8 +133,8 @@ describe('runGitCredsGate', () => {
       ]);
     });
     await expect(
-      runGitCredsGate({ projectRoot: dir, yes: true, isTTY: false }),
-    ).rejects.toThrow(/AGENTBOX_WITH_CREDENTIALS_YES=1/);
+      runGitCredsGate({ projectRoot: dir, mode: 'ask', isTTY: false }),
+    ).rejects.toThrow(/--with-credentials token/);
   });
 
   it('no credentials found → skip (does not block create)', async () => {
@@ -138,8 +144,7 @@ describe('runGitCredsGate', () => {
     });
     const res = await runGitCredsGate({
       projectRoot: dir,
-      yes: false,
-      withCredentialsYes: true,
+      mode: 'token',
       isTTY: false,
     });
     // Either skip (no token resolvable) or approve if the host env happens to

@@ -53,13 +53,22 @@ third `git.pushMode`: `direct`, exposed via the `--with-credentials` flag.
 - **Providers:** cloud only. `direct` is rejected for docker (the box already runs on the host
   machine, so independence is meaningless).
 
-### Naming
+### Naming + the two credential shapes
 
-`--with-credentials` (flag) → `git.pushMode=direct` (mechanism value). The flag name is
-intentionally honest-but-neutral, so the two load-bearing messages — **"this box can push/pull
-with your PC off"** and **"this is dangerous: your credentials now live in the box and its
-snapshots"** — are carried loudly by the flag `--help` text and the confirmation prompt (Phase 2),
-not left implicit in the name.
+`--with-credentials [mode]` (flag) → `git.pushMode=direct` (mechanism value). The gate **asks
+which credential** to copy (the security trade-off), and this is the shipped shape:
+
+- **token** (recommended) — copy just a GitHub token (`~/.git-credentials`). Box pushes over
+  **HTTPS**; a github SSH origin is rewritten to HTTPS via global `url.insteadOf` (both the scp
+  `git@github.com:` and `ssh://git@github.com/` forms — multi-valued, so `--add`), so **no SSH key
+  is ever copied**. Commits are unsigned.
+- **ssh** — copy the SSH **private** key. Box pushes over SSH (HTTPS origin rewritten to SSH) and
+  signs commits (guarded on a passphrase-less probe). Riskiest — a private key in the box.
+
+Bare `--with-credentials` prompts (`token` / `ssh` / cancel) on a TTY; non-TTY must pick
+explicitly (`--with-credentials token|ssh` or `AGENTBOX_WITH_CREDENTIALS=token|ssh`) — never copies
+a secret silently. A token can't sign commits (that's what the SSH key is for); most agent
+workflows are fine with unsigned commits, so token is the low-exposure default.
 
 ## Phases
 
