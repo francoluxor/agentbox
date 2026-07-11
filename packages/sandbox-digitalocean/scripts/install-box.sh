@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# AgentBox Hetzner base-image installer.
+# AgentBox DigitalOcean base-image installer.
 #
 # Idempotent shell-script mirror of `packages/sandbox-docker/Dockerfile.box`,
-# run once on a freshly-booted Ubuntu 24.04 VPS during
-# `agentbox prepare --provider hetzner`. After this script completes we
-# `create_image` the VPS — that snapshot is what every per-box create boots
+# run once on a freshly-booted Ubuntu 24.04 Droplet during
+# `agentbox prepare --provider digitalocean`. After this script completes we
+# snapshot the Droplet — that snapshot is what every per-box create boots
 # from.
 #
 # Required inputs (already in place when this script runs):
@@ -107,9 +107,9 @@ step "vscode user (UID 1000) + sudoers"
 # bakes in /home/vscode (agentbox-ctl, /etc/profile.d/agentbox.sh, the
 # credential symlinks, the in-box configs) Just Works regardless of provider.
 if ! id vscode >/dev/null 2>&1; then
-  # Hetzner's stock images already create a sequenced UID 1000 user named
-  # `debian` / `ubuntu` depending on the distro stage. If something owns UID
-  # 1000 already, rename that account to `vscode` instead of failing — keeps
+  # DigitalOcean's stock Ubuntu image already creates a UID 1000 user named
+  # `ubuntu`. If something owns UID 1000 already, rename that account to
+  # `vscode` instead of failing — keeps
   # any cloud-init-deposited files (authorized_keys) discoverable under the
   # new home.
   if existing="$(getent passwd 1000 | cut -d: -f1)"; then
@@ -259,11 +259,11 @@ sudo -u vscode -H ln -sf /home/vscode/.claude/_claude.json /home/vscode/.claude.
 # `/agentbox-setup` skill — the in-box-only first-run wizard the setup
 # prompt references. Docker's seedSetupSkillIntoVolume() (sandbox-docker/
 # src/claude.ts) does this at create time via a helper container with the
-# claude-config volume mounted. Hetzner doesn't have a shared volume — we
+# claude-config volume mounted. DigitalOcean doesn't have a shared volume — we
 # bake it directly into the snapshot here so every box has it. The same
 # content is also reachable as a static file at /usr/local/share/agentbox/
 # setup-guide.md (referenced as fallback in the wizard initial prompt).
-# `tar -xzf` of the host's ~/.claude in prepareHetzner extracts WITHOUT
+# `tar -xzf` of the host's ~/.claude in prepareDigitalOcean extracts WITHOUT
 # removing pre-existing files in the dest, so this skill survives the
 # subsequent static-config bake.
 sudo -u vscode -H cp /usr/local/share/agentbox/setup-guide.md \
@@ -320,7 +320,7 @@ step "allow unprivileged user namespaces (sysctl drop-in)"
 # "FATAL: zygote_host_impl_linux.cc: No usable sandbox!". Docker boxes
 # don't hit it because the host kernel running their containers is older
 # (or they get the relaxed sysctl from the docker host). On a bare Ubuntu
-# 24.04 Hetzner VPS we have to flip it ourselves.
+# 24.04 DigitalOcean Droplet we have to flip it ourselves.
 #
 # We flip both the modern knob (`apparmor_restrict_unprivileged_userns`)
 # and the legacy `unprivileged_userns_clone` — the legacy one is already
