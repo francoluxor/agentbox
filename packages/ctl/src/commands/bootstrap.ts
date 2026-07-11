@@ -223,6 +223,12 @@ function spawnDetached(cmd: string, args: string[], logFile: string): void {
     stdio: ['ignore', fd, fd],
     env: process.env,
   });
+  // A missing binary surfaces as an async 'error' event; unhandled it crashes
+  // the whole bootstrap. These daemons are best-effort (a slim base image may
+  // not ship the VNC/dockerd scripts) — log and continue.
+  child.on('error', (err) => {
+    process.stderr.write(`agentbox-ctl bootstrap: ${cmd} failed to spawn: ${err.message}\n`);
+  });
   child.unref();
 }
 
