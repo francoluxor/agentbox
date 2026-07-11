@@ -27,7 +27,7 @@
 import { join } from 'node:path';
 import type { Provider } from '@agentbox/core';
 import { UserFacingError } from '@agentbox/core';
-import { computeContextSha256, readCliStamp } from '@agentbox/sandbox-core';
+import { claudeInstallFingerprint, computeContextSha256, readCliStamp } from '@agentbox/sandbox-core';
 import {
   stageClaudeStaticForUpload,
   stageCodexStaticForUpload,
@@ -59,6 +59,13 @@ export interface PrepareDigitalOceanOptions {
   region?: string;
   /** Droplet size slug (defaults to `s-2vcpu-4gb` — 2 vCPU / 4 GB / 80 GB). */
   size?: string;
+  /**
+   * How the bake installs Claude Code: `native` (default) or `npm`. Threaded
+   * into install-box.sh via `AGENTBOX_CLAUDE_INSTALL`. The `npm` escape hatch
+   * is for cloud egress IPs whose CDN the native installer 403s. Bake-time
+   * only; part of the context fingerprint (a change re-bakes).
+   */
+  claudeInstall?: 'native' | 'npm';
   /**
    * Override the firewall source CIDR. Defaults to auto-detected egress IP
    * via `detectEgressIp()` (with `/32` appended). Pass `'0.0.0.0/0'` for the
@@ -119,8 +126,12 @@ export async function prepareDigitalOcean(
     cliRuntimeRoot: opts.cliRuntimeRoot ?? findStagedCliRuntimeRoot(),
     repoRoot: opts.repoRoot,
   });
-  const contextSha = await computeContextSha256(
-    assets.map((a) => ({ rel: a.name, abs: a.localPath })),
+  const claudeInstall = opts.claudeInstall ?? 'native';
+  // Fold the Claude install mode into the fingerprint so switching native<->npm
+  // re-bakes even though the staged asset files are identical (matches Hetzner).
+  const contextSha = claudeInstallFingerprint(
+    await computeContextSha256(assets.map((a) => ({ rel: a.name, abs: a.localPath }))),
+    claudeInstall,
   );
 
   if (!opts.force && existingState.base) {
@@ -227,7 +238,7 @@ export async function prepareDigitalOcean(
     progress('running install-box.sh on temp Droplet (this takes ~5-15 min)');
     const installRes = await sshExec(
       sshTarget,
-      `sudo mkdir -p /var/log/agentbox && set -o pipefail && bash -x /tmp/agentbox-install.sh 2>&1 | sudo tee /var/log/agentbox/install.log`,
+      `sudo mkdir -p /var/log/agentbox && set -o pipefail && AGENTBOX_CLAUDE_INSTALL=${claudeInstall} bash -x /tmp/agentbox-install.sh 2>&1 | sudo tee /var/log/agentbox/install.log`,
       {
         timeoutMs: INSTALL_SCRIPT_TIMEOUT_MS,
         onLine: (line) => log(`[install] ${line}`),
@@ -385,6 +396,15 @@ export const prepareDigitalOceanProvider: NonNullable<Provider['prepare']> = (re
     name: req.name,
     hostWorkspace: req.hostWorkspace ?? process.cwd(),
     force: req.force,
+    // Region for the temp bake Droplet (defaults to nyc3 when unset). Resolved
+    // by the CLI from `--location` / `box.digitaloceanRegion`.
+    region: req.location,
+    // Droplet size for the temp bake VPS (CLI `--size` / `box.sizeDigitalocean`).
+    size: req.size,
+    // Forward the Claude install mode (native | npm) so the `npm` escape hatch
+    // (box.claudeInstall / --claude-install npm) reaches the bake — the native
+    // installer's CDN 403s some datacenter egress IPs. (matches Hetzner.)
+    claudeInstall: req.claudeInstall,
     onLog: req.onLog,
   });
 
