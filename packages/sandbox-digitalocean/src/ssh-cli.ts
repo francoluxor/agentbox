@@ -41,6 +41,14 @@ export function sshOptArgs(target: SshTargetArgs): string[] {
     '-o', 'GlobalKnownHostsFile=/dev/null',
     '-o', 'BatchMode=yes',
     '-o', 'LogLevel=ERROR',
+    // Detect a dead/stalled peer and drop the connection instead of hanging
+    // forever. The per-box firewall is locked to the host's egress IP, so if
+    // that IP flaps mid-command (roaming Wi-Fi, VPN toggle) the return traffic
+    // is silently dropped and the ssh channel would otherwise block with no
+    // EOF — seen as a `prepare`/`exec` that never returns. 15s * 4 = a ~60s
+    // fail-fast so callers (retry wrappers, prepare cleanup) can react.
+    '-o', 'ServerAliveInterval=15',
+    '-o', 'ServerAliveCountMax=4',
   ];
   if (target.controlPath) {
     out.push('-o', `ControlPath=${target.controlPath}`);

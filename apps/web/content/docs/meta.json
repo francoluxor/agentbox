@@ -27,6 +27,7 @@
     "---Providers---",
     "local-docker",
     "hetzner",
+    "digitalocean",
     "daytona",
     "vercel",
     "e2b",

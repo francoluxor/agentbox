@@ -446,7 +446,7 @@ export const prepareCommand = new Command('prepare')
   )
   .option(
     '-p, --provider <name>',
-    'provider to prepare (docker | daytona | hetzner | vercel | e2b). Omit for status-only.',
+    'provider to prepare (docker | daytona | hetzner | vercel | e2b | digitalocean). Omit for status-only.',
   )
   .option('-n, --name <name>', 'snapshot name (Daytona only; default: agentbox-base-<timestamp>)')
   .option('-f, --force', 'rebuild even if the image / snapshot already exists')
