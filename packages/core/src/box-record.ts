@@ -123,6 +123,13 @@ export interface CloudBoxFields {
    */
   sessionTimeoutMs?: number;
   /**
+   * Actual resources the backend provisioned, read back from the create
+   * response (Hetzner reports the real `server_type` cores/memory/disk). Shown
+   * by `agentbox status --inspect`. Absent on backends that can't report it and
+   * on pre-feature records → readers fall back to the provider's static defaults.
+   */
+  resources?: { cpu?: number; memory?: number; disk?: number };
+  /**
    * True when this box's `/workspace` was seeded from the host checkout (the
    * laptop `create` path), i.e. it has a real fork base shared with the host.
    * Left unset for `inBoxClone` / plane boxes (they clone in-box from a leased
@@ -159,11 +166,30 @@ export interface CloudBoxFields {
    */
   controlPlaneUrl?: string;
   /**
-   * Git push routing (`git.pushMode`): `'auto' | 'relay' | 'lease'`. Persisted
-   * (not re-derived from config) so a resume re-kick re-threads `AGENTBOX_GIT_LEASE`
-   * correctly even if the host config changed. Mirrors config's `GitPushMode`.
+   * Git push routing (`git.pushMode`): `'auto' | 'relay' | 'lease' | 'direct'`.
+   * Persisted (not re-derived from config) so a resume re-kick re-threads
+   * `AGENTBOX_GIT_LEASE` / `AGENTBOX_GIT_DIRECT` correctly even if the host
+   * config changed. Mirrors config's `GitPushMode`.
    */
-  gitPushMode?: 'auto' | 'relay' | 'lease';
+  gitPushMode?: 'auto' | 'relay' | 'lease' | 'direct';
+}
+
+/**
+ * Last resolved SSH connection target for a box — host/user, the per-box
+ * identity file (identity-authed providers: docker localhost sshd, Hetzner),
+ * and an optional port (docker publishes its sshd on an ephemeral loopback
+ * port; cloud providers use the default 22). Persisted on `BoxRecord.ssh`
+ * whenever we're already online (create/start/code/open/shell) so
+ * `~/.agentbox/ssh/config` can be regenerated purely from state — the
+ * regenerate never hits a provider API or wakes a paused box. The host IP /
+ * loopback port can change across stop/start, so it is refreshed on start/resume.
+ * Absent for providers with no SSH.
+ */
+export interface SshTargetRecord {
+  host: string;
+  user: string;
+  identityFile?: string;
+  port?: number;
 }
 
 export interface GitWorktreeRecord {
@@ -201,6 +227,13 @@ export interface GitWorktreeRecord {
 export interface BoxRecord {
   id: string;
   name: string;
+  /**
+   * Cosmetic user-chosen label, set via `agentbox status <box> --set-name`.
+   * Purely for display and lookup — unlike `name` it does NOT drive the
+   * container, git branch, or Portless URL. Absent means "fall back to name".
+   * See docs/state.md.
+   */
+  displayName?: string;
   /**
    * Sandbox backend the box runs on. Absent on records written before the
    * multi-provider split — `readState` migrates those to `'docker'` on read.
@@ -299,6 +332,18 @@ export interface BoxRecord {
   webContainerPort?: number;
   /** Host port mapped to container :80 (Docker). */
   webHostPort?: number;
+  /** In-box localhost sshd is enabled for this box (Docker). */
+  sshEnabled?: boolean;
+  /** Container-side sshd port (22). Docker. */
+  sshContainerPort?: number;
+  /** Ephemeral loopback host port mapped to the container's sshd (Docker). */
+  sshHostPort?: number;
+  /**
+   * Last resolved SSH connection target. Regenerated into `~/.agentbox/ssh/config`
+   * by `syncAgentboxSshConfig`. Docker: `127.0.0.1` + the per-box key + the
+   * ephemeral `sshHostPort`; cloud (Hetzner): the VPS IP + per-box key.
+   */
+  ssh?: SshTargetRecord;
   /** Portless route name registered for this box's web port. Docker only. */
   portlessAlias?: string;
   /** Full user-facing URL the Portless proxy serves for this box. Docker only. */

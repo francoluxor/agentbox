@@ -34,11 +34,16 @@ export type ClaudeInstallMethod = 'native' | 'npm';
  * - `lease` — the relay/plane leases a short-lived GitHub-App token and the box
  *   pushes directly with it (keeps working with the laptop off). Needs a
  *   reachable relay/plane with a GitHub App configured.
+ * - `direct` — the box holds a COPY of your git credentials (token + SSH key)
+ *   and pushes/pulls/signs entirely on its own, so it keeps working with the
+ *   laptop off and needs no hub. Selected via `--with-credentials`, which copies
+ *   the credentials in behind a confirmation prompt. Dangerous: the credentials
+ *   live inside the box and in any snapshot/checkpoint of it. Cloud boxes only.
  * - `auto` (default) — lease when a control plane is configured for the box
  *   (`relay.controlPlaneUrl`), else relay. Today's behavior.
  * Docker boxes ignore this (always `relay` — they bind-mount the host `.git`).
  */
-export type GitPushMode = 'auto' | 'relay' | 'lease';
+export type GitPushMode = 'auto' | 'relay' | 'lease' | 'direct';
 /** Where `agentbox claude|codex|opencode` opens the attached session when the host
  *  shell is running inside tmux, cmux, Herdr, or iTerm2. `same` keeps today's inline behavior. */
 export type AttachOpenIn = 'split' | 'window' | 'tab' | 'same';
@@ -71,9 +76,10 @@ export interface UserConfig {
     /**
      * Generic VM-size fallback for cloud providers. Provider-interpreted:
      * Hetzner = server type string (e.g. `cx33`); Daytona = `cpu-memory-disk`
-     * GB spec (e.g. `4-8-20`). Per-provider `size{Provider}` wins over this.
-     * Docker/Vercel ignore it (Docker uses `memory`/`cpus`/`disk`; Vercel uses
-     * `vercelVcpus`).
+     * GB spec (e.g. `4-8-20`); Vercel = vCPU count (`1`/`2`/`4`/`8`);
+     * E2B = `cpu-memory` GB spec (e.g. `4-8`), applied at `prepare` time.
+     * Per-provider `size{Provider}` wins over this. Docker ignores it (it uses
+     * `memory`/`cpus`/`disk`).
      */
     size?: string;
     sizeDocker?: string;
@@ -116,11 +122,12 @@ export interface UserConfig {
     pidsLimit?: number;
     disk?: string;
     bundleDepth?: number;
-    vercelVcpus?: number;
+    hetznerLocation?: string;
     vercelTimeoutMs?: number;
     vercelNetworkPolicy?: string;
     e2bTimeoutMs?: number;
     cpMaxBytes?: number;
+    credentialSync?: boolean;
   };
   checkpoint?: {
     maxLayers?: number;
@@ -151,6 +158,9 @@ export interface UserConfig {
     user?: string;
     login?: boolean;
     tmux?: boolean;
+  };
+  ssh?: {
+    autoConfig?: boolean;
   };
   engine?: {
     kind?: EngineKind;
@@ -198,6 +208,15 @@ export interface UserConfig {
   maintenance?: {
     pruneProjectConfigs?: boolean;
     pruneProjectConfigsEvery?: number;
+  };
+  update?: {
+    /**
+     * Daily background check for a newer published CLI (npm registry) and
+     * tray app (release sha sidecar), plus the "newer version available"
+     * nudge it feeds. At most one network probe per 24h; `false` disables
+     * both the probe and the nudge.
+     */
+    check?: boolean;
   };
   integrations?: {
     notion?: {
@@ -259,11 +278,12 @@ export interface EffectiveConfig {
     pidsLimit: number;
     disk: string;
     bundleDepth: number | undefined;
-    vercelVcpus: number;
+    hetznerLocation: string;
     vercelTimeoutMs: number;
     vercelNetworkPolicy: string;
     e2bTimeoutMs: number;
     cpMaxBytes: number;
+    credentialSync: boolean;
   };
   checkpoint: {
     maxLayers: number;
@@ -294,6 +314,9 @@ export interface EffectiveConfig {
     user: string;
     login: boolean;
     tmux: boolean;
+  };
+  ssh: {
+    autoConfig: boolean;
   };
   engine: {
     kind: EngineKind;
@@ -333,6 +356,9 @@ export interface EffectiveConfig {
   maintenance: {
     pruneProjectConfigs: boolean;
     pruneProjectConfigsEvery: number;
+  };
+  update: {
+    check: boolean;
   };
   integrations: {
     notion: {
@@ -415,11 +441,12 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     pidsLimit: 0,
     disk: '',
     bundleDepth: undefined,
-    vercelVcpus: 2,
+    hetznerLocation: 'nbg1',
     vercelTimeoutMs: 2_700_000,
     vercelNetworkPolicy: '',
     e2bTimeoutMs: 2_700_000,
     cpMaxBytes: 100 * 1024 * 1024,
+    credentialSync: true,
   },
   checkpoint: {
     maxLayers: 3,
@@ -450,6 +477,9 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     user: 'vscode',
     login: true,
     tmux: true,
+  },
+  ssh: {
+    autoConfig: true,
   },
   engine: {
     kind: 'auto',
@@ -489,6 +519,9 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
   maintenance: {
     pruneProjectConfigs: true,
     pruneProjectConfigsEvery: 50,
+  },
+  update: {
+    check: true,
   },
   integrations: {
     notion: { enabled: false },
@@ -577,7 +610,7 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     key: 'box.size',
     type: 'string',
     description:
-      'Default VM size for cloud providers. Provider-interpreted: hetzner = server type (e.g. `cx33`); daytona = `cpu-memory-disk` GB (e.g. `4-8-20`). Used as fallback when no per-provider override is set. Docker/Vercel ignore it.',
+      'Default VM size for cloud providers. Provider-interpreted: hetzner = server type (e.g. `cx33`); daytona = `cpu-memory-disk` GB (e.g. `4-8-20`); vercel = vCPU count (1, 2, 4, 8); e2b = `cpu-memory` GB (e.g. `4-8`). Used as fallback when no per-provider override is set. Docker ignores it.',
   },
   ...perProviderSizeKeys(),
   {
@@ -694,10 +727,10 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
       'Cap git bundle history shipped to cloud sandboxes (daytona, hetzner). 0 = full history. Unset = adaptive default (last 200 commits; re-bundle at 100 if the bundle exceeds 20 MB). Ignored for docker (which bind-mounts .git/).',
   },
   {
-    key: 'box.vercelVcpus',
-    type: 'int',
+    key: 'box.hetznerLocation',
+    type: 'string',
     description:
-      'vCPUs for new --provider vercel boxes (Vercel couples RAM at 2048 MB/vCPU). Default 2. Vercel only accepts specific counts (e.g. 1, 2, 4, 8) — an unsupported value fails create with a 400. Vercel-only; ignored by other providers.',
+      'Hetzner datacenter location new --provider hetzner boxes are created in (e.g. `nbg1`, `fsn1`, `hel1`, `ash`). Default `nbg1`. Overridable per-create with `--location`. Hetzner-only; ignored by other providers.',
   },
   {
     key: 'box.vercelTimeoutMs',
@@ -717,6 +750,12 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     description:
       'Max bytes a single host→box copy may transfer after excludes, shared by `agentbox cp` (blocked with a size breakdown unless --yes) and each `carry:` entry (rejected at resolve time). Default 104857600 (100 MiB).',
     advanced: true,
+  },
+  {
+    key: 'box.credentialSync',
+    type: 'bool',
+    description:
+      'Automatically sync refreshed agent credentials (claude/codex/opencode) from boxes to the host backup and out to all other running boxes. Claude OAuth refresh rotates the refresh token, so without this every other copy 401s after any box refreshes. Default true; --no-credential-sync at create disables the in-box watcher for that box.',
   },
   {
     key: 'box.vercelNetworkPolicy',
@@ -807,6 +846,12 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     description: 'Run `agentbox shell` inside a detachable tmux session (Ctrl+a d to detach).',
   },
   {
+    key: 'ssh.autoConfig',
+    type: 'bool',
+    description:
+      'Automatically write a `~/.agentbox/ssh/config` entry (Include\'d from `~/.ssh/config`) for SSH-capable cloud boxes on create and start/resume, so `ssh <box>` just works. On by default; set false if you manage `~/.ssh/config` yourself. Explicit `agentbox shell --ssh-config`/`code`/`open` still write on demand regardless.',
+  },
+  {
     key: 'engine.kind',
     type: 'enum',
     enumValues: ['orbstack', 'docker-desktop', 'other', 'auto'] as const,
@@ -833,9 +878,9 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
   {
     key: 'git.pushMode',
     type: 'enum',
-    enumValues: ['auto', 'relay', 'lease'] as const,
+    enumValues: ['auto', 'relay', 'lease', 'direct'] as const,
     description:
-      "How a box's `git push` reaches GitHub: `relay` (the host relay pushes with your host credentials — they never enter the box), `lease` (the relay/plane leases a short-lived GitHub-App token and the box pushes directly, so it works with the laptop off), or `auto` (default — lease when `relay.controlPlaneUrl` is set for the box, else relay). Only affects cloud boxes; docker boxes always use `relay`. Forcing `relay` needs a reachable host relay for the box; forcing `lease` needs a reachable relay/plane with a GitHub App.",
+      "How a box's `git push` reaches GitHub: `relay` (the host relay pushes with your host credentials — they never enter the box), `lease` (the relay/plane leases a short-lived GitHub-App token and the box pushes directly, so it works with the laptop off), `direct` (the box holds a COPY of your git credentials and pushes/pulls/signs entirely on its own — needs no host or hub, but the credentials live inside the box and its snapshots; set via `--with-credentials`, which copies them in behind a confirmation), or `auto` (default — lease when `relay.controlPlaneUrl` is set for the box, else relay). Only affects cloud boxes; docker boxes always use `relay`. Forcing `relay` needs a reachable host relay for the box; forcing `lease` needs a reachable relay/plane with a GitHub App; `direct` needs credentials to have been copied into the box at create time.",
   },
   {
     key: 'vnc.containerPort',
@@ -921,6 +966,12 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     key: 'maintenance.pruneProjectConfigsEvery',
     type: 'int',
     description: 'Run the orphan project-config sweep every N successful `agentbox create`.',
+  },
+  {
+    key: 'update.check',
+    type: 'bool',
+    description:
+      'Daily background check for a newer published agentbox (npm registry) and menu-bar app (release sha sidecar), plus the "newer version available" nudge. At most one network probe per 24h; false disables both.',
   },
   {
     key: 'integrations.notion.enabled',

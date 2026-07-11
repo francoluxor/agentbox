@@ -40,6 +40,7 @@ const dockerfileSrc = 'packages/sandbox-docker/Dockerfile.box';
 const execBitFiles = new Set([
   'packages/sandbox-docker/scripts/agentbox-vnc-start',
   'packages/sandbox-docker/scripts/agentbox-dockerd-start',
+  'packages/sandbox-docker/scripts/agentbox-sshd-start',
   'packages/sandbox-docker/scripts/agentbox-portless-trust',
   'packages/sandbox-docker/scripts/agentbox-checkpoint-cleanup',
   'packages/sandbox-docker/scripts/agentbox-open',
@@ -54,6 +55,7 @@ const contextFiles = [
   'apps/cli/share/agentbox-setup/SKILL.md',
   'packages/sandbox-docker/scripts/agentbox-vnc-start',
   'packages/sandbox-docker/scripts/agentbox-dockerd-start',
+  'packages/sandbox-docker/scripts/agentbox-sshd-start',
   'packages/sandbox-docker/scripts/agentbox-portless-trust',
   'packages/sandbox-docker/scripts/agentbox-checkpoint-cleanup',
   'packages/sandbox-docker/scripts/agentbox-open',
@@ -90,12 +92,14 @@ for (const [srcRel, destRel] of direct) {
   copy(srcRel, join(runtime, destRel));
 }
 
-// Hub standalone build — `agentbox hub` spawns this self-contained Next+relay
-// server (packages/sandbox-docker/src/hub.ts resolveHubServer() looks for
-// runtime/hub/apps/hub/server.js). Built by `apps/hub` `build:standalone`; the
-// traced tree uses relative symlinks so cpSync (dereference:false) keeps it
-// self-contained. Absent in a partial dev build (warn+skip) — a publish runs
-// build:standalone first (apps/cli prepublishOnly).
+// Hub standalone build — `agentbox hub` spawns this Next+relay server
+// (packages/sandbox-docker/src/hub.ts resolveHubServer() looks for
+// runtime/hub/apps/hub/server.js). Built by `apps/hub` `build:standalone`, which
+// ships NO node_modules: the hub's externals (next/react/react-dom/pg/
+// better-auth/kysely + cloud SDKs) resolve from the installed @madarco/agentbox
+// package's own node_modules — a bundled pnpm store does not survive npm publish.
+// Absent in a partial dev build (warn+skip) — a publish runs build:standalone
+// first (apps/cli prepublishOnly).
 copy('apps/hub/dist-standalone', join(runtime, 'hub'));
 copy(dockerfileSrc, join(dockerCtx, 'Dockerfile.box'));
 for (const srcRel of contextFiles) {
@@ -129,7 +133,7 @@ for (const [srcRel, destRel, exec] of hetznerFiles) {
 }
 
 // _shared — provider-NEUTRAL box-side runtime assets exposed to external
-// provider plugins via `@agentbox/provider-sdk`'s `resolveSharedRuntimeAsset`.
+// provider plugins via `@madarco/agentbox-provider-sdk`'s `resolveSharedRuntimeAsset`.
 // A VPS-style plugin brings only its own install script + system prompt and
 // pulls ctl + the shims from here, so it always installs the *running* CLI's
 // `ctl.cjs` (version-locked to the CLI, not to whatever the plugin bundled).

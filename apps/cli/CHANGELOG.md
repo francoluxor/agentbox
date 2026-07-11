@@ -9,6 +9,240 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [0.23.5] - 2026-07-08
+
+### Added
+
+- Failed box creates can now be dismissed on demand. When a `create` fails it
+  lingers as an "error" box; the hub UI and the macOS menu-bar app now offer a
+  **Dismiss** action to clear it immediately instead of waiting for it to
+  auto-expire.
+
+### Fixed
+
+- `agentbox prepare` (and the docker/cloud workspace seeds) no longer abort with
+  an `EACCES` permission error when your agent config (`~/.claude`, `~/.codex`,
+  `~/.agents`, `~/.local/share/opencode`) contains read-only files — e.g. skills
+  or plugins symlinked into the Nix store, or dotfiles managed declaratively by
+  Nix/home-manager, Ansible, or chezmoi. The staging copy is now forced
+  user-writable.
+
+## [0.23.4] - 2026-07-08
+
+### Added
+
+- The hub box page's Access card now always lists every "open in" app (Claude,
+  Codex, VS Code, cmux, Herdr, iTerm2, Finder) plus Open web / Open VNC —
+  buttons that can't work right now are disabled with an instant hover tooltip
+  explaining why (app not installed, not supported for the box's provider, box
+  paused/stopped, no web service, VNC off) instead of being hidden.
+- `agentbox open --targets` reports *why* an unavailable app is unavailable
+  (new optional `reason` field in `--json`); the hub and the menu-bar app show
+  it. The menu-bar app (from v0.1.6) mirrors the always-listed behavior and
+  gains an OPEN IN section in the box details window with the same tooltips.
+
+### Fixed
+
+- Finder is no longer reported as an always-available open target: it now
+  requires `sshfs` on PATH, so a missing sshfs shows up front as a disabled
+  button with the install hint instead of an error only after clicking.
+
+## [0.23.3] - 2026-07-08
+
+### Fixed
+
+- Opening a box's VNC from the menu-bar app or the hub web UI now starts the
+  in-box browser first (pointed at the box's web app), so the desktop shows the
+  app instead of a blank X screen — previously only `agentbox screen` did this.
+  New hub action `POST /api/v1/boxes/{id}/screen` runs the prep for docker and
+  cloud boxes; the menu-bar app uses it from v0.1.5.
+
+## [0.23.2] - 2026-07-08
+
+### Fixed
+
+- First-run `agentbox create` no longer looks frozen while the pulled box
+  image extracts: `docker pull` prints nothing during the extraction phase
+  (minutes, for a multi-GB image), so create now emits a "still extracting"
+  keepalive after 20s of silence.
+
+## [0.23.1] - 2026-07-08
+
+### Breaking
+
+- **`agentbox install tray` is now `agentbox install app`** — matching the
+  `AgentBox.app` bundle and the `agentbox app` lifecycle command. The old name
+  errors (no alias); update any scripts.
+
+### Added
+
+- The hub's Settings page shows the running AgentBox version, and
+  `GET /api/v1/health` now includes a `version` field. The macOS menu-bar app
+  gained the same version footer in its Settings window.
+
+### Changed
+
+- `agentbox install <target>` with an unrecognized target now exits with an
+  error listing the valid targets (`cmux`, `herdr`, `codex`, `app`) instead of
+  silently ignoring it and launching the setup wizard.
+- The install wizard's compatibility check now names what warned — e.g.
+  `system warn: optional sshfs, macfuse` — instead of an opaque `system warn`,
+  and marks optional deps as such.
+- `agentbox doctor` reports missing Daytona credentials as a one-liner
+  (`not configured`, with the `agentbox daytona login` hint) like the other
+  cloud providers, instead of the SDK's env-var paragraph.
+
+### Fixed
+
+- The GitHub star prompt remembers any explicit answer — declining, or starring
+  via the browser fallback, no longer makes it re-ask after every self-update.
+
+## [0.23.0] - 2026-07-08
+
+### Added
+
+- **Every Docker box now runs an SSH server** — loopback-only (published on
+  `127.0.0.1` on an ephemeral port, never reachable off-host), authenticated by
+  a per-box ed25519 key, and written to a managed `~/.ssh/config` alias, so
+  `ssh <box>` just works and lands in `/workspace`. Boxes created before this
+  release predate the sshd — recreate them to get it.
+- **`agentbox open` live-mounts the box** — `/workspace` is mounted over sshfs
+  at `~/.agentbox/mounts/<box>/` and revealed in Finder, with edits flowing
+  both ways (Docker, Hetzner, and Daytona boxes); `--unmount` tears it down.
+  Needs `brew install macfuse sshfs` — `agentbox doctor` now checks both
+  (optional, warn-only). Vercel/E2B have no SSH and fail fast with a pointer to
+  `agentbox download`; pre-sshd Docker boxes keep the old rsync export.
+- **Open a box in the Claude desktop app: `agentbox open <box> --in claude`.**
+  Claude has no add-SSH deep link, so AgentBox writes the box's SSH alias into
+  the app's own settings (`sshConfigs` in `~/.claude/settings.json`) and
+  launches it — pick the box from the Environment dropdown, where the app can
+  also list and resume the Claude sessions already recorded inside the box.
+  Entries are upserted by id, never touch the rest of your settings, and
+  are pruned automatically once the box is gone. Docker + Hetzner boxes.
+- `--in codex` now works for Docker boxes too (was Hetzner-only), and `finder`
+  is a first-class target in `open --targets` so the tray/hub can offer it.
+- **Hub: "Apps" launchers on the box detail page** — open a box in Claude,
+  Codex, VS Code/Cursor, cmux, Herdr, iTerm2, or Finder from the web UI. Apps
+  show only when installed on the host and eligible for the box's provider;
+  localhost macOS hubs only. New `GET /api/v1/open-targets` and
+  `POST /api/v1/boxes/:id/open` endpoints.
+- **Hub: the create modal now tells the truth about the base image** — Docker
+  freshness is actually probed (was hardcoded "fresh"), a first-run or stale
+  base shows a bake note and auto-chains a streamed "Building base image…"
+  prepare job into the create, and a stale cloud base offers Rebuild & Create /
+  Use Existing Image.
+- **Hub REST widened for native clients** — `GET /api/v1/boxes` now carries
+  state, provider, project, git worktrees, and per-agent session/activity
+  fields (so the tray app can run on REST instead of shelling the CLI), and
+  `POST /api/v1/boxes/:id/start` starts a stopped box.
+- **Provider SDK 2.0.0 (breaking)** — `BoxRecord.cloud.ssh` moved to top-level
+  `BoxRecord.ssh` (now with `port`), plus the new Docker sshd fields.
+  `SDK_API_VERSION` is now `2`; v1 plugins still load. Plugin authors:
+  republish against `@madarco/agentbox-provider-sdk@2.0.0`.
+
+### Fixed
+
+- **`agentbox self-update` actually updates the package now.** A globally
+  installed CLI invoked from the shell was misdetected as "running from
+  source" (no npm user-agent, and argv is the bin symlink), so the
+  `npm install -g` step was silently skipped. Detection now resolves the bin
+  symlink (npm's `lib/node_modules`, pnpm's global dir; a project-local
+  install still skips), and the "newer version available" nudge only appears
+  when self-update can actually act.
+- VS Code/Cursor are detected — and launched — via the `.app` bundle when the
+  `code`/`cursor` PATH shim isn't installed, so the tray/hub Open-In menus no
+  longer hide VS Code on a freshly dragged-in install.
+
+## [0.22.2] - 2026-07-08
+
+### Added
+
+- **Open a box in a host app: `agentbox open <box> --in codex|herdr|cmux|vscode|iterm2`.**
+  `codex` writes the box's SSH alias and auto-opens Codex's add-SSH-connection
+  form via its `codex://` deep link (persistent-SSH boxes, i.e. Hetzner — the
+  same link `shell --ssh-config` prints, now launched for you); `herdr`, `cmux`,
+  and `iterm2` open a new workspace/window in that terminal app running the box
+  attach (the box is auto-started, and a failed attach leaves a live shell);
+  `vscode` is equivalent to `agentbox code`. Plain `agentbox open` still opens
+  the workspace in Finder. `agentbox open --targets [--json]` reports which of
+  these apps are installed. cmux blocks external control by default — enable
+  `socketControlMode: automation` (or a socket password) in its settings.
+- **Menu-bar app: per-box "Open In…" submenu** listing only the apps installed
+  on your machine (probed once at launch) and eligible for that box's provider;
+  "Copy Web URL" moved into it, keeping Open Web / Open VNC at the top level.
+- **Rename a box** with `agentbox status <box> --set-name <name>` (or
+  `--clear-name`) — a cosmetic display label; the container, git branch, and
+  URLs are untouched, and box lookups accept the label. Shown in `list`, with a
+  Rename button in the hub (`POST /api/v1/boxes/:id/rename`) and a "Rename…"
+  item in the menu-bar app.
+- **Update detection.** After you update the package yourself (`npm update -g`),
+  the next interactive command offers the post-update refresh (host skills, box
+  image, relay, menu-bar app). At most once a day a background probe checks for
+  a newer release and prints a nudge — disable with the new `update.check`
+  config key. `agentbox self-update` now also updates the menu-bar app (only
+  when the published build actually changed) and reports current vs latest.
+
+### Fixed
+
+- Boxes created or resumed **through the hub** now get their `~/.agentbox/ssh/config`
+  entry too — hub-created Hetzner boxes were missing their `ssh <box>` alias.
+- Non-interactive box creates (menu-bar app / hub queue, `--yes`, CI) now adopt
+  an already-running Portless proxy instead of silently skipping Portless on a
+  machine that never opted in from a terminal.
+
+## [0.22.1] - 2026-07-07
+
+### Added
+
+- **`agentbox app log`** — collect the macOS menu-bar app's diagnostics for a bug
+  report. Reads the app's macOS unified-log entries (`--last <window>`, `-f` to
+  stream live, `--crashes` for crash reports only) and lists its crash reports from
+  `~/Library/Logs/DiagnosticReports`; `--open` reveals that folder in Finder and
+  `--out <file>` writes one self-contained bundle (versions + log + newest crash
+  report) to attach. The app keeps no log file of its own — these are
+  macOS-native surfaces (unified logging + OS `.ips` crash reports).
+- **Build your own provider.** The provider SDK now ships on npm as
+  `@madarco/agentbox-provider-sdk` and carries the full surface a real provider
+  needs (base-image `prepare`, no-SSH `buildAttach`, id-addressed `checkpoint`),
+  with a complete reference provider to copy (`examples/agentbox-provider-example`)
+  and a new [Build a provider](https://agent-box.sh/docs/build-a-provider) guide.
+  (The `agentbox plugin` system itself shipped in 0.22.0.)
+- **Per-box SSH config via a managed Include.** SSH-capable boxes now keep their
+  `Host` blocks in an AgentBox-owned `~/.agentbox/ssh/config`, referenced by one
+  managed `Include` in `~/.ssh/config` and regenerated from box state (so it
+  self-heals stale/destroyed boxes and refreshes a Hetzner box's IP across
+  stop/start). On by default (`ssh.autoConfig`); `agentbox shell --ssh-config` /
+  `code` / `open` still write on demand, and legacy inline blocks in
+  `~/.ssh/config` are stripped on next touch.
+
+### Changed
+
+- **The macOS menu-bar app is now named "AgentBox"** (was "AgentBoxTray"). It
+  installs to `/Applications/AgentBox.app`; `agentbox install tray` removes any
+  old `AgentBoxTray.app` on install so the two never coexist. The bundle
+  identifier is unchanged, so launch-at-login and notifications carry over.
+- **First-run web URLs come up on `:443`.** The first time a box needs a public
+  web URL, AgentBox starts its Portless proxy on `:443` with a one-time root
+  prompt, and no longer prints a misleading fallback port.
+
+### Fixed
+
+- **`agentbox checkpoint` covers provider-plugin checkpoints.** `checkpoint ls`,
+  `ls -g`, and `rm` now include checkpoints captured by external provider plugins,
+  not just the built-in cloud providers.
+- **`agentbox hub` now starts after a fresh `npm install`.** The published
+  package shipped the hub's Next.js bundle with a pnpm-linked `node_modules` that
+  `npm publish` mangles, so a globally-installed hub crashed on startup with
+  `Cannot find package 'next'` (it only worked from a dev checkout). The hub's
+  runtime dependencies (`next`, `react`, `react-dom`, `better-auth`, `kysely`)
+  are now declared as real package dependencies and resolved by npm, and the
+  private `@agentbox/sandbox-*` providers are bundled into the hub server. The
+  broken ~44 MB bundled `node_modules` is no longer shipped.
+- **Clearer hub startup failures.** When the hub process dies while starting,
+  `agentbox hub` now fails fast and includes the tail of `~/.agentbox/hub.log`
+  (with the real error) in its message, instead of waiting ~25s and only pointing
+  you at the log file.
+
 ## [0.22.0] - 2026-07-06
 
 ### Added
@@ -29,7 +263,7 @@ CLI, not the raw commits.
   from GitHub Releases (SHA-256 verified, ditto-extracted to `/Applications`),
   no longer bundled in the npm package.
 - **External provider plugins.** Publish an `agentbox-provider-<name>` package on
-  the public `@agentbox/provider-sdk` and add it with `agentbox plugin add`; the
+  the public `@madarco/agentbox-provider-sdk` and add it with `agentbox plugin add`; the
   CLI loads it at runtime through a trust-on-add registry. See
   `examples/agentbox-provider-sample`.
 - **Hosted control plane (experimental/WIP).** `agentbox control-plane

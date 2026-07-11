@@ -429,6 +429,9 @@ export const prepareHetznerProvider: NonNullable<Provider['prepare']> = (req) =>
     name: req.name,
     hostWorkspace: req.hostWorkspace ?? process.cwd(),
     force: req.force,
+    // Datacenter for the temp bake VPS (defaults to nbg1 when unset). Resolved
+    // by the CLI from `--location` / `box.hetznerLocation`.
+    location: req.location,
     onLog: req.onLog,
     // Forward the Claude install mode (native | npm). Without this the Hetzner
     // bake always ran the native `curl install.sh`, whose CDN 403s datacenter

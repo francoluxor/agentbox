@@ -20,6 +20,7 @@ import {
 import { normalizeLastAgent, type BoxRecord, type ExecResult, type Provider } from '@agentbox/core';
 import type { BoxStatus as CtlBoxStatus, StatusReply } from '@agentbox/ctl';
 import {
+  deleteJob,
   enqueuePrepareJob,
   enqueueQueueJob,
   hashRpcParams,
@@ -35,6 +36,7 @@ import {
 import type { BoxGitDeps, ProviderModule } from '@agentbox/sandbox-core';
 import {
   BOX_WORKSPACE,
+  autoWriteSshConfig,
   boxGitCheckout,
   boxGitNewBranch,
   boxGitPull,
@@ -46,13 +48,21 @@ import {
   readPreparedStateRaw,
   readState,
   secretsEnvPath,
+  setBoxDisplayName,
+  syncAgentboxSshConfig,
 } from '@agentbox/sandbox-core';
 import {
   baseFreshnessFromFingerprints,
   currentCloudBaseFingerprint,
+  openWebAppOnVncScreen,
   type BaseStatus,
 } from '@agentbox/sandbox-cloud';
-import { listBoxes, mintHostInitiatedToken, type ListedBox } from '@agentbox/sandbox-docker';
+import {
+  ensureBoxBrowserShowingApp,
+  listBoxes,
+  mintHostInitiatedToken,
+  type ListedBox,
+} from '@agentbox/sandbox-docker';
 import type {
   ActionResult,
   BoxOpResult,
@@ -63,8 +73,12 @@ import type {
   DirEntry,
   GitInfo,
   HubBackend,
+  OpenInApp,
+  OpenTargets,
+  OpenTargetsReport,
   ServicesResult,
 } from './boxes/backend-types';
+import { hubProfile } from './auth-config';
 import type { Approval, Box, BoxStatus, GithubState, HubState, Project, ProviderOption, User } from './boxes/types';
 
 /*
@@ -75,6 +89,9 @@ import type { Approval, Box, BoxStatus, GithubState, HubState, Project, Provider
  */
 
 const execFileAsync = promisify(execFile);
+
+// Cosmetic rename-label cap — mirrors the CLI's --set-name cap and parseRenameBox.
+const DISPLAY_NAME_MAX = 60;
 
 // ── provider resolution (mirrors apps/cli/src/provider/loaders.ts) ──
 const IMPORTERS: Record<ProviderKind, () => Promise<{ providerModule: ProviderModule }>> = {
@@ -139,18 +156,39 @@ function mapBox(b: ListedBox): Box {
     projectId: hashProjectPath(root),
     repo: path.basename(root),
     branch: b.gitWorktrees?.[0]?.branch ?? b.cloud?.workspaceBranch ?? '',
-    task: b.claudeSessionTitle ?? b.codexSessionTitle ?? b.opencodeSessionTitle ?? b.name,
+    // A user-set display label (via rename) wins over the live agent session
+    // title as the box's primary label; else fall back to the session title, then name.
+    task:
+      b.displayName?.trim() ||
+      b.claudeSessionTitle ||
+      b.codexSessionTitle ||
+      b.opencodeSessionTitle ||
+      b.name,
+    displayName: b.displayName?.trim() || null,
     // Normalize the frozen wire spelling ('claude-code') to the UI label ('claude').
     agent: normalizeLastAgent(b.lastAgent) ?? 'claude',
     status,
     createdAt,
     lastActivity: createdAt,
     host: hostLabel(b),
+    provider: b.provider ?? 'docker',
     commits: null,
     filesTouched: null,
     error: status === 'error' ? (b.claudeSessionTitle ?? 'Agent reported an error') : null,
     webUrl: eps.find((e) => e.kind === 'web')?.url ?? null,
     vncUrl: eps.find((e) => e.kind === 'vnc')?.url ?? null,
+    // Raw host-side fields for native clients (tray) — see Box for semantics.
+    state: b.state,
+    name: b.name,
+    projectRoot: root,
+    projectIndex: b.projectIndex,
+    vncEnabled: b.vncEnabled ?? false,
+    gitWorktrees: b.gitWorktrees?.map((w) => ({ kind: w.kind, branch: w.branch })),
+    claudeSessionTitle: b.claudeSessionTitle,
+    codexSessionTitle: b.codexSessionTitle,
+    opencodeSessionTitle: b.opencodeSessionTitle,
+    claudeActivity: b.claudeActivity,
+    codexActivity: b.codexActivity,
   };
 }
 
@@ -301,9 +339,14 @@ function mapJobToBox(job: QueueJob, status: BoxStatus): Box {
     createdAt,
     lastActivity: createdAt,
     host: job.providerName === 'docker' ? 'local · docker' : job.providerName,
+    provider: job.providerName ?? 'docker',
     commits: null,
     filesTouched: null,
     error: status === 'error' ? (job.reason ?? 'create failed') : null,
+    // Raw host-side fields so native clients can group/label the synthetic row.
+    // `state` is deliberately absent — that's the synthetic-box marker.
+    name: job.boxName,
+    projectRoot: root,
   };
 }
 
@@ -441,11 +484,24 @@ const freshnessCache = new Map<ProviderKind, { at: number; stored: string; live:
 /**
  * Live base-image/snapshot freshness for one provider, mirroring the CLI's
  * `evaluateBaseFreshness` (apps/cli/src/checkpoint-lookup.ts) but reusing the
- * hub's own provider `IMPORTERS`. Docker self-heals → always fresh. Any failure
- * to compute the live fingerprint degrades to 'unknown' (never a false 'stale').
+ * hub's own provider `IMPORTERS`. Docker gets a real check too (unlike the
+ * CLI, which lets `ensureImage` self-heal silently): the tray/web create
+ * flows use `unprepared`/`stale` to announce the upcoming bake instead of
+ * hiding a multi-minute build inside the create job. Any failure to compute
+ * the live fingerprint degrades to 'unknown' (never a false 'stale').
  */
 async function providerBaseFreshness(id: ProviderKind, claudeInstall?: 'native' | 'npm'): Promise<BaseStatus> {
-  if (id === 'docker') return { state: 'fresh' };
+  if (id === 'docker') {
+    // Bypasses the cloud-fingerprint freshnessCache: the check is one
+    // `docker image inspect` plus hashing the staged context files, and
+    // freshness is only computed on the opt-in `?freshness=1` path.
+    try {
+      const { evaluateDockerBaseFreshness } = await import('@agentbox/sandbox-docker');
+      return await evaluateDockerBaseFreshness({ claudeInstall });
+    } catch {
+      return { state: 'unknown' };
+    }
+  }
   const stored = currentCloudBaseFingerprint(id);
   const cached = freshnessCache.get(id);
   // Reuse the memoized LIVE fingerprint only while both the stored fingerprint
@@ -481,7 +537,7 @@ async function listProvidersWithFreshness(base: ProviderOption[]): Promise<Provi
   }
   return Promise.all(
     base.map(async (p) => {
-      if (!isProviderKind(p.id) || p.id === 'docker') return p;
+      if (!isProviderKind(p.id)) return p;
       const fresh = await providerBaseFreshness(p.id, claudeInstall);
       return {
         ...p,
@@ -636,6 +692,23 @@ async function runLifecycle(id: string, op: (box: BoxRecord, provider: Provider)
 
 const errMsg = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
+/**
+ * Keep `~/.agentbox/ssh/config` in sync after a hub-initiated resume, so boxes
+ * created/resumed through the hub get the same `ssh <box>` alias the CLI writes
+ * (a Hetzner box's public IP can change across pause/resume). Best-effort and
+ * gated by `ssh.autoConfig`; the hub runs on the host, so it can write the file.
+ */
+async function hubWriteSshConfig(box: BoxRecord, provider: Provider): Promise<void> {
+  try {
+    const cfg = await loadEffectiveConfig(box.workspacePath);
+    await autoWriteSshConfig(box, provider, cfg.effective.ssh.autoConfig, (m) =>
+      console.warn(`[hub] ${m}`),
+    );
+  } catch (err) {
+    console.warn(`[hub] ssh-config write for ${box.name} failed: ${errMsg(err)}`);
+  }
+}
+
 /** Resolve a box id to its record + provider, or null when the box is gone. */
 async function resolveBoxProvider(id: string): Promise<{ box: BoxRecord; provider: Provider } | null> {
   const { boxes } = await readState();
@@ -748,6 +821,60 @@ function parseGitStatus(out: string): GitInfo {
   return { ok: true, branch: branch === '(detached)' ? undefined : branch, dirty, ahead, behind };
 }
 
+// ── host "open in" launchers ──
+// These re-shell the installed CLI (`agentbox open ...`), which owns the SSH
+// alias / codex:// deep link / terminal-spawn / IDE-launch logic — the same
+// pattern the relay uses for cp/checkpoint host actions (host-actions.ts). They
+// launch host GUI apps, so they only work on a localhost hub on macOS.
+
+/** Whether this hub can launch host GUI apps: the user's own Mac, not a remote profile. */
+function canOpenInHostApps(): boolean {
+  return hubProfile() === 'localhost' && process.platform === 'darwin';
+}
+
+/**
+ * Turn an execFile rejection from a re-shelled `agentbox` command into a
+ * human-readable error. The CLI reports failures through clack `log.error`,
+ * which lands on stdout wrapped in gutter glyphs and ANSI codes, so prefer
+ * stdout over stderr, strip the decoration, and drop empty lines.
+ */
+function cleanCliError(e: { stderr?: string; stdout?: string; message?: string }): string {
+  const raw = e.stdout?.trim() || e.stderr?.trim() || e.message || 'command failed';
+  const cleaned = raw
+    .replace(/[\u0000-\u001f]+/g, '\n') // ANSI/control bytes (incl. ESC) -> line breaks
+    .replace(/\[[0-9;]*m/g, '') // leftover ANSI colour codes
+    .split('\n')
+    .map((line) => line.replace(/^[^\p{L}\p{N}'"(]+/u, '').trim()) // drop leading gutter glyphs/punct
+    .filter((line) => line.length > 0)
+    .join(' ');
+  return cleaned || 'command failed';
+}
+
+// Cache the target probe: it spawns a `node` process (`open --targets`), and app
+// installs change rarely, so a page load shouldn't re-spawn it every time.
+const OPEN_TARGETS_TTL_MS = 60_000;
+let openTargetsCache: { at: number; value: OpenTargetsReport } | null = null;
+
+/** Probe installed host apps via the CLI's `open --targets --json` (cached). */
+async function probeOpenTargets(): Promise<OpenTargetsReport | null> {
+  const now = Date.now();
+  if (openTargetsCache && now - openTargetsCache.at < OPEN_TARGETS_TTL_MS) {
+    return openTargetsCache.value;
+  }
+  const entry = process.env['AGENTBOX_CLI_ENTRY'];
+  if (!entry) return null;
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [entry, 'open', '--targets', '--json'], {
+      timeout: 10_000,
+    });
+    const value = JSON.parse(stdout) as OpenTargetsReport;
+    openTargetsCache = { at: now, value };
+    return value;
+  } catch {
+    return null;
+  }
+}
+
 export function createHubBackend(handle: RelayServerHandle): HubBackend {
   return {
     // authMode is layered on by source.ts (an env-derived concern), so the host
@@ -780,10 +907,84 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
     async providersWithFreshness(): Promise<ProviderOption[]> {
       return listProvidersWithFreshness(listProviders(await loadQueue()));
     },
+    start: (id) =>
+      runLifecycle(id, async (box, provider) => {
+        // Mirrors the CLI dashboard's resumeBox: docker `start` rejects a paused
+        // container, so probe first. No-op when already running (idempotent).
+        // Unlike CLI `agentbox start` this does not restore agent tmux sessions
+        // (restoreAgentSessions is CLI-only) — the agent restarts on next attach.
+        const state = await provider.probeState(box);
+        if (state === 'running') return;
+        if (state === 'paused') await provider.resume(box);
+        else await provider.start(box);
+        // Refresh the box's SSH-config alias now it's back online (IP may have changed).
+        await hubWriteSshConfig(box, provider);
+      }),
     pause: (id) => runLifecycle(id, (box, provider) => provider.pause(box)),
-    resume: (id) => runLifecycle(id, (box, provider) => provider.resume(box)),
+    resume: (id) =>
+      runLifecycle(id, async (box, provider) => {
+        await provider.resume(box);
+        // Refresh the box's SSH-config alias now it's back online (IP may have changed).
+        await hubWriteSshConfig(box, provider);
+      }),
     stop: (id) => runLifecycle(id, (box, provider) => provider.stop(box)),
-    destroy: (id) => runLifecycle(id, (box, provider) => provider.destroy(box)),
+    screen: (id) =>
+      runLifecycle(id, async (box, provider) => {
+        // The open-VNC prep step: mirror `agentbox screen` so the viewer shows
+        // the box's web app, not a blank X desktop. Browser-launch failures are
+        // logged, not thrown — the viewer URL still works without it.
+        if ((box.provider ?? 'docker') === 'docker') {
+          const br = await ensureBoxBrowserShowingApp(box);
+          if (!br.up) console.warn(`[hub] screen ${box.name}: in-box browser failed: ${br.reason ?? 'unknown'}`);
+        } else {
+          const br = await openWebAppOnVncScreen(box, provider);
+          if (!br.opened && br.reason && br.reason !== 'no web service') {
+            console.warn(`[hub] screen ${box.name}: in-box browser failed: ${br.reason}`);
+          }
+        }
+      }),
+    async destroy(id): Promise<ActionResult> {
+      // A synthetic `job:` box is a failed create with no real container — "destroy"
+      // it by clearing its queue manifest (what the tray/UI Dismiss action hits).
+      if (id.startsWith('job:')) {
+        // Mirror runLifecycle's contract: a thrown fs error becomes { ok:false, error }.
+        try {
+          const jobId = id.slice('job:'.length);
+          const job = await readJob(jobId);
+          if (!job) return { ok: true }; // already gone — idempotent
+          if (job.status !== 'failed' && job.status !== 'cancelled' && job.status !== 'done') {
+            return { ok: false, error: 'box is still being created; dismiss is not available yet' };
+          }
+          await deleteJob(jobId);
+          return { ok: true };
+        } catch (err) {
+          return { ok: false, error: errMsg(err) };
+        }
+      }
+      return runLifecycle(id, async (box, provider) => {
+        await provider.destroy(box);
+        // Drop the destroyed box's `~/.agentbox/ssh/config` block (regenerate from state).
+        await syncAgentboxSshConfig().catch(() => {});
+      });
+    },
+    async rename(id, displayName): Promise<ActionResult> {
+      // Pure state mutation — no provider round-trip. Empty/blank clears the label.
+      // Enforce the same 60-char cap the CLI + REST route apply here, so the web
+      // server action (which calls this directly, bypassing parseRenameBox) can't
+      // persist an over-long label.
+      try {
+        if (displayName.trim().length > DISPLAY_NAME_MAX) {
+          return { ok: false, error: `name too long (max ${DISPLAY_NAME_MAX} chars)` };
+        }
+        const { boxes } = await readState();
+        const box = boxes.find((b) => b.id === id);
+        if (!box) return { ok: false, error: `box ${id} not found` };
+        await setBoxDisplayName(id, displayName);
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: errMsg(err) };
+      }
+    },
     // Mirror POST /admin/prompts/answer's block branch, in-process: resolving
     // the entry fulfills the Promise the /rpc handler is awaiting (box unblocks),
     // and the broadcast clears any attached-terminal footer.
@@ -1030,6 +1231,33 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
         return failed.length > 0 ? { ok: false, error: `failed to restart: ${failed.join(', ')}` } : { ok: true };
       } catch (err) {
         return { ok: false, error: errMsg(err) };
+      }
+    },
+
+    async openTargets(): Promise<OpenTargets> {
+      if (!canOpenInHostApps()) return { supported: false, targets: null };
+      return { supported: true, targets: await probeOpenTargets() };
+    },
+
+    async openIn(id, app: OpenInApp): Promise<ActionResult> {
+      if (!canOpenInHostApps()) {
+        return { ok: false, error: 'open-in actions require a local hub running on macOS' };
+      }
+      const entry = process.env['AGENTBOX_CLI_ENTRY'];
+      if (!entry) return { ok: false, error: 'hub is missing AGENTBOX_CLI_ENTRY; cannot launch host apps' };
+      try {
+        // Re-shell `agentbox open <id> --in <app>` (routes vscode -> code, the
+        // rest to their host-app launchers). It launches and returns; the timeout
+        // guards against a hung launcher, not the app staying open.
+        await execFileAsync(process.execPath, [entry, 'open', id, '--in', app], { timeout: 20_000 });
+        return { ok: true };
+      } catch (err) {
+        // execFile rejects on non-zero exit. The CLI prints its real error via
+        // clack (stdout, with gutter glyphs), not stderr — clean that up so the
+        // UI shows the reason (e.g. the codex "only Hetzner boxes qualify" gate)
+        // rather than execFile's generic "Command failed: node …".
+        const e = err as { stderr?: string; stdout?: string; message?: string };
+        return { ok: false, error: cleanCliError(e) };
       }
     },
   };

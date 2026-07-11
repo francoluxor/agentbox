@@ -1,7 +1,7 @@
 import { access } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { confirm, intro, log, outro, spinner } from '../lib/prompt.js';
+import { confirm, intro, log, outro, spinner, text } from '../lib/prompt.js';
 import {
   findProjectRoot,
   loadEffectiveConfig,
@@ -47,6 +47,9 @@ import { parseMaxOption } from '../lib/queue/parse-max-option.js';
 import { submitQueueJob } from '../lib/queue/submit.js';
 import { captureOpenTerminalContext } from '../terminal/queue-open.js';
 import { hostAwareOpenIn } from '../terminal/host.js';
+import { opencodeLoginBinding } from '../lib/agent-login-bindings.js';
+import { runGuidedLogin } from '../lib/guided-login.js';
+import { loadPtyBackend } from '../pty/pty-backend.js';
 import { maybeResyncWorkspace } from '../lib/resync-start.js';
 import { buildResyncWarning } from '../lib/resync-warning.js';
 import {
@@ -58,6 +61,7 @@ import {
 import { cloudAgentAttach, cloudAgentStartDetached } from './_cloud-attach.js';
 import { cloudAgentCreate } from './_cloud-agent-create.js';
 import { runCarryGate, runQueuedCarryGate } from '../lib/carry-gate.js';
+import { resolveGitCredsCarry } from '../lib/git-creds-gate.js';
 import { FromBranchError, UseBranchError, resolveBranchSelection } from '../lib/from-branch.js';
 import { providerForCreate } from '../provider/registry.js';
 import { prepareTeleport, TeleportError } from '../session-teleport/index.js';
@@ -136,6 +140,9 @@ interface OpencodeCreateOptions {
   carryYes?: boolean;
   /** --carry <mode>: 'skip' disables carry for this run (also AGENTBOX_CARRY=skip). */
   carry?: 'skip' | 'ask';
+  /** --dangerously-with-credentials: copy a git credential into the box (git.pushMode=direct); cloud only.
+   *  Token-vs-SSH is chosen ONLY at the interactive prompt (TTY required). */
+  dangerouslyWithCredentials?: boolean;
   vnc?: boolean; // commander: --no-vnc => false; default true
   resync?: boolean; // commander: --no-resync => false; default true (config box.resyncOnStart)
   sharedDockerCache?: boolean;
@@ -186,6 +193,7 @@ function buildOpencodeCliOverrides(opts: OpencodeCreateOptions): Partial<UserCon
   if (Object.keys(box).length > 0) out.box = box;
   if (Object.keys(opencode).length > 0) out.opencode = opencode;
   if (opts.portless !== undefined) out.portless = { enabled: opts.portless };
+  if (opts.dangerouslyWithCredentials) out.git = { pushMode: 'direct' };
   const attachIn = resolveAttachInOption(opts);
   if (attachIn !== undefined) out.attach = { openIn: attachIn };
   return out;
@@ -196,12 +204,82 @@ function buildOpencodeCliOverrides(opts: OpencodeCreateOptions): Partial<UserCon
  * opencode-config volume — credentials persist there and seed every later box.
  * Interactive provider picker; `extraArgs` (e.g. `--provider anthropic`) are
  * forwarded verbatim.
+ *
+ * This is the legacy passthrough: it hands the terminal to opencode's own TUI.
+ * See {@link signInToOpencode} for why that is no longer the default.
  */
 async function runOpencodeLoginContainer(image: string, extraArgs: string[]): Promise<number> {
   const { exitCode } = runInteractiveOpencodeLogin(
     buildOpencodeLoginRunArgv({ volume: SHARED_OPENCODE_VOLUME, image, extraArgs }),
   );
   return exitCode;
+}
+
+/** The provider id already selected by a forwarded `-p` / `--provider[=id]`, if any. */
+function forwardedProvider(extraArgs: string[]): string | null {
+  for (let i = 0; i < extraArgs.length; i++) {
+    const a = extraArgs[i] ?? '';
+    if (a === '-p' || a === '--provider') return extraArgs[i + 1] ?? null;
+    const eq = /^--provider=(.+)$/.exec(a);
+    if (eq) return eq[1] ?? null;
+  }
+  return null;
+}
+
+/**
+ * Sign in to OpenCode without giving the container's TUI the user's terminal (it
+ * misbehaves on terminals whose keyboard protocol it mishandles — kitty's CSI-u).
+ *
+ * Guided mode is bounded by opencode's shape: `auth login` is a per-provider
+ * prompt TREE, not one prompt. We skip its provider picker by asking for the id
+ * on the host and passing `--provider` (opencode's own provider list comes from
+ * models.dev, so we can't enumerate it without duplicating that registry), then
+ * drive the two prompt shapes we recognize — "Enter your API key" and an OAuth
+ * URL. Anything else (e.g. github-copilot's nested deployment-type select) is
+ * reported as unsupported and falls back to the passthrough.
+ */
+async function signInToOpencode(
+  image: string,
+  extraArgs: string[],
+  opts: { passthrough?: boolean } = {},
+): Promise<{ ok: boolean; error?: string; cancelled?: boolean }> {
+  const passthrough = async (args: string[]): Promise<{ ok: boolean; error?: string }> => {
+    const exitCode = await runOpencodeLoginContainer(image, args);
+    return exitCode === 0
+      ? { ok: true }
+      : { ok: false, error: `\`opencode auth login\` exited with code ${String(exitCode)}` };
+  };
+
+  if (opts.passthrough === true || !(await loadPtyBackend())) return passthrough(extraArgs);
+
+  let args = extraArgs;
+  if (!forwardedProvider(args)) {
+    if (!process.stdin.isTTY) return passthrough(args);
+    const provider = (
+      await text({
+        message: 'Which provider? (id or name, e.g. anthropic, openai, github-copilot)',
+        placeholder: 'leave blank to use OpenCode\'s own picker',
+      })
+    ).trim();
+    // No id → we can't skip the picker, so opencode must drive its own terminal.
+    if (provider.length === 0) return passthrough(args);
+    args = [...args, '--provider', provider];
+  }
+
+  const loginArgs = args;
+  const res = await runGuidedLogin('opencode', () =>
+    opencodeLoginBinding({ image, extraArgs: loginArgs }),
+  );
+  // A bad provider id fails the same way in the passthrough — report it instead
+  // of re-running the login just to print the same error.
+  if (res.unsupported?.startsWith('unknown provider')) {
+    return { ok: false, error: `opencode: ${res.unsupported}` };
+  }
+  if (res.unsupported) {
+    log.info(`Guided sign-in can't drive this provider (${res.unsupported}); using OpenCode's own prompts.`);
+    return passthrough(args);
+  }
+  return { ok: res.ok, error: res.error, cancelled: res.cancelled };
 }
 
 /**
@@ -236,8 +314,8 @@ async function maybeRunOpencodeLogin(args: { image: string; yes: boolean }): Pro
   );
   s.stop('image ready');
 
-  const exitCode = await runOpencodeLoginContainer(args.image, []);
-  if (exitCode !== 0) {
+  const res = await signInToOpencode(args.image, []);
+  if (!res.ok) {
     log.warn('OpenCode login did not complete; continuing — run `agentbox opencode login` to retry.');
     return;
   }
@@ -291,8 +369,8 @@ async function maybeRunCloudOpencodeLogin(args: { image: string; yes: boolean })
   );
   s.stop('image ready');
 
-  const exitCode = await runOpencodeLoginContainer(args.image, []);
-  if (exitCode !== 0) {
+  const res = await signInToOpencode(args.image, []);
+  if (!res.ok) {
     log.warn('OpenCode login did not complete; continuing — run `agentbox opencode login` to retry.');
     return;
   }
@@ -322,6 +400,10 @@ export const opencodeCommand = new Command('opencode')
     '--carry <mode>',
     "control the carry: block; 'skip' disables it for this box (also AGENTBOX_CARRY=skip). Default: 'ask' (prompt).",
     'ask',
+  )
+  .option(
+    '--dangerously-with-credentials',
+    "copy a git credential INTO the box so it can push with your PC off. You'll be asked at an interactive prompt to choose 'token' (HTTPS, unsigned commits, smallest exposure) or your 'ssh' private key (signs commits, riskiest). DANGEROUS: the credential lives in the box and its snapshots. Requires a real terminal (no non-interactive / CI path). Cloud only. Sets git.pushMode=direct.",
   )
   .option(
     '--isolate-opencode-config',
@@ -429,6 +511,14 @@ export const opencodeCommand = new Command('opencode')
     const providerName = opts.provider ?? cfg.effective.box.provider ?? 'docker';
     const isCloud = providerName !== 'docker';
 
+    if (cfg.effective.git.pushMode === 'direct' && !isCloud) {
+      log.error(
+        'git.pushMode=direct / --dangerously-with-credentials is not applicable to docker boxes (they run on your host and bind-mount the host .git). Use a cloud provider (e.g. --provider hetzner|e2b|vercel|daytona).',
+      );
+      cmdLog.close();
+      process.exit(1);
+    }
+
     // When a control plane is configured, make sure this project's repo is
     // authorized on its GitHub App so the box can lease push tokens.
     await ensureProjectRepoOnControlPlane({
@@ -447,6 +537,15 @@ export const opencodeCommand = new Command('opencode')
           : undefined;
 
     if (opts.initialPrompt && opts.initialPrompt.length > 0) {
+      // --dangerously-with-credentials is foreground-only (the queue worker doesn't thread
+      // git.pushMode=direct, and copying a credential needs a human at the prompt).
+      if (cfg.effective.git.pushMode === 'direct') {
+        log.error(
+          '--dangerously-with-credentials is not supported with -i / background runs — run it in the foreground so you can confirm the credential copy interactively.',
+        );
+        cmdLog.close();
+        process.exit(1);
+      }
       try {
         await assertAgentCredsAvailable({
           agent: 'opencode',
@@ -511,6 +610,14 @@ export const opencodeCommand = new Command('opencode')
       cmdLog.close();
       process.exit(1);
     }
+
+    carryEntries = await resolveGitCredsCarry({
+      pushMode: cfg.effective.git.pushMode,
+      projectRoot,
+      existing: carryEntries,
+      onLog: (line) => cmdLog.write(line),
+      onClose: () => cmdLog.close(),
+    });
 
     let fromBranch: string | undefined;
     let useBranch: string | undefined;
@@ -952,7 +1059,11 @@ const opencodeLoginCommand = new Command('login')
     '[args...]',
     'extra args forwarded to `opencode auth login`; place after `--`, e.g. `agentbox opencode login -- --provider anthropic`',
   )
-  .action(async (args: string[]) => {
+  .option(
+    '--interactive',
+    "attach your terminal to OpenCode's own login TUI (legacy passthrough)",
+  )
+  .action(async (args: string[], opts: { interactive?: boolean }) => {
     intro('Signing in to OpenCode...');
     if (!process.stdin.isTTY) {
       log.error('`agentbox opencode login` needs an interactive terminal.');
@@ -971,10 +1082,14 @@ const opencodeLoginCommand = new Command('login')
       await ensureOpencodeVolume({ volume: SHARED_OPENCODE_VOLUME }, { syncFromHost: true, image });
       s.stop('image ready');
 
-      const exitCode = await runOpencodeLoginContainer(image, args);
-      if (exitCode !== 0) {
-        log.warn(`\`opencode auth login\` exited with code ${String(exitCode)}`);
-        process.exit(exitCode);
+      const res = await signInToOpencode(image, args, { passthrough: opts.interactive === true });
+      if (res.cancelled) {
+        outro('sign-in cancelled');
+        process.exit(1);
+      }
+      if (!res.ok) {
+        log.error(res.error ?? 'login failed');
+        process.exit(1);
       }
       outro('signed in — credentials saved for future boxes');
     } catch (err) {

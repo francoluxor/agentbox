@@ -30,7 +30,7 @@ import {
   stageAllAgentStatic,
   type AgentStaticStage,
 } from '@agentbox/sandbox-core';
-import { getClient } from './backend.js';
+import { getClient, parseDaytonaSize } from './backend.js';
 import { resolveDaytonaCustomClaudeMd, resolveDockerfileContext } from './dockerfile-context.js';
 import { ensureDaytonaEnvLoaded } from './env-loader.js';
 import {
@@ -48,9 +48,12 @@ import {
  * context again. Falls back to a timestamp when fingerprinting fails
  * (partial dev rebuild).
  */
-function defaultSnapshotName(fingerprint: string | null): string {
-  if (fingerprint) return `agentbox-base-${fingerprint.slice(0, 12)}`;
-  return `agentbox-base-${Math.floor(Date.now() / 1000).toString()}`;
+export function defaultSnapshotName(fingerprint: string | null, sizeKey?: string): string {
+  // The size suffix keeps re-sized bakes from colliding on one name, so a
+  // `--size 2-4-8` snapshot doesn't overwrite the `4-8-20` one.
+  const suffix = sizeKey ? `-${sizeKey}` : '';
+  if (fingerprint) return `agentbox-base-${fingerprint.slice(0, 12)}${suffix}`;
+  return `agentbox-base-${Math.floor(Date.now() / 1000).toString()}${suffix}`;
 }
 
 /**
@@ -117,6 +120,23 @@ export async function prepareDaytona(opts: PrepareOptions): Promise<PrepareResul
   // prepared state. Computed before staging so an early `null` (partial
   // dev rebuild) doesn't waste a tar staging cycle.
   const claudeInstall = opts.claudeInstall ?? 'native';
+
+  // Bake-time resources. A `--size` / `box.sizeDaytona` like `4-8-20` sets the
+  // snapshot's baked CPU/memory/disk (Daytona rejects resources on the create
+  // snapshot path, so it MUST be set here). Normalize to a canonical
+  // `cpu-memory-disk` string for the snapshot-name suffix + prepared-state so
+  // `04-08-20` and `4-8-20` don't fork the cache.
+  const sizeSpec = opts.size?.trim() || undefined;
+  const sizeResources = sizeSpec ? parseDaytonaSize(sizeSpec) : undefined;
+  if (sizeSpec && !sizeResources) {
+    throw new Error(
+      `invalid --size '${sizeSpec}' for daytona: expected 'cpu-memory-disk' GB, e.g. '4-8-20'.`,
+    );
+  }
+  const sizeKey = sizeResources
+    ? `${String(sizeResources.cpu)}-${String(sizeResources.memory)}-${String(sizeResources.disk)}`
+    : undefined;
+
   const rawFingerprint = await computeDaytonaContextFingerprint();
   // Fold the install mode into the sha so native↔npm are distinct cache
   // identities (`native` leaves the hash unchanged) — the snapshot name and the
@@ -128,13 +148,13 @@ export async function prepareDaytona(opts: PrepareOptions): Promise<PrepareResul
       }
     : rawFingerprint;
   const snapshotName =
-    opts.name ?? defaultSnapshotName(fingerprint?.contextSha256 ?? null);
+    opts.name ?? defaultSnapshotName(fingerprint?.contextSha256 ?? null, sizeKey);
 
   const prepared = readPreparedDaytonaState();
   if (
     !opts.force &&
     fingerprint &&
-    preparedMatches(prepared, fingerprint.contextSha256)
+    preparedMatches(prepared, fingerprint.contextSha256, sizeKey)
   ) {
     // Confirm the snapshot still exists on Daytona before short-circuiting.
     // A "yes locally, no on the server" mismatch must rebuild.
@@ -159,10 +179,18 @@ export async function prepareDaytona(opts: PrepareOptions): Promise<PrepareResul
       );
     }
   } else if (!opts.force && fingerprint && prepared?.base?.contextSha256) {
-    log(
-      `daytona build context changed (was ${prepared.base.contextSha256.slice(0, 12)}, ` +
-        `now ${fingerprint.contextSha256.slice(0, 12)}); rebuilding snapshot`,
-    );
+    const bakedSize = prepared.extras?.size;
+    if (prepared.base.contextSha256 === fingerprint.contextSha256 && bakedSize !== sizeKey) {
+      log(
+        `daytona size changed (was ${bakedSize ?? 'default'}, now ${sizeKey ?? 'default'}); ` +
+          `rebuilding snapshot`,
+      );
+    } else {
+      log(
+        `daytona build context changed (was ${prepared.base.contextSha256.slice(0, 12)}, ` +
+          `now ${fingerprint.contextSha256.slice(0, 12)}); rebuilding snapshot`,
+      );
+    }
   }
 
   const ctx = resolveDockerfileContext();
@@ -228,9 +256,11 @@ export async function prepareDaytona(opts: PrepareOptions): Promise<PrepareResul
     image = image.dockerfileCommands(buildDaytonaSeedCommands(usable), seedContextDir);
 
     const client = getClient();
-    log(`creating Daytona snapshot '${snapshotName}'…`);
+    log(
+      `creating Daytona snapshot '${snapshotName}'${sizeResources ? ` (${sizeKey})` : ''}…`,
+    );
     const snapshot = await client.snapshot.create(
-      { name: snapshotName, image },
+      { name: snapshotName, image, ...(sizeResources ? { resources: sizeResources } : {}) },
       {
         onLogs: (chunk: string) => log(String(chunk).split('\n').filter(Boolean).join(' ')),
       },
@@ -240,6 +270,7 @@ export async function prepareDaytona(opts: PrepareOptions): Promise<PrepareResul
       writePreparedDaytonaState({
         snapshotName: snapshot.name ?? snapshotName,
         contextSha256: fingerprint.contextSha256,
+        size: sizeKey,
       });
       log(
         `recorded daytona-prepared.json (fingerprint ${fingerprint.contextSha256.slice(0, 12)})`,

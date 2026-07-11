@@ -84,6 +84,7 @@ maintenance:
   { name: 'queue openIn', yaml: 'queue:\n  openIn: split\n' },
   { name: 'box claudeInstall npm', yaml: 'box:\n  claudeInstall: npm\n' },
   { name: 'box claudeInstall native', yaml: 'box:\n  claudeInstall: native\n' },
+  { name: 'box hetznerLocation', yaml: 'box:\n  hetznerLocation: fsn1\n' },
   { name: 'maintenance only', yaml: 'maintenance:\n  pruneProjectConfigs: true\n' },
   { name: 'portless only', yaml: 'portless:\n  enabled: true\n' },
   { name: 'portless stateDir', yaml: 'portless:\n  enabled: false\n  stateDir: /tmp/portless\n' },
@@ -149,6 +150,14 @@ const INVALID: Fixture[] = [
   {
     name: 'queue openIn unknown enum value',
     yaml: 'queue:\n  openIn: same\n',
+  },
+  {
+    name: 'deleted key box.vercelVcpus',
+    yaml: 'box:\n  vercelVcpus: 4\n',
+  },
+  {
+    name: 'box.hetznerLocation wrong type',
+    yaml: 'box:\n  hetznerLocation: 4\n',
   },
   {
     name: 'box claudeInstall unknown enum value',

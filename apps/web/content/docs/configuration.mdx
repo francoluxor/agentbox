@@ -119,9 +119,10 @@ See [local Docker](/docs/local-docker), [Hetzner](/docs/hetzner), [Daytona](/doc
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `box.size` | string | empty | generic cloud size; hetzner reads a server type (`cx33`), daytona reads `cpu-memory-disk` GB (`4-8-20`); docker and vercel ignore it |
-| `box.sizeDaytona` / `box.sizeHetzner` | string (advanced) | empty | per-provider override of `box.size` |
-| `box.sizeDocker` / `box.sizeVercel` | string (advanced) | empty | reserved — docker uses memory/cpus/disk; vercel uses `vercelVcpus` |
+| `box.size` | string | empty | generic cloud size, provider-interpreted: hetzner = server type (`cx33`), daytona = `cpu-memory-disk` GB (`4-8-20`), vercel = vCPU count (`1`/`2`/`4`/`8`), e2b = `cpu-memory` GB (`4-8`, baked at `prepare` time); docker ignores it |
+| `box.sizeDaytona` / `box.sizeHetzner` / `box.sizeVercel` / `box.sizeE2b` | string (advanced) | empty | per-provider override of `box.size` |
+| `box.sizeDocker` | string (advanced) | empty | reserved — docker uses `box.memory` / `box.cpus` / `box.disk` |
+| `box.hetznerLocation` | string | `nbg1` | Hetzner datacenter new boxes are created in (`nbg1`, `fsn1`, `hel1`, `ash`); override per box with `--location`. Hetzner-only |
 
 ### Box image
 
@@ -158,6 +159,7 @@ See [checkpoints and pausing](/docs/checkpoints-and-pausing).
 | `box.resyncOnStart` | bool | `true` | on starting a session, merge the host's current branch + overlay changes (box wins on conflict, warns the agent) |
 | `box.bundleDepth` | int | adaptive | cap git-bundle history shipped to cloud sandboxes; `0` = full history; ignored for docker |
 | `box.dockerCacheShared` | bool | `false` | share the in-box docker image cache across boxes; only one box can run at a time when set |
+| `box.credentialSync` | bool | `true` | automatically sync refreshed agent credentials from boxes to the host backup and out to all other running boxes (Claude's OAuth refresh rotates the refresh token, killing every other copy). `--no-credential-sync` at create disables the in-box watcher for that box. See [run an agent](/docs/run-an-agent) |
 
 See [teleport a project](/docs/teleport-a-project), [environment](/docs/environment), [browser and screen](/docs/browser-and-screen), [sync and git](/docs/sync-and-git), and [Docker in Docker](/docs/docker-in-docker).
 
@@ -171,7 +173,6 @@ See [teleport a project](/docs/teleport-a-project), [environment](/docs/environm
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `box.vercelVcpus` | int | `2` | vCPUs (RAM is coupled at 2048 MB/vCPU); only 1/2/4/8 are accepted |
 | `box.vercelTimeoutMs` | int | `2700000` (45 min) | max session length before auto-snapshot; persistent mode auto-resumes |
 | `box.vercelNetworkPolicy` | string | empty (`allow-all`) | egress lock: `allow-all`, `deny-all`, or a comma-separated domain allowlist (`github.com,*.npmjs.org`) |
 | `box.e2bTimeoutMs` | int | `2700000` (45 min) | session timeout a new `--provider e2b` box is created with before E2B auto-pauses it on inactivity; the host keepalive holds it open while the agent works (Hobby caps total session at ~1 h) |
@@ -227,6 +228,25 @@ The permission-skip defaults are on precisely because each box is a throwaway sa
 | `shell.tmux` | bool | `true` | run inside a detachable tmux session (Ctrl+a d to detach) |
 
 See [access your box](/docs/access-your-box).
+
+## ssh
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `ssh.autoConfig` | bool | `true` | auto-maintain `~/.agentbox/ssh/config` (Include'd from `~/.ssh/config`) for SSH-capable cloud boxes |
+
+For providers that reach a box over plain SSH with a persistent per-box key
+(**Hetzner**, and DigitalOcean once wired), AgentBox writes one `Host <box-name>`
+entry per box into its own `~/.agentbox/ssh/config` file and adds a single
+`Include ~/.agentbox/ssh/config` line to the top of your `~/.ssh/config` — so
+`ssh <box-name>` (and VS Code Remote-SSH, Codex, Claude desktop) just works
+without touching the rest of your config. The file is regenerated from box state
+on **create** and on **start/resume** (a cloud box's public IP can change across
+stop/start), and a box's entry is dropped on `destroy`. Set `ssh.autoConfig` to
+`false` if you manage `~/.ssh/config` yourself; the explicit
+`agentbox shell <box> --ssh-config`, `agentbox code`, and `agentbox open`
+commands still write the entry on demand. Docker boxes (no SSH) and Daytona
+(60-minute token auth, no persistent key) are never auto-added.
 
 ## browser
 
@@ -298,6 +318,7 @@ The remaining infrastructure knobs — mostly advanced.
 | `vnc.containerPort` | int (advanced) | `6080` | container-side noVNC port |
 | `maintenance.pruneProjectConfigs` | bool | `true` | periodically delete `~/.agentbox/projects/<hash>/` dirs whose source folder is gone |
 | `maintenance.pruneProjectConfigsEvery` | int | `50` | run the orphan sweep every N successful `agentbox create` |
+| `update.check` | bool | `true` | daily background check for a newer published CLI (npm) and menu-bar app (release checksum), plus the "newer version available" nudge; at most one network probe per 24h — `false` disables both |
 
 See [web apps and tunnels](/docs/web-apps-and-tunnels), [local Docker](/docs/local-docker), [sync and git](/docs/sync-and-git), and [browser and screen](/docs/browser-and-screen).
 

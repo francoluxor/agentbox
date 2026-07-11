@@ -59,6 +59,7 @@ import {
 import { cloudAgentAttach, cloudAgentStartDetached } from './_cloud-attach.js';
 import { cloudAgentCreate } from './_cloud-agent-create.js';
 import { runCarryGate, runQueuedCarryGate } from '../lib/carry-gate.js';
+import { resolveGitCredsCarry } from '../lib/git-creds-gate.js';
 import { FromBranchError, UseBranchError, resolveBranchSelection } from '../lib/from-branch.js';
 import { providerForBox, providerForCreate } from '../provider/registry.js';
 import {
@@ -88,6 +89,8 @@ import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { loadPtyBackend } from '../pty/pty-backend.js';
+import { claudeLoginBinding } from '../lib/agent-login-bindings.js';
+import { runGuidedLogin } from '../lib/guided-login.js';
 import {
   cleanupStaleSessions,
   findLiveSession,
@@ -186,6 +189,9 @@ interface ClaudeCreateOptions {
   carryYes?: boolean;
   /** --carry <mode>: 'skip' disables carry for this run (also AGENTBOX_CARRY=skip). */
   carry?: 'skip' | 'ask';
+  /** --dangerously-with-credentials: copy a git credential into the box (git.pushMode=direct); cloud only.
+   *  Token-vs-SSH is chosen ONLY at the interactive prompt (TTY required). */
+  dangerouslyWithCredentials?: boolean;
   vnc?: boolean; // commander: --no-vnc => false; default true (undefined treated as true)
   resync?: boolean; // commander: --no-resync => false; default true (config box.resyncOnStart)
   sharedDockerCache?: boolean;
@@ -244,6 +250,7 @@ function buildClaudeCliOverrides(opts: ClaudeCreateOptions): Partial<UserConfig>
   if (Object.keys(box).length > 0) out.box = box;
   if (Object.keys(claude).length > 0) out.claude = claude;
   if (opts.portless !== undefined) out.portless = { enabled: opts.portless };
+  if (opts.dangerouslyWithCredentials) out.git = { pushMode: 'direct' };
   const attachIn = resolveAttachInOption(opts);
   if (attachIn !== undefined) out.attach = { openIn: attachIn };
   return out;
@@ -254,6 +261,9 @@ function buildClaudeCliOverrides(opts: ClaudeCreateOptions): Partial<UserConfig>
  * claude-config volume, then extract the result to the host backup so every
  * future box (shared or isolate) is seeded from it. Returns the login
  * command's exit code.
+ *
+ * This is the legacy passthrough: it hands the terminal to claude's own TUI. See
+ * {@link signInToClaude} for why that is no longer the default.
  */
 async function runClaudeLoginContainer(image: string, extraArgs: string[]): Promise<number> {
   const { exitCode } = runInteractiveClaudeLogin(
@@ -273,6 +283,34 @@ async function runClaudeLoginContainer(image: string, extraArgs: string[]): Prom
     await syncClaudeCredentials({ volume: SHARED_CLAUDE_VOLUME }, { image, isolate: false });
   }
   return exitCode;
+}
+
+/**
+ * Sign in to Claude, the way every caller should: guided (drive the login
+ * container under a pty, prompt for the code with our own clack prompt) so the
+ * container's TUI never touches the user's terminal — it misbehaves on terminals
+ * whose keyboard protocol it mishandles (kitty's CSI-u).
+ *
+ * Falls back to the passthrough when the optional node-pty prebuild is missing,
+ * or when the caller forces it. Returns rather than exiting, so the first-run
+ * offers can warn and continue.
+ */
+async function signInToClaude(
+  image: string,
+  extraArgs: string[],
+  opts: { passthrough?: boolean } = {},
+): Promise<{ ok: boolean; error?: string; cancelled?: boolean }> {
+  const usePassthrough = opts.passthrough === true || !(await loadPtyBackend());
+  if (usePassthrough) {
+    const exitCode = await runClaudeLoginContainer(image, extraArgs);
+    return exitCode === 0
+      ? { ok: true }
+      : { ok: false, error: `\`claude auth login\` exited with code ${String(exitCode)}` };
+  }
+  const res = await runGuidedLogin('claude', (writeLog) =>
+    claudeLoginBinding({ image, extraArgs, writeLog }),
+  );
+  return { ok: res.ok, error: res.error, cancelled: res.cancelled };
 }
 
 /**
@@ -341,8 +379,8 @@ async function maybeRunClaudeLogin(args: {
   );
   s.stop('image ready');
 
-  const exitCode = await runClaudeLoginContainer(args.image, ['--claudeai']);
-  if (exitCode !== 0) {
+  const res = await signInToClaude(args.image, ['--claudeai']);
+  if (!res.ok) {
     log.warn('Claude login did not complete; continuing — run `agentbox claude login` to retry.');
     return;
   }
@@ -389,8 +427,8 @@ async function maybeRunCloudClaudeLogin(args: {
   );
   s.stop('image ready');
 
-  const exitCode = await runClaudeLoginContainer(args.image, ['--claudeai']);
-  if (exitCode !== 0) {
+  const res = await signInToClaude(args.image, ['--claudeai']);
+  if (!res.ok) {
     log.warn('Claude login did not complete; continuing — run `agentbox claude login` to retry.');
     return;
   }
@@ -421,6 +459,10 @@ export const claudeCommand = new Command('claude')
     '--carry <mode>',
     "control the carry: block; 'skip' disables it for this box (also AGENTBOX_CARRY=skip). Default: 'ask' (prompt).",
     'ask',
+  )
+  .option(
+    '--dangerously-with-credentials',
+    "copy a git credential INTO the box so it can push with your PC off. You'll be asked at an interactive prompt to choose 'token' (HTTPS, unsigned commits, smallest exposure) or your 'ssh' private key (signs commits, riskiest). DANGEROUS: the credential lives in the box and its snapshots. Requires a real terminal (no non-interactive / CI path). Cloud only. Sets git.pushMode=direct.",
   )
   .option(
     '--isolate-claude-config',
@@ -584,6 +626,14 @@ export const claudeCommand = new Command('claude')
     const providerName = opts.provider ?? cfg.effective.box.provider ?? 'docker';
     const isCloud = providerName !== 'docker';
 
+    if (cfg.effective.git.pushMode === 'direct' && !isCloud) {
+      log.error(
+        'git.pushMode=direct / --dangerously-with-credentials is not applicable to docker boxes (they run on your host and bind-mount the host .git). Use a cloud provider (e.g. --provider hetzner|e2b|vercel|daytona).',
+      );
+      cmdLog.close();
+      process.exit(1);
+    }
+
     // When a control plane is configured, make sure this project's repo is
     // authorized on its GitHub App so the box can lease push tokens.
     await ensureProjectRepoOnControlPlane({
@@ -599,6 +649,17 @@ export const claudeCommand = new Command('claude')
     // (docker bakes the prompt into `tmux new-session`; cloud pre-starts a
     // detached tmux session via `buildAttach({ detached: true })`).
     if (opts.initialPrompt && opts.initialPrompt.length > 0) {
+      // --dangerously-with-credentials is foreground-only: the queue worker (a separate
+      // process) doesn't thread git.pushMode=direct into provider.create, so a
+      // queued box would carry the secret but never use it. And copying a
+      // credential is meant to require a human at the prompt, not a background run.
+      if (cfg.effective.git.pushMode === 'direct') {
+        log.error(
+          '--dangerously-with-credentials is not supported with -i / background runs — run it in the foreground so you can confirm the credential copy interactively.',
+        );
+        cmdLog.close();
+        process.exit(1);
+      }
       try {
         await assertAgentCredsAvailable({
           agent: 'claude-code',
@@ -734,6 +795,16 @@ export const claudeCommand = new Command('claude')
       cmdLog.close();
       process.exit(1);
     }
+
+    // git.pushMode=direct (--dangerously-with-credentials): copy the user's git credentials
+    // into the box (gated), riding the same carry apply path.
+    carryEntries = await resolveGitCredsCarry({
+      pushMode: cfg.effective.git.pushMode,
+      projectRoot,
+      existing: carryEntries,
+      onLog: (line) => cmdLog.write(line),
+      onClose: () => cmdLog.close(),
+    });
 
     // First-run wizard: when no agentbox.yaml exists, offer to inject an
     // initial user-message so claude reads /agentbox-setup and writes one.
@@ -1634,7 +1705,7 @@ async function deliverLoginCode(code: string): Promise<void> {
 
 const claudeLoginCommand = new Command('login')
   .description(
-    'Sign in to Claude for use in sandboxes (forwards args to `claude auth login`, e.g. --sso, --console). Runs in a throwaway container against the shared claude-config volume — usable before the first `agentbox claude`. Non-interactive (no TTY) or `--headless`: prints the auth URL, then finish with `--code <CODE>`.',
+    'Sign in to Claude for use in sandboxes (forwards args to `claude auth login`, e.g. --sso, --console). Runs in a throwaway container against the shared claude-config volume — usable before the first `agentbox claude`. In a terminal it prints the auth URL and prompts for the code. Non-interactive (no TTY) or `--headless`: prints the auth URL, then finish with `--code <CODE>`.',
   )
   .argument(
     '[args...]',
@@ -1645,11 +1716,17 @@ const claudeLoginCommand = new Command('login')
     'drive login without a terminal: print the auth URL, then finish with `--code` (auto-selected when stdin is not a TTY)',
   )
   .option('--code <code>', 'deliver the OAuth code to a pending headless login session')
-  .action(async (args: string[], opts: { headless?: boolean; code?: string }) => {
+  .option(
+    '--interactive',
+    "attach your terminal to claude's own login TUI (legacy passthrough; try this if the guided prompt can't drive your login method)",
+  )
+  .action(async (args: string[], opts: { headless?: boolean; code?: string; interactive?: boolean }) => {
     const mode = selectLoginMode({
       isTTY: !!process.stdin.isTTY,
       headless: !!opts.headless,
       code: typeof opts.code === 'string',
+      interactive: !!opts.interactive,
+      ptyAvailable: !!(await loadPtyBackend()),
     });
     try {
       if (mode === 'code') {
@@ -1672,10 +1749,19 @@ const claudeLoginCommand = new Command('login')
       // Throwaway `docker run` against the shared volume — the written
       // credentials persist there and `syncClaudeCredentials` mirrors them to
       // the host backup, so every later box (shared or isolate) is seeded.
-      const exitCode = await runClaudeLoginContainer(image, args);
-      if (exitCode !== 0) {
-        log.warn(`\`claude auth login\` exited with code ${String(exitCode)}`);
-        process.exit(exitCode);
+      const res = await signInToClaude(image, args, { passthrough: mode === 'interactive' });
+      if (res.cancelled) {
+        outro('sign-in cancelled');
+        process.exit(1);
+      }
+      if (!res.ok) {
+        log.error(res.error ?? 'login failed');
+        // A login method whose output we can't recognize (an exotic `-- --sso`
+        // shape) never reaches a prompt; the passthrough still drives it.
+        if (res.error?.includes('never printed an auth URL')) {
+          log.info('Try `agentbox claude login --interactive` to use claude\'s own login TUI.');
+        }
+        process.exit(1);
       }
       outro('signed in — credentials saved for future boxes');
     } catch (err) {

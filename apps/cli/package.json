@@ -1,6 +1,6 @@
 {
   "name": "@madarco/agentbox",
-  "version": "0.22.0",
+  "version": "0.23.5",
   "description": "Launch Claude Code, Codex, and other coding agents in isolated sandboxes",
   "license": "MIT",
   "author": "Marco D'Alia",
@@ -58,10 +58,15 @@
     "@daytonaio/sdk": "^0.179.0",
     "@vercel/sandbox": "^2.0.1",
     "@xterm/headless": "^5.5.0",
+    "better-auth": "^1.6.0",
     "commander": "^12.1.0",
     "e2b": "^2.27.1",
     "execa": "^9.5.2",
+    "kysely": "^0.29.2",
+    "next": "16.2.7",
     "pg": "^8.13.1",
+    "react": "^19",
+    "react-dom": "^19",
     "smol-toml": "^1.7.0",
     "supports-hyperlinks": "^3.1.0",
     "yaml": "^2.6.1"

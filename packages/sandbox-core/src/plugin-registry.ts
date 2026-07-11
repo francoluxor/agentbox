@@ -2,7 +2,7 @@
  * The external-provider plugin registry: `~/.agentbox/plugins.json`.
  *
  * A community provider ships as its own npm package (`agentbox-provider-<name>`)
- * built against `@agentbox/provider-sdk`. The user installs it themselves, then
+ * built against `@madarco/agentbox-provider-sdk`. The user installs it themselves, then
  * `agentbox plugin add <pkg>` validates it and records it here; the CLI and the
  * host relay both read this file to resolve + lazily `import()` the package at
  * runtime (a true variable specifier — built-ins are bundle-inlined, external
@@ -28,7 +28,9 @@ export const PLUGINS_FILE = join(homedir(), '.agentbox', 'plugins.json');
  * (with a warning) rather than crashing the CLI. Extend this array when the CLI
  * keeps back-compat with an older provider contract.
  */
-export const SUPPORTED_SDK_API_VERSIONS: readonly number[] = [1];
+// v2: BoxRecord.cloud.ssh moved to top-level BoxRecord.ssh (+port, docker sshd
+// fields). v1 plugins still load — only ones reading box.cloud.ssh notice.
+export const SUPPORTED_SDK_API_VERSIONS: readonly number[] = [1, 2];
 
 export function isSupportedApiVersion(v: number): boolean {
   return SUPPORTED_SDK_API_VERSIONS.includes(v);

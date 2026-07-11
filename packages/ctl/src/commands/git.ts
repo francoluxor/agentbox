@@ -79,6 +79,79 @@ function runLocalGit(args: string[], cwd: string): Promise<number> {
   });
 }
 
+/** True in `git.pushMode=direct` boxes (credentials copied in; push direct). */
+function isDirectMode(): boolean {
+  return process.env.AGENTBOX_GIT_DIRECT === '1';
+}
+
+/**
+ * Run the REAL git binary (never the PATH `git` shim) for a network op in
+ * `direct` mode: the box holds a copy of the user's credentials, so it pushes /
+ * fetches straight to the remote with no relay and no host. Bypassing the shim
+ * is load-bearing — spawning bare `git push` would re-enter the shim and loop.
+ * `AGENTBOX_REAL_GIT_PATH` mirrors the shim's own override for unit tests.
+ */
+function runRealGit(args: string[], cwd: string): Promise<number> {
+  const bin = process.env.AGENTBOX_REAL_GIT_PATH ?? '/usr/bin/git';
+  return new Promise((resolve) => {
+    const child = spawn(bin, args, { cwd, stdio: 'inherit' });
+    child.on('close', (code) => resolve(code ?? 1));
+    child.on('error', (err) => {
+      process.stderr.write(`agentbox-ctl git: ${String(err.message ?? err)}\n`);
+      resolve(126);
+    });
+  });
+}
+
+/**
+ * Direct-mode network op (push/fetch): resolve the remote + current branch
+ * locally (the relay isn't involved) and run real git. Returns the git exit
+ * code, or 1 if the branch can't be resolved.
+ */
+async function runDirectNetworkOp(
+  op: 'push' | 'fetch',
+  opts: CommonOptions,
+  extra: string[],
+): Promise<number> {
+  const cwd = opts.cwd ?? process.cwd();
+  const remote = resolveRemote(opts.remote);
+  const branch = await captureGit(['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+  if (!branch) {
+    process.stderr.write('agentbox-ctl git: could not resolve current branch\n');
+    return 1;
+  }
+  return runRealGit([op, remote, branch, ...extra], cwd);
+}
+
+/**
+ * `pull` is a relay fetch + a local merge, so its passthrough flags have to be
+ * split across the two: `git fetch` rejects `--ff-only`, `git merge` rejects
+ * `--prune`. Everything the git shim allows for `pull` is classified here.
+ *
+ * These arrive as passthrough args rather than commander options because the
+ * shim forwards them after a `--` separator (`agentbox-ctl git pull -- --ff-only`),
+ * which makes commander treat them as positionals and leave `opts.ffOnly` unset.
+ */
+export function partitionPullArgs(args: string[]): { fetchArgs: string[]; mergeArgs: string[] } {
+  const fetchArgs: string[] = [];
+  const mergeArgs: string[] = [];
+  for (const arg of args) {
+    switch (arg) {
+      case '--ff-only':
+        mergeArgs.push(arg);
+        break;
+      case '--quiet':
+      case '-q':
+        fetchArgs.push(arg);
+        mergeArgs.push(arg);
+        break;
+      default:
+        fetchArgs.push(arg);
+    }
+  }
+  return { fetchArgs, mergeArgs };
+}
+
 /** Run a local `git` command and capture its trimmed stdout ('' on failure). */
 function captureGit(args: string[], cwd: string): Promise<string> {
   return new Promise((resolve) => {
@@ -175,6 +248,18 @@ export const gitCommand = new Command('git')
           process.stderr.write('agentbox-ctl git push: --host-only does not use a remote; drop --remote\n');
           process.exit(64);
         }
+        // `direct` boxes hold a copy of your credentials and push straight to
+        // the remote — no relay, no host. `--host-only` needs the host repo, so
+        // it isn't available here.
+        if (isDirectMode()) {
+          if (opts.hostOnly) {
+            process.stderr.write(
+              'agentbox-ctl git push: --host-only is not available with git.pushMode=direct (there is no host repo; this box pushes to the remote itself)\n',
+            );
+            process.exit(64);
+          }
+          process.exit(await runDirectNetworkOp('push', opts, args));
+        }
         // Control-plane boxes lease a token and push directly; everyone else
         // routes the push through the relay (host creds / cloud poller).
         const code =
@@ -199,6 +284,9 @@ export const gitCommand = new Command('git')
         'extra flags appended to the host-built `git fetch <remote> <branch>` (e.g. `--prune`, `--tags`). Do NOT re-pass the remote or branch; they come from --remote and the registered worktree (same gotcha as `push`).',
       )
       .action(async (args: string[], opts: CommonOptions) => {
+        if (isDirectMode()) {
+          process.exit(await runDirectNetworkOp('fetch', opts, args));
+        }
         const code = await postRpcAndExit('git.fetch', buildParams(opts, args), {
           errorPrefix: 'agentbox-ctl git',
         });
@@ -218,16 +306,21 @@ export const gitCommand = new Command('git')
       .allowUnknownOption(true)
       .argument(
         '[args...]',
-        'extra flags appended to the host-built `git fetch <remote> <branch>` (e.g. `--prune`). Do NOT re-pass the remote or branch; they come from --remote and the registered worktree (same gotcha as `push`).',
+        'extra flags, split between the host-built `git fetch <remote> <branch>` (e.g. `--prune`) and the local merge (`--ff-only`; `--quiet` goes to both). Do NOT re-pass the remote or branch; they come from --remote and the registered worktree (same gotcha as `push`).',
       )
       .action(
         async (
           args: string[],
           opts: CommonOptions & { ffOnly?: boolean },
         ) => {
-          const fetchCode = await postRpcAndExit('git.fetch', buildParams(opts, args), {
-            errorPrefix: 'agentbox-ctl git',
-          });
+          const { fetchArgs, mergeArgs: passthroughMergeArgs } = partitionPullArgs(args);
+          // Direct mode fetches with the box's own credentials (no relay); the
+          // merge below is a local op either way.
+          const fetchCode = isDirectMode()
+            ? await runDirectNetworkOp('fetch', opts, fetchArgs)
+            : await postRpcAndExit('git.fetch', buildParams(opts, fetchArgs), {
+                errorPrefix: 'agentbox-ctl git',
+              });
           if (fetchCode !== 0) process.exit(fetchCode);
           // Merge happens in the container, where the working tree lives. No
           // creds needed; refs are already in the shared .git from the fetch.
@@ -250,7 +343,12 @@ export const gitCommand = new Command('git')
             );
           }
           mergeArgs.push('merge');
-          if (opts.ffOnly) mergeArgs.push('--ff-only');
+          // `--ff-only` reaches us either as a commander option (direct
+          // `agentbox-ctl` call) or as a passthrough arg (via the git shim's `--`).
+          if (opts.ffOnly && !passthroughMergeArgs.includes('--ff-only')) {
+            mergeArgs.push('--ff-only');
+          }
+          mergeArgs.push(...passthroughMergeArgs);
           mergeArgs.push(`${remote}/HEAD`);
           const mergeCode = await runLocalGit(mergeArgs, cwd);
           process.exit(mergeCode);

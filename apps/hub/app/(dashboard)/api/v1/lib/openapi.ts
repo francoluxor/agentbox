@@ -100,10 +100,11 @@ export function buildOpenApi(): Record<string, unknown> {
         post: {
           tags: ['Boxes'],
           summary: 'Run a lifecycle action',
-          description: 'One of pause | resume | stop | destroy.',
+          description:
+            'One of start | pause | resume | stop | destroy | screen. start brings a stopped box back up (resumes if paused, no-op if already running); it does not restart the agent session — that happens on the next attach. screen is the open-VNC prep step: it points the in-box browser at the box’s web app so the VNC desktop shows the app instead of a blank X screen — call it right before opening the box’s vncUrl.',
           parameters: [
             { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
-            { name: 'action', in: 'path', required: true, schema: { type: 'string', enum: ['pause', 'resume', 'stop', 'destroy'] } },
+            { name: 'action', in: 'path', required: true, schema: { type: 'string', enum: ['start', 'pause', 'resume', 'stop', 'destroy', 'screen'] } },
           ],
           responses: {
             '200': { description: 'Done', content: { 'application/json': { schema: { type: 'object', properties: { ok: { const: true } }, required: ['ok'] } } } },
@@ -198,6 +199,71 @@ export function buildOpenApi(): Record<string, unknown> {
             '404': errorResponse,
             '409': errorResponse,
             '503': errorResponse,
+          },
+        },
+      },
+      '/boxes/{id}/open': {
+        post: {
+          tags: ['Box services'],
+          summary: 'Open the box in a host app',
+          description:
+            'Launch the box in a host GUI app (Codex, VS Code/Cursor, cmux, Herdr, iTerm2) by re-shelling `agentbox open --in <app>`. Only works on a localhost hub running on macOS; a remote hub / non-macOS host refuses. An app must be installed and provider-eligible (e.g. Codex is Hetzner-only) — see GET /open-targets.',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: { app: { type: 'string', enum: ['codex', 'herdr', 'cmux', 'vscode', 'iterm2'] } },
+                  required: ['app'],
+                },
+              },
+            },
+          },
+          responses: {
+            '200': { description: 'Launched', content: { 'application/json': { schema: { type: 'object', properties: { ok: { const: true } }, required: ['ok'] } } } },
+            '400': errorResponse,
+            '401': errorResponse,
+            '404': errorResponse,
+            '409': errorResponse,
+            '503': errorResponse,
+          },
+        },
+      },
+      '/open-targets': {
+        get: {
+          tags: ['Box services'],
+          summary: 'Which host apps this hub can open a box in',
+          description:
+            'Reports whether the hub can launch host GUI apps (`supported` — true only on a localhost hub on macOS) and, if so, which of Codex/Herdr/cmux/VS Code/iTerm2 are installed plus their provider eligibility. Backs the box detail page "Apps" launchers.',
+          responses: {
+            '200': {
+              description: 'Open targets',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      supported: { type: 'boolean' },
+                      targets: {
+                        type: ['object', 'null'],
+                        additionalProperties: {
+                          type: 'object',
+                          properties: {
+                            available: { type: 'boolean' },
+                            providers: { type: 'array', items: { type: 'string' } },
+                          },
+                          required: ['available'],
+                        },
+                      },
+                    },
+                    required: ['supported', 'targets'],
+                  },
+                },
+              },
+            },
+            '401': errorResponse,
           },
         },
       },
@@ -383,6 +449,29 @@ export function buildOpenApi(): Record<string, unknown> {
             commits: { type: ['number', 'null'] },
             filesTouched: { type: ['number', 'null'] },
             error: { type: ['string', 'null'] },
+            displayName: { type: ['string', 'null'], description: 'Cosmetic user-set label (rename); null when unset' },
+            webUrl: { type: ['string', 'null'], description: 'Host-openable web-service URL; null when absent/unreachable (e.g. paused)' },
+            vncUrl: { type: ['string', 'null'], description: 'Host-openable VNC desktop URL; null when absent/unreachable' },
+            state: {
+              type: 'string',
+              enum: ['running', 'paused', 'stopped', 'missing'],
+              description:
+                'Raw provider runtime state (host topology only). Absent on synthetic creating/error rows — presence distinguishes a real box whose agent errored from a failed create job.',
+            },
+            name: { type: 'string' },
+            provider: { type: 'string', description: "Raw provider id ('docker', 'daytona', …; plugin ids possible)" },
+            projectRoot: { type: 'string', description: 'Absolute host path of the project. Host topology only — never emitted by the hosted plane' },
+            projectIndex: { type: 'number' },
+            vncEnabled: { type: 'boolean' },
+            gitWorktrees: {
+              type: 'array',
+              items: { type: 'object', properties: { kind: { type: 'string' }, branch: { type: 'string' } } },
+            },
+            claudeSessionTitle: { type: 'string' },
+            codexSessionTitle: { type: 'string' },
+            opencodeSessionTitle: { type: 'string' },
+            claudeActivity: { type: 'string', description: 'working | idle | waiting | end-plan | question | compacting | error | unknown' },
+            codexActivity: { type: 'string' },
           },
           required: ['id', 'projectId', 'status', 'agent'],
         },

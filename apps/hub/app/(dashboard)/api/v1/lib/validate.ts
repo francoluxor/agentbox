@@ -11,7 +11,10 @@ const AGENTS = ['claude', 'codex', 'opencode', 'none'] as const;
 // that package out of the Next bundle, like AGENTS above). The backend enforces
 // that the chosen provider is actually configured on the host.
 const PROVIDERS = ['docker', 'daytona', 'hetzner', 'vercel', 'e2b', 'digitalocean'] as const;
-export const LIFECYCLE_ACTIONS = ['pause', 'resume', 'stop', 'destroy'] as const;
+// `screen` isn't lifecycle strictly speaking — it's the open-VNC prep step
+// (point the in-box browser at the web app) — but it shares the exact
+// POST /boxes/:id/:action shape and backend dispatch.
+export const LIFECYCLE_ACTIONS = ['start', 'pause', 'resume', 'stop', 'destroy', 'screen'] as const;
 export type LifecycleAction = (typeof LIFECYCLE_ACTIONS)[number];
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -48,6 +51,24 @@ export function parseCreateBox(body: unknown): Parsed<CreateBoxInput> {
       setupWizard: sw.value,
     },
   };
+}
+
+// Rename a box: set (or clear, with an empty string) its cosmetic display label.
+// The backend trims + clears on blank; here we only enforce the shape + a length
+// cap (matching the CLI's --set-name cap).
+export function parseRenameBox(body: unknown): Parsed<{ displayName: string }> {
+  if (!isObject(body)) return { ok: false, message: 'body must be a JSON object' };
+  const { displayName } = body;
+  if (typeof displayName !== 'string') {
+    return {
+      ok: false,
+      message: 'displayName is required (string; empty string clears the label)',
+    };
+  }
+  if (displayName.trim().length > 60) {
+    return { ok: false, message: 'displayName too long (max 60 chars)' };
+  }
+  return { ok: true, value: { displayName } };
 }
 
 export function parseAnswer(body: unknown): Parsed<'y' | 'n'> {
@@ -124,6 +145,24 @@ export type GitOp = (typeof GIT_OPS)[number];
 
 export function isGitOp(v: string): v is GitOp {
   return (GIT_OPS as readonly string[]).includes(v);
+}
+
+// Host apps a box can be launched in (mirrors OPEN_IN_APPS in the CLI's
+// _open-in.ts; hardcoded to keep @agentbox/* out of the Next bundle).
+export const OPEN_IN_APPS = ['claude', 'codex', 'herdr', 'cmux', 'vscode', 'iterm2', 'finder'] as const;
+export type OpenInApp = (typeof OPEN_IN_APPS)[number];
+
+export function isOpenInApp(v: string): v is OpenInApp {
+  return (OPEN_IN_APPS as readonly string[]).includes(v);
+}
+
+export function parseOpenIn(body: unknown): Parsed<{ app: OpenInApp }> {
+  if (!isObject(body)) return { ok: false, message: 'body must be a JSON object' };
+  const { app } = body;
+  if (typeof app !== 'string' || !isOpenInApp(app)) {
+    return { ok: false, message: `app must be one of ${OPEN_IN_APPS.join(', ')}`, details: { got: app } };
+  }
+  return { ok: true, value: { app } };
 }
 
 function optionalString(v: unknown, field: string): Parsed<string | undefined> {

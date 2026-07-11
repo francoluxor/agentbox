@@ -773,6 +773,8 @@ async function copyOneEntry(container: string, entry: ResolvedCarryEntry): Promi
         '--no-same-owner',
         '-m',
       ],
+      // COPYFILE_DISABLE silences macOS BSD tar's `._*` resource-fork stubs.
+      { ...process.env, COPYFILE_DISABLE: '1' },
     );
     if (packed.exitCode !== 0) {
       throw new Error(`tar pack failed: ${String(packed.stderr).slice(0, 300)}`);
@@ -817,6 +819,8 @@ async function copyOneEntry(container: string, entry: ResolvedCarryEntry): Promi
         '--no-same-owner',
         '-m',
       ],
+      // COPYFILE_DISABLE silences macOS BSD tar's `._*` resource-fork stubs.
+      { ...process.env, COPYFILE_DISABLE: '1' },
     );
     if (packed.exitCode !== 0) {
       throw new Error(`tar pack failed: ${String(packed.stderr).slice(0, 300)}`);

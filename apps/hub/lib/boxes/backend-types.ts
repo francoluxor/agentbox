@@ -9,6 +9,31 @@ export type ActionResult = { ok: true } | { ok: false; error: string };
 // output; on failure `error` is the trimmed stderr (or a resolve error).
 export type BoxOpResult = { ok: true; stdout?: string; stderr?: string } | { ok: false; error: string };
 
+// Host apps a box can be opened in (`agentbox open --in <app>`). Mirrors the
+// CLI's OPEN_IN_APPS (apps/cli/src/commands/_open-in.ts); duplicated here to keep
+// @agentbox/* packages out of the Next bundle, like AGENTS/PROVIDERS in validate.ts.
+export type OpenInApp = 'claude' | 'codex' | 'herdr' | 'cmux' | 'vscode' | 'iterm2' | 'finder';
+
+// One app's install/eligibility, as reported by the CLI's `open --targets --json`.
+// `providers` (when present) limits the app to boxes on those providers (e.g.
+// codex -> ['hetzner']); omitted means any provider.
+export interface OpenTargetInfo {
+  available: boolean;
+  /** Why the app is unavailable (install hint); present only when !available. */
+  reason?: string;
+  providers?: string[];
+}
+
+export type OpenTargetsReport = Record<OpenInApp, OpenTargetInfo>;
+
+// `supported` is false when the hub can't launch host GUI apps at all (a remote
+// hub profile, or a non-macOS host) — the UI then shows no Open-in controls.
+// `targets` is null in that case, or when the host probe failed.
+export interface OpenTargets {
+  supported: boolean;
+  targets: OpenTargetsReport | null;
+}
+
 // One supervised service, normalized from either a live `agentbox-ctl status`
 // pull or the persisted box-status snapshot. Fields absent in the persisted
 // snapshot (pid/restarts/lastExitCode/command) are filled with nulls/defaults.
@@ -134,10 +159,21 @@ export interface HubBackend {
   // authMode is an env-derived concern layered on by source.ts, not the host
   // backend — so the backend produces everything else.
   getData(): Promise<Omit<HubState, 'authMode'>>;
+  // Start a fully-stopped box (resumes when paused, no-op when running). Does
+  // not restore agent tmux sessions — that's a CLI-only concern.
+  start(id: string): Promise<ActionResult>;
   pause(id: string): Promise<ActionResult>;
   resume(id: string): Promise<ActionResult>;
   stop(id: string): Promise<ActionResult>;
   destroy(id: string): Promise<ActionResult>;
+  // Set (or clear, when displayName is empty) a box's cosmetic display label.
+  // Pure state — does not touch the container, git branch, or URL.
+  rename(id: string, displayName: string): Promise<ActionResult>;
+  // Point the box's in-box browser at its web app so the VNC desktop shows the
+  // app instead of a blank X screen (the `agentbox screen` prep step). Called
+  // by open-VNC surfaces (hub UI, tray) right before opening the viewer URL.
+  // Best-effort on the browser launch; only errors when the box is unusable.
+  screen(id: string): Promise<ActionResult>;
   // Answer a pending host-action approval; resolves the parked in-box RPC.
   answerApproval(id: string, answer: 'y' | 'n'): Promise<ActionResult>;
   // Provider list enriched with base-image freshness (`baseStatus`/
@@ -195,4 +231,13 @@ export interface HubBackend {
   getServices(id: string): Promise<ServicesResult>;
   // Restart one service by name, or every service when name is omitted.
   restartService(id: string, name?: string): Promise<BoxOpResult>;
+
+  // ── host "open in" launchers (localhost hub on macOS only) ──
+  // Which host apps are installed + provider-eligible, for the detail-page menu.
+  // `supported: false` when the hub can't launch host GUIs (remote/non-macOS).
+  openTargets(): Promise<OpenTargets>;
+  // Launch the box in a host app by re-shelling the installed `agentbox open
+  // <id> --in <app>` (which owns all the SSH-alias / deep-link / terminal-spawn
+  // logic). Refuses when openTargets() would report unsupported.
+  openIn(id: string, app: OpenInApp): Promise<ActionResult>;
 }

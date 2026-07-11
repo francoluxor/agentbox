@@ -15,7 +15,7 @@ process.env.AGENTBOX_CLI_COMMIT = AGENTBOX_COMMIT;
 
 // Stamp the staged `runtime/` root so externally-installed provider plugins can
 // resolve the shared box-side assets (ctl.cjs + shims) from the RUNNING CLI via
-// `@agentbox/provider-sdk`'s `resolveSharedRuntimeAsset`. Probe both bundle
+// `@madarco/agentbox-provider-sdk`'s `resolveSharedRuntimeAsset`. Probe both bundle
 // layouts (dist/index.js and dist/<chunk>.js) for the `_shared` marker.
 import { existsSync as _existsSync } from 'node:fs';
 import { dirname as _dirname, resolve as _resolve } from 'node:path';
@@ -41,6 +41,7 @@ import { appCommand } from './commands/app.js';
 import { attachCommand } from './commands/attach.js';
 import { claudeCommand } from './commands/claude.js';
 import { checkpointCommand } from './commands/checkpoint.js';
+import { credentialsCommand } from './commands/credentials.js';
 import { codeCommand } from './commands/code.js';
 import { codexCommand } from './commands/codex.js';
 import { opencodeCommand } from './commands/opencode.js';
@@ -77,6 +78,12 @@ import { controlPlaneCommand } from './commands/control-plane.js';
 import { runQueuedJobCommand } from './commands/_run-queued-job.js';
 import { runQueuedPrepareCommand } from './commands/_run-queued-prepare.js';
 import { claudeLoginWorkerCommand } from './commands/_claude-login-worker.js';
+import { postUpdateRefreshCommand } from './commands/_post-update-refresh.js';
+import { runPostUpdateRefresh } from './lib/post-update-refresh.js';
+import { maybeStartRemoteCheck, nudgeMessage, updateCheckEnabled } from './lib/update-check.js';
+import { readUpdateState, writeUpdateState } from './lib/update-state.js';
+import { confirm } from './lib/prompt.js';
+import { detectExecutionMethod } from './exec-method.js';
 import { herdrCommand } from './commands/herdr.js';
 import { recoverCommand } from './commands/recover.js';
 import { screenCommand } from './commands/screen.js';
@@ -136,6 +143,8 @@ program.addCommand(destroyCommand);
 program.addCommand(prepareCommand);
 program.addCommand(pruneCommand);
 program.addCommand(checkpointCommand);
+// Hidden: spawned by the relay's credential fan-out (also a manual recovery tool).
+program.addCommand(credentialsCommand, { hidden: true });
 program.addCommand(configCommand);
 program.addCommand(queueCommand);
 program.addCommand(relayCommand);
@@ -152,6 +161,8 @@ program.addCommand(runQueuedPrepareCommand, { hidden: true });
 // Internal worker that drives `claude auth login` under a pty for the headless
 // (non-TTY / --headless) login flow. Hidden — see _claude-login-worker.ts.
 program.addCommand(claudeLoginWorkerCommand, { hidden: true });
+// Post-update worker: run by the freshly-installed binary after `self-update`.
+program.addCommand(postUpdateRefreshCommand, { hidden: true });
 // Internal entry points invoked by the Herdr plugin (`agentbox install herdr`).
 program.addCommand(herdrCommand, { hidden: true });
 program.addCommand(daytonaCommand);
@@ -188,6 +199,7 @@ const FIRST_RUN_EXEMPT = new Set([
   '_run-queued-job',
   '_run-queued-prepare',
   '_claude-login-worker',
+  '_post-update-refresh',
   'drive',
   'screen',
 ]);
@@ -215,7 +227,68 @@ if (isFirstRun() && isFirstRunHookEligible(argv)) {
   }
 }
 
-program.parseAsync(argv).catch((err: unknown) => {
-  printCliError(err, process.stderr);
-  process.exit(1);
-});
+// Version-change hook: the user updated the package themselves (npm update -g)
+// — offer the post-update refresh the `self-update` command would have run.
+// Same interactivity gate as the first-run wizard, plus `self-update` itself
+// (it refreshes anyway). Dev builds (0.0.0-dev) never take part. A mismatched
+// stamp is only rewritten on refresh-completed or explicit decline — a non-TTY
+// invocation under the new binary must not swallow the next TTY prompt.
+let versionPromptShown = false;
+if (AGENTBOX_VERSION !== '0.0.0-dev') {
+  const state = readUpdateState();
+  if (state.lastRunVersion === undefined) {
+    // Baseline for installs that predate the stamp: written on any invocation,
+    // silently — we can't know the previous version, so never prompt.
+    writeUpdateState({ lastRunVersion: AGENTBOX_VERSION });
+  } else if (
+    state.lastRunVersion !== AGENTBOX_VERSION &&
+    isFirstRunHookEligible(argv) &&
+    argv[2] !== 'self-update'
+  ) {
+    versionPromptShown = true;
+    try {
+      const yes = await confirm({
+        message: `agentbox was updated (${state.lastRunVersion} → ${AGENTBOX_VERSION}) — download new version now?`,
+        initialValue: true,
+      });
+      if (yes) {
+        await runPostUpdateRefresh();
+      } else {
+        writeUpdateState({ lastRunVersion: AGENTBOX_VERSION });
+      }
+    } catch (err) {
+      process.stderr.write(
+        `post-update refresh failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+}
+
+// Daily update check: no-op while the cached result is < 24h old (zero
+// network on normal CLI calls); otherwise one background npm-registry +
+// tray-sidecar probe, un-awaited and never on the command's critical path.
+if (isFirstRunHookEligible(argv)) {
+  maybeStartRemoteCheck();
+}
+
+program.parseAsync(argv).then(
+  async () => {
+    // "Newer version available" nudge — printed from the cache only, after
+    // the command finished, on interactive runs of an installed build.
+    if (versionPromptShown || !isFirstRunHookEligible(argv)) return;
+    const msg = nudgeMessage(
+      readUpdateState(),
+      detectExecutionMethod({
+        userAgent: process.env.npm_config_user_agent,
+        argv1: process.argv[1],
+      }),
+    );
+    if (msg !== null && (await updateCheckEnabled())) {
+      process.stderr.write(`\n${msg}\n`);
+    }
+  },
+  (err: unknown) => {
+    printCliError(err, process.stderr);
+    process.exit(1);
+  },
+);

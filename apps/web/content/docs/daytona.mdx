@@ -43,6 +43,16 @@ agentbox prepare --provider daytona
 
 When you upgrade AgentBox, `create --provider daytona` notices if the new install would bake a different snapshot (the comparison is checksum-based on the baked files — CLI version strings on their own don't count) and offers to rebake inline; with `-y` or non-TTY it instead warns loudly and boots on the existing snapshot. `agentbox daytona login` also nudges you toward `agentbox prepare --provider daytona` on the first successful login.
 
+### Sizing (bake-time)
+
+Daytona resources are fixed **at snapshot-bake time** — the SDK rejects custom resources on the snapshot-resume path, so `--size` on `create` doesn't resize a snapshot-booted box. Bake the size you want with `agentbox prepare --provider daytona --size <cpu-memory-disk>` (GB, e.g. `4-8-20`), or pin it with `box.sizeDaytona` / `box.size`:
+
+```bash
+agentbox prepare --provider daytona --size 4-8-20 --force
+```
+
+The snapshot name carries a size suffix (`agentbox-base-<sha>-4-8-20`), so re-sized bakes don't collide. If you later `create --provider daytona --size 2-4-8` against a snapshot baked at a different size, the box still boots — AgentBox warns loudly that the size is fixed at bake time and points you at `prepare --provider daytona --size 2-4-8 --force`. Re-running `prepare` with the same size skips the rebuild.
+
 See [CLI commands](/docs/cli) for all flags.
 
 <Callout type="warn" title="HEADS UP">
@@ -126,7 +136,7 @@ Two differences from Docker: there is no `--merged` (Daytona snapshots are flatt
 
 ## Caveats
 
-- **Custom `--size` only applies on the from-image create** — snapshot-based creates inherit the snapshot's baked size, so bake the size you want at first create or `prepare` time.
+- **Size is fixed at bake time** — snapshot-based creates inherit the snapshot's baked resources; use `agentbox prepare --provider daytona --size 4-8-20` to change them (a `create --size` that differs just prints a warning).
 - **No base image auto-build** — `prepare --provider daytona` is required, unlike Docker.
 - **No live stats** — `agentbox top` and `dashboard` render `—` for cloud CPU/mem and no live attach pane.
 - **Destroy lag in the dashboard** — the resource is gone immediately, but the Daytona web UI lags ~30s (cosmetic).

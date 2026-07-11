@@ -100,7 +100,13 @@ async function uploadOneEntry(args: UploadOneArgs): Promise<void> {
   const tarArgs = isDir
     ? ['-C', entry.absSrc, '-cf', localTar, ...excludeArgs, '.']
     : ['-C', dirnameUnix(entry.absSrc), '-cf', localTar, fileBase];
-  const packed = await execa('tar', tarArgs, { reject: false });
+  // COPYFILE_DISABLE silences macOS BSD tar's `._*` resource-fork stubs, which
+  // would otherwise land next to every carried file in the box (`._auth.json`
+  // beside `auth.json`) and miss the entry's `mode`.
+  const packed = await execa('tar', tarArgs, {
+    reject: false,
+    env: { ...process.env, COPYFILE_DISABLE: '1' },
+  });
   if (packed.exitCode !== 0) {
     throw new Error(`tar pack failed: ${String(packed.stderr).slice(0, 300)}`);
   }

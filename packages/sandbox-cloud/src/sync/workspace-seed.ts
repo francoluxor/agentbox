@@ -281,11 +281,11 @@ export function buildCarryOverSteps(opts: {
             // Report (but don't clobber) untracked files that already exist in
             // the box tree, then extract only the new ones (--skip-old-files).
             `tar -tzf ${untracked} | while IFS= read -r p; do case "$p" in ''|*/) continue ;; esac; if [ -e ${wd}/"$p" ]; then echo "${OVERLAY_SKIP_MARKER}$p"; fi; done || true ; ` +
-            `tar -C ${wd} --skip-old-files -xzf ${untracked} || true ; ` +
+            `tar -C ${wd} --skip-old-files --no-same-owner -xzf ${untracked} || true ; ` +
             `rm -f ${untracked} ; ` +
             `fi`
         : `if [ -f ${untracked} ]; then ` +
-            `tar -C ${wd} -xzf ${untracked} && rm -f ${untracked} ; ` +
+            `tar -C ${wd} --no-same-owner -xzf ${untracked} && rm -f ${untracked} ; ` +
             `fi`,
     );
   }
@@ -446,8 +446,7 @@ async function seedFromGitClone(args: SeedFromGitCloneArgs): Promise<RepoSeedCon
     const prepSteps = args.overlay
       ? [`$SUDO rm -rf ${quoteShellArgv([gitDir])}`]
       : [
-          `$SUDO rm -rf ${quoteShellArgv([args.workspaceDir])}`,
-          `$SUDO mkdir -p ${quoteShellArgv([args.workspaceDir])}`,
+          ...wipeDirSteps(args.workspaceDir),
           `$SUDO chown "$(id -un):$(id -gn)" ${quoteShellArgv([args.workspaceDir])}`,
         ];
     const checkoutSteps = args.overlay
@@ -478,7 +477,12 @@ async function seedFromGitClone(args: SeedFromGitCloneArgs): Promise<RepoSeedCon
       // `/workspace/<rel>`, so the root clone is preserved). Overlay: rm only
       // `<dir>/.git`, preserving the warm working tree.
       ...prepSteps,
-      `tar -C ${quoteShellArgv([args.workspaceDir])} -xzf ${quoteShellArgv([remoteTar])}`,
+      // --no-same-owner (here and on every extraction in this file): clouds
+      // whose exec user is root would otherwise preserve the HOST's numeric
+      // uids from the tarball, and git then fails with "dubious ownership"
+      // on /workspace/.git. Non-root extraction already behaves this way
+      // (tar defaults to --no-same-owner unless root).
+      `tar -C ${quoteShellArgv([args.workspaceDir])} --no-same-owner -xzf ${quoteShellArgv([remoteTar])}`,
       setOrigin,
       ...checkoutSteps,
       ...carryOverSteps,
@@ -652,7 +656,7 @@ async function tryReseedRepoDelta(args: SeedFromGitCloneArgs): Promise<RepoSeedC
     // preserved by the tar so they land content-addressed.
     const lfsStep =
       deltaLfsSize > 0
-        ? `tar -C ${quoteShellArgv([`${args.workspaceDir}/.git`])} -xzf ${quoteShellArgv([REMOTE_DELTA_LFS])}`
+        ? `tar -C ${quoteShellArgv([`${args.workspaceDir}/.git`])} --no-same-owner -xzf ${quoteShellArgv([REMOTE_DELTA_LFS])}`
         : ': # no delta lfs objects';
     const SUDO = `if command -v sudo >/dev/null 2>&1; then SUDO='sudo -n'; else SUDO=''; fi`;
     const script = [
@@ -925,6 +929,17 @@ async function readOriginUrl(hostRepo: string): Promise<string | null> {
   return out.length > 0 ? out : null;
 }
 
+/**
+ * Fresh-seed wipe of the extraction dir. Clears the dir's contents instead of
+ * `rm -rf`-ing the dir itself: some clouds mount the workspace dir into the
+ * sandbox, so removing it fails with "Device or resource busy". Expects the
+ * caller's script to have defined `$SUDO`.
+ */
+function wipeDirSteps(dir: string): string[] {
+  const q = quoteShellArgv([dir]);
+  return [`$SUDO mkdir -p ${q}`, `$SUDO find ${q} -mindepth 1 -maxdepth 1 -exec rm -rf {} +`];
+}
+
 interface SeedFromTarArgs {
   backend: CloudBackend;
   handle: CloudHandle;
@@ -949,10 +964,9 @@ async function seedFromTar(args: SeedFromTarArgs): Promise<void> {
       // (index-pack) fails with "Unable to read current working directory".
       `cd /tmp`,
       SUDO,
-      `$SUDO rm -rf ${quoteShellArgv([args.workspaceDir])}`,
-      `$SUDO mkdir -p ${quoteShellArgv([args.workspaceDir])}`,
+      ...wipeDirSteps(args.workspaceDir),
       `$SUDO chown "$(id -un):$(id -gn)" ${quoteShellArgv([args.workspaceDir])}`,
-      `tar -C ${quoteShellArgv([args.workspaceDir])} -xzf ${quoteShellArgv([remoteTar])}`,
+      `tar -C ${quoteShellArgv([args.workspaceDir])} --no-same-owner -xzf ${quoteShellArgv([remoteTar])}`,
       `rm -f ${quoteShellArgv([remoteTar])}`,
     ].join('\n');
     const r = await args.backend.exec(args.handle, bashScript(script));

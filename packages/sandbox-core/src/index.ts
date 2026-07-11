@@ -7,10 +7,12 @@ export {
   mutateState,
   readState,
   recordBox,
+  recordBoxSsh,
   recordLastAgent,
   removeBoxRecord,
   reserveProjectIndex,
   resolveBoxRef,
+  setBoxDisplayName,
   writeState,
 } from './state.js';
 export {
@@ -20,6 +22,33 @@ export {
   type DetectedGitRepo,
 } from './git-detect.js';
 export { hostOpenCommand } from './host-open.js';
+export {
+  agentboxSshConfigPath,
+  agentboxAliasFor,
+  ensureSshInclude,
+  syncAgentboxSshConfig,
+  hasUnmanagedHostConflict,
+  parseSshTarget,
+  readAgentboxSshAlias,
+  type SshAliasOptions,
+  type SshTarget,
+} from './ssh-config.js';
+export {
+  resolveCloudSshTarget,
+  ensureCloudSshAlias,
+  autoWriteSshConfig,
+  type CloudSshAlias,
+  type CloudSshOptions,
+} from './cloud-ssh.js';
+export { mintSshKey, type MintedSshKey } from './ssh-key.js';
+export {
+  claudeSettingsPath,
+  claudeSshEntryFor,
+  pruneOrphanClaudeSshConfigs,
+  removeClaudeSshConfigs,
+  upsertClaudeSshConfig,
+  type ClaudeSshConfigEntry,
+} from './claude-app-config.js';
 export {
   BOX_WORKSPACE,
   boxGitCheckout,

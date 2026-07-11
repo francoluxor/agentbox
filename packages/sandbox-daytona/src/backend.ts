@@ -19,6 +19,7 @@ import type {
 } from '@agentbox/core';
 import { resolveDockerfileContext } from './dockerfile-context.js';
 import { ensureDaytonaEnvLoaded } from './env-loader.js';
+import { readPreparedDaytonaState } from './prepared-state.js';
 import { withDaytonaRetry } from './retry.js';
 
 /**
@@ -241,6 +242,22 @@ export const daytonaBackend: CloudBackend = {
         // branch; the image branch keeps them.
         const snapshotParams: Record<string, unknown> = { ...baseParams };
         delete snapshotParams.resources;
+        // On the snapshot path the size is fixed at bake time. If the user asked
+        // for a size that differs from what the snapshot was baked with, warn
+        // loudly — silently ignoring `--size` would leave them wondering why the
+        // box came up the old size.
+        if (snapshotName && sizeResources) {
+          const bakedSize = readPreparedDaytonaState()?.extras?.size;
+          const requestedKey = `${String(sizeResources.cpu)}-${String(sizeResources.memory)}-${String(sizeResources.disk)}`;
+          if (bakedSize !== requestedKey) {
+            req.onLog?.(
+              `daytona: WARNING — size '${requestedKey}' is ignored on the snapshot path; ` +
+                `this snapshot was baked at ${bakedSize ?? 'the default size'}. ` +
+                `Daytona resources are fixed at bake time — re-bake with ` +
+                `\`agentbox prepare --provider daytona --size ${requestedKey} --force\` to change them.`,
+            );
+          }
+        }
         const sandbox = snapshotName
           ? await client.create({ snapshot: snapshotName, ...snapshotParams }, { timeout: 900 })
           : await client.create(

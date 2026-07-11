@@ -26,6 +26,7 @@ import {
   boxImageConfigKey,
   isProviderKind,
   loadEffectiveConfig,
+  resolveBoxSize,
   setConfigValue,
   unsetConfigValue,
 } from '@agentbox/config';
@@ -50,6 +51,8 @@ interface PrepareOptions {
   yes?: boolean;
   status?: boolean;
   claudeInstall?: string;
+  location?: string;
+  size?: string;
 }
 
 interface DockerStatus {
@@ -302,6 +305,17 @@ export interface RunPrepareOptions {
    * `box.claudeInstall` config key; falls back to the effective config.
    */
   claudeInstall?: 'native' | 'npm';
+  /**
+   * Datacenter / region the bake VPS runs in (Hetzner only). CLI override of
+   * `box.hetznerLocation`; other providers ignore it.
+   */
+  location?: string;
+  /**
+   * Bake-time VM size for the snapshot/template providers (daytona:
+   * `cpu-memory-disk` GB; e2b: `cpu-memory` GB). CLI override of
+   * `box.size<Provider>` / `box.size`; docker/hetzner/vercel ignore it.
+   */
+  size?: string;
 }
 
 /**
@@ -341,6 +355,13 @@ export async function runPrepare(
   const registry = providerName === 'docker' ? cfg?.effective.box.imageRegistry : undefined;
   // Bake-time Claude install method: CLI flag wins over the config key.
   const claudeInstall = opts.claudeInstall ?? cfg?.effective.box.claudeInstall ?? 'native';
+  // Bake-time datacenter (Hetzner only): CLI flag wins over box.hetznerLocation.
+  const location = opts.location?.trim() || cfg?.effective.box.hetznerLocation || undefined;
+  // Bake-time size (daytona/e2b): CLI flag wins over the cascaded box.size /
+  // box.size<Provider>. Empty resolves to undefined so the provider bakes its
+  // default resources.
+  const size =
+    opts.size?.trim() || (cfg ? resolveBoxSize(cfg.effective, providerName) : '') || undefined;
   const sp = spinner();
   sp.start(`preparing ${providerName}…`);
   try {
@@ -351,6 +372,8 @@ export async function runPrepare(
       allowPull: opts.build ? false : undefined,
       registry,
       claudeInstall,
+      location,
+      size,
       onLog: (line) => sp.message(line.slice(0, 80)),
     });
     if (result.snapshotName !== undefined) {
@@ -437,6 +460,14 @@ export const prepareCommand = new Command('prepare')
     '--claude-install <mode>',
     'install Claude Code into the base image via the native installer (default) or npm (native | npm)',
   )
+  .option(
+    '--location <name>',
+    'Hetzner datacenter the bake VPS runs in (e.g. nbg1, fsn1, hel1, ash). Overrides box.hetznerLocation. Hetzner-only.',
+  )
+  .option(
+    '--size <spec>',
+    'bake-time VM size. daytona: cpu-memory-disk GB (e.g. 4-8-20). e2b: cpu-memory GB (e.g. 4-8). Overrides box.size / box.size<Provider>. Ignored by docker/hetzner/vercel.',
+  )
   .action(async (opts: PrepareOptions) => {
     // Status-only path: no provider, or explicit --status.
     if (!opts.provider || opts.status) {
@@ -465,6 +496,8 @@ export const prepareCommand = new Command('prepare')
       build: opts.build,
       yes: opts.yes,
       claudeInstall,
+      location: opts.location,
+      size: opts.size,
     });
   });
 

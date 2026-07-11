@@ -1,5 +1,5 @@
 /**
- * `@agentbox/provider-sdk` — the public, semver'd surface for building an
+ * `@madarco/agentbox-provider-sdk` — the public, semver'd surface for building an
  * AgentBox sandbox provider as an installable community package.
  *
  * A provider package implements the thin `CloudBackend` (~13 methods over a
@@ -19,7 +19,7 @@
  * supported range includes this major (see `agentbox plugin add`). Bump on any
  * breaking change to `Provider` / `CloudBackend` / `ProviderModule`.
  */
-export const SDK_API_VERSION = 1;
+export const SDK_API_VERSION = 2;
 
 // ---- core provider contract (types) ----
 export type {
@@ -108,6 +108,40 @@ export {
   findProjectRoot,
   type EffectiveConfig,
 } from '@agentbox/config';
+
+// ---- interactive attach helpers (build a cloud box's `buildAttach` argv) ----
+// A provider with no SSH (like vercel/e2b) overrides `buildAttach` and drives
+// its own PTY transport; these render the shared inner tmux command + forward a
+// safe TERM, exactly as the built-in cloud providers do.
+export { hostTermForCloud, renderInnerCommand } from '@agentbox/sandbox-cloud';
+
+// ---- prepare-time agent-config staging (bake host ~/.claude etc into a base) ----
+// A provider that bakes its base image by booting a builder sandbox stages the
+// host's static agent config into the snapshot with these (same helpers the
+// built-in cloud `prepare` flows use).
+export {
+  stageClaudeStaticForUpload,
+  stageCodexStaticForUpload,
+  stageOpencodeStaticForUpload,
+  type StageResult,
+} from '@agentbox/sandbox-cloud';
+
+// ---- cloud checkpoint authoring (for id-addressed-snapshot providers) ----
+// A provider whose snapshots are id-addressed (like vercel/e2b, where the cloud
+// returns an opaque snapshot id you can't name) overrides the whole `checkpoint`
+// capability instead of using the scaffold default. These are the host-side
+// manifest helpers that override needs — the same ones the built-in vercel/e2b
+// providers use.
+export {
+  writeCloudCheckpointManifest,
+  listCloudCheckpoints,
+  resolveCloudCheckpoint,
+  removeCloudCheckpointDir,
+  currentCloudBaseFingerprint,
+  type CloudCheckpointInfo,
+  type CloudCheckpointManifest,
+  type WriteCloudManifestFields,
+} from '@agentbox/sandbox-cloud';
 
 // ---- shared box-side runtime assets (ctl.cjs + shims from the running CLI) ----
 export {

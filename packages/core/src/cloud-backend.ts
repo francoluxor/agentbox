@@ -35,10 +35,16 @@ export interface CloudProvisionRequest {
   /**
    * Backend-interpreted size string. Hetzner reads it as a server type
    * (e.g. `cx33`); Daytona parses it as `cpu-memory-disk` GB (e.g. `4-8-20`)
-   * and overrides `resources` when valid. Backends without a size knob ignore
-   * the field.
+   * and overrides `resources` when valid; Vercel parses it as a vCPU count
+   * (`1`/`2`/`4`/`8`). Backends whose size is fixed at bake time (e2b) ignore
+   * it here, as do backends without a size knob.
    */
   size?: string;
+  /**
+   * Backend-interpreted datacenter / region. Only Hetzner reads it today
+   * (`nbg1`, `fsn1`, …); other backends have a fixed or account-level region.
+   */
+  location?: string;
   /**
    * Max session length in ms before the backend auto-snapshots/stops the
    * sandbox. Backends that don't model a session timeout ignore it; Vercel
@@ -69,6 +75,13 @@ export interface CloudProvisionRequest {
 /** Opaque handle to a provisioned sandbox. `sandboxId` is persisted on the box record. */
 export interface CloudHandle {
   sandboxId: string;
+  /**
+   * Actual resources the backend provisioned, read back from the create
+   * response (Hetzner reports the real `server_type` cores/memory/disk;
+   * Vercel echoes its vCPU count). Optional: backends that can't report it, and
+   * older records, omit it and readers fall back to `defaultResources`.
+   */
+  resources?: { cpu?: number; memory?: number; disk?: number };
 }
 
 export type CloudState = 'running' | 'paused' | 'stopped' | 'missing';

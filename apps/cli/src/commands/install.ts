@@ -44,10 +44,12 @@ import { PROVIDER_NAMES, providerMeta, type ProviderKind } from '@agentbox/confi
 import { isRuntimeProvider, loadProviderModule } from '../provider/loaders.js';
 import { markSetupComplete } from '../lib/first-run.js';
 import { maybePromptStar } from '../lib/star-prompt.js';
+import { readUpdateState, writeUpdateState } from '../lib/update-state.js';
+import { AGENTBOX_VERSION } from '../version.js';
 import { installCmuxCommand } from './install-cmux.js';
 import { installHerdrCommand } from './install-herdr.js';
 import { installCodexCommand, installCodexPlugin } from './install-codex.js';
-import { installTray, installTrayCommand } from './install-tray.js';
+import { installAppCommand, installTray } from './install-app.js';
 import { runPrepare } from './prepare.js';
 
 /** Marker on the line after the frontmatter of every skill we ship. Its
@@ -585,8 +587,15 @@ export async function runInstallWizard(opts: RunInstallWizardOptions = {}): Prom
     log.warn(`Codex plugin setup skipped: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // 6) First-run marker (so the auto-trigger doesn't fire again).
+  // 6) First-run marker (so the auto-trigger doesn't fire again) + version
+  // baseline (so a fresh install never sees the "agentbox was updated" prompt).
+  // Baseline only — a mismatched stamp is left alone so the post-update
+  // refresh (image wipe, relay reload) is still offered on the next eligible
+  // command; the wizard covers skills + tray but not the rest.
   markSetupComplete(providerName);
+  if (AGENTBOX_VERSION !== '0.0.0-dev' && readUpdateState().lastRunVersion === undefined) {
+    writeUpdateState({ lastRunVersion: AGENTBOX_VERSION });
+  }
 
   // Brief check post-setup so the user sees what's now ready.
   const providerGroup = await runProviderChecks(providerName);
@@ -646,7 +655,19 @@ export const installCommand = new Command('install')
     'pre-select the provider to set up (docker | daytona | hetzner | vercel)',
   )
   .option('-y, --yes', 'auto-confirm the prepare step')
-  .action(async (opts: InstallOptions) => {
+  .action(async (opts: InstallOptions, cmd: Command) => {
+    // Operands that didn't match a registered subcommand land here (commander
+    // allows excess arguments by default) — refuse them instead of silently
+    // dropping a typo like `install trya` and launching the wizard.
+    const stray = cmd.args[0];
+    if (stray !== undefined) {
+      const targets = cmd.commands.map((c) => c.name()).join(', ');
+      process.stderr.write(
+        `error: unknown install target '${stray}'. Valid targets: ${targets} — ` +
+          'or run `agentbox install` with no target for the setup wizard.\n',
+      );
+      process.exit(1);
+    }
     if (opts.skillsOnly) {
       intro('Installing AgentBox host commands...');
       let res: InstallHostSkillsResult;
@@ -691,4 +712,4 @@ installCommand.enablePositionalOptions();
 installCommand.addCommand(installCmuxCommand);
 installCommand.addCommand(installHerdrCommand);
 installCommand.addCommand(installCodexCommand);
-installCommand.addCommand(installTrayCommand);
+installCommand.addCommand(installAppCommand);

@@ -24,6 +24,7 @@ import {
 import {
   createBox,
   DEFAULT_BOX_IMAGE,
+  detectEngine,
   ensureImage,
   hostBackupHasCredentials,
   rebuildPluginNativeDeps,
@@ -48,14 +49,17 @@ import { toSyncKind } from '@agentbox/core';
 import { resolveClaudeAuth } from '../auth.js';
 import { claudeCredStatus } from '../lib/queue/assert-creds.js';
 import { runClaudeLogin } from '../lib/claude-login-run.js';
+import { cloudSizingProviderOptions } from '../lib/cloud-sizing.js';
 import { resolveLimits } from '../limits.js';
 import { openCommandLog } from '../lib/log-file.js';
 import { buildPromptArgs } from '../lib/queue/build-prompt-args.js';
 import { buildResyncWarning, prependResyncWarning } from '../lib/resync-warning.js';
 import { applyClaudeSkipPermissions, applyCodexSkipPermissions } from '../lib/skip-permissions.js';
 import { providerForCreate } from '../provider/registry.js';
+import { autoWriteSshConfig } from '@agentbox/sandbox-core';
 import { cloudAgentStartDetached } from './_cloud-attach.js';
 import { spawnQueuedOpenTerminal } from '../terminal/queue-open.js';
+import { resolvePortlessNonInteractive } from '../portless-prompt.js';
 import { buildSetupInitialPrompt } from '../wizard.js';
 
 /**
@@ -296,6 +300,20 @@ async function runDockerJob(
     await ensureClaudeLoginFresh({ id: job.id, log, image: cfg.effective.box.image, isCloud: false });
   }
 
+  // Background jobs (incl. hub / tray-app created boxes) can't negotiate
+  // Portless interactively. An explicit --portless/--no-portless on the job
+  // wins; otherwise resolve non-interactively — honoring a persisted config
+  // opt-in, and, on Docker Desktop, adopting an already-running proxy so the
+  // very first box started from the tray app gets its <name>.localhost alias
+  // (previously it only worked after opting in once from a real terminal).
+  const portlessEnabled =
+    opts.portless ??
+    (await resolvePortlessNonInteractive({
+      engine: await detectEngine(),
+      enabled: cfg.effective.portless.enabled,
+      cwd: opts.workspace,
+    }));
+
   log.write(`creating box for agent=${job.noAgent ? 'none' : job.agent}`);
   const result = await createBox({
     workspacePath: opts.workspace,
@@ -320,12 +338,7 @@ async function runDockerJob(
     withEnv: cfg.effective.box.withEnv,
     vnc: { enabled: cfg.effective.box.vnc },
     docker: { sharedCache: cfg.effective.box.dockerCacheShared },
-    // Background jobs (incl. hub-created boxes) can't negotiate Portless
-    // interactively, but they must still honor a resolved `portless.enabled`.
-    // Explicit --portless / --no-portless on the job wins; otherwise fall back
-    // to the effective config so a host that opted in gets its <name>.localhost
-    // alias registered. Undefined (never opted in) still skips, as before.
-    portless: opts.portless ?? cfg.effective.portless.enabled,
+    portless: portlessEnabled,
     portlessStateDir: cfg.effective.portless.stateDir || undefined,
     resyncOnStart: opts.resync,
     limits: resolveLimits(cfg.effective.box, opts),
@@ -508,6 +521,9 @@ async function runCloudJob(
     carry: opts.carry,
     projectRoot,
     onLog: (line) => log.write(line),
+    // Same size / location / session-lifetime resolution the foreground
+    // `agentbox create` does, so a queued box isn't sized differently.
+    providerOptions: cloudSizingProviderOptions(providerName, cfg.effective),
   });
   log.write(`box created: ${result.record.id}`);
 
@@ -520,6 +536,13 @@ async function runCloudJob(
   // lose the OAuth phase/url or leave the create modal stuck on "Login required".
   const persisted = await readJob(job.id);
   await writeJob({ ...job, boxId: result.record.id, login: persisted?.login });
+
+  // Default-on: write the `~/.agentbox/ssh/config` entry for SSH-capable cloud
+  // boxes. The hub's create path lands here (not the CLI `create` command), so
+  // this is what makes hub-created Hetzner boxes get their `ssh <box>` alias.
+  await autoWriteSshConfig(result.record, provider, cfg.effective.ssh.autoConfig, (m) =>
+    log.write(m),
+  );
 
   // "Just create the box": skip the detached agent session (see runDockerJob).
   if (job.noAgent) {

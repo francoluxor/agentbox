@@ -65,6 +65,7 @@ When verifying a change:
 - **execa** for shelling out to `docker` (debuggable, no native deps). Don't introduce `dockerode` without a good reason. **One sanctioned native-dep exception**: `@homebridge/node-pty-prebuilt-multiarch` (ships ABI-stable N-API prebuilds, no end-user compiler) is used **only** by `agentbox dashboard` for the in-process terminal compositor. It is an `optionalDependencies` of `apps/cli` with a guarded dynamic import — a missing prebuild degrades `dashboard` to a clear error, never breaks the rest of the CLI.
 - **No emojis in code or output** unless explicitly requested.
 - **Comments only when the WHY is non-obvious** (a constraint, a workaround, a surprising invariant). Names should carry the WHAT.
+- **`@madarco/agentbox-provider-sdk` is published separately — rebuild + republish it when you change its interface.** The provider-plugin SDK (`packages/provider-sdk`) is a self-contained npm package that external plugins depend on; it inlines the internal `@agentbox/*` packages via tsup `noExternal`. Its public surface = the re-export list in `packages/provider-sdk/src/index.ts` **plus** the re-exported types/values from `@agentbox/core` (`Provider`/`CloudBackend`/`ProviderModule`), `@agentbox/sandbox-cloud` (`createCloudProvider`, attach/staging/checkpoint helpers), and `@agentbox/sandbox-core` (prepared-state, runtime-assets). If a change alters any of those, the shipped SDK is stale until you rebuild and **republish** it (bump its own `version`; a breaking change also bumps `SDK_API_VERSION` in that index + must be in the CLI's `SUPPORTED_SDK_API_VERSIONS`). Gate + publish per [`docs/provider-plugins.md`](./docs/provider-plugins.md) → "Publishing the SDK": `pnpm --filter @madarco/agentbox-provider-sdk pack:test` then `cd packages/provider-sdk && npm publish`. The `/release-notes` skill checks for this automatically.
 
 ## AgentBox Tray (macOS menu-bar app)
 
@@ -77,20 +78,23 @@ updates live over the hub's SSE stream and falls back to polling.
 It has **no build-time coupling** to this repo — it's a Swift Package Manager / AppKit app (Swift
 5.10, no Xcode, no external deps) that drives the two public surfaces:
 
-- **Boxes + actions** via the installed CLI, shelled through a login shell (`/bin/zsh -lc 'agentbox …'`,
-  because a GUI app has no inherited PATH). The list comes from `agentbox list -g --json` — it keeps
-  the CLI (not hub REST `/api/v1/boxes`) because only `ListedBox` carries the resolved Web/VNC URLs.
-- **Approvals + live events** via the local **Control Hub** at `127.0.0.1:8787`: REST
-  `/api/v1/approvals` (+ `…/{id}/answer`) and the SSE `/api/events` stream. **Auth split to remember
-  when changing the hub:** `/api/v1/*` uses `Authorization: Bearer <token>`, but `/api/events` reads
-  the **`agentbox_hub_token` cookie** (Bearer there 401s). Token is `~/.agentbox/hub/token`. SSE
-  events are refetch signals only (empty `data: {}`).
+- **Boxes + actions** via the local **Control Hub** REST API at `127.0.0.1:8787`: `GET /api/v1/boxes`
+  (which carries the raw host-side fields — `state`, `projectRoot`, endpoint URLs, session titles —
+  and the synthetic `creating`/`error` boxes for in-flight/failed creates) plus the lifecycle
+  (`start`/`pause`/`resume`/`stop`/`destroy`), git, rename, and services routes. Approvals use
+  `/api/v1/approvals` (+ `…/{id}/answer`), live events the SSE `/api/events` stream. **Auth split to
+  remember when changing the hub:** `/api/v1/*` uses `Authorization: Bearer <token>`, but
+  `/api/events` reads the **`agentbox_hub_token` cookie** (Bearer there 401s). Token is
+  `~/.agentbox/hub/token`. SSE events are refetch signals only (empty `data: {}`).
+- **Inherently-local actions** via the installed CLI, shelled through a login shell
+  (`/bin/zsh -lc 'agentbox …'`, because a GUI app has no inherited PATH): `open --in`/`open --targets`
+  (terminal attach in iTerm2/cmux/Herdr), and `hub status`/`hub start` to bootstrap the hub itself.
 
-**When you change the hub API, the SSE event/auth contract, the `agentbox list --json` shape, or any
-CLI command/flag the app uses (git/services/url/screen/start/stop/hub), update the tray app too** —
-its own [`CLAUDE.md`](../agentbox-tray/CLAUDE.md) documents exactly which surfaces it depends on. The
-app's data/action layer sits behind a `BoxSource` protocol so a future `HubAPIBoxSource` can target
-the hosted control-plane unchanged (aligns with [`docs/control-plane-roadmap.md`](./docs/control-plane-roadmap.md)).
+**When you change the hub `/api/v1` API (the Box payload especially), the SSE event/auth contract, or
+the CLI commands the app still shells (`open`, `hub`), update the tray app too** — its own
+[`CLAUDE.md`](../agentbox-tray/CLAUDE.md) documents exactly which surfaces it depends on. The app's
+data/action layer sits behind a `BoxSource` protocol (implemented by `HubAPIBoxSource`) so it can
+target the hosted control-plane unchanged (aligns with [`docs/control-plane-roadmap.md`](./docs/control-plane-roadmap.md)).
 
 ## Documentation map
 
@@ -115,7 +119,7 @@ Each topic has a dedicated file under [`docs/`](./docs). Read the relevant one b
 - [`docs/features.md`](./docs/features.md) — what works today (the full CLI lifecycle) and what is not built yet.
 - [`docs/development.md`](./docs/development.md) — build + verify commands, manual end-to-end runs, the image-rebuild checklist, and assumed host environment.
 - [`docs/cloud-providers.md`](./docs/cloud-providers.md) — Daytona + Hetzner provider docs: how each cloud differs from docker, the bridge relay model, agent-credential volumes, signed preview URLs, SSH ControlMaster + per-box firewall (hetzner), known caveats.
-- [`docs/provider-plugins.md`](./docs/provider-plugins.md) — external / community providers: publish `agentbox-provider-<name>` on the public `@agentbox/provider-sdk` and `agentbox plugin add` it (registry at `~/.agentbox/plugins.json`, runtime `import()` seam, shared box-runtime via `resolveSharedRuntimeAsset`, trust-on-add + `SDK_API_VERSION` gate). Reference: [`examples/agentbox-provider-sample`](./examples/agentbox-provider-sample).
+- [`docs/provider-plugins.md`](./docs/provider-plugins.md) — external / community providers: publish `agentbox-provider-<name>` on the public `@madarco/agentbox-provider-sdk` and `agentbox plugin add` it (registry at `~/.agentbox/plugins.json`, runtime `import()` seam, shared box-runtime via `resolveSharedRuntimeAsset`, trust-on-add + `SDK_API_VERSION` gate). Reference: [`examples/agentbox-provider-sample`](./examples/agentbox-provider-sample).
 - [`docs/cloud-create-flow.md`](./docs/cloud-create-flow.md) — step-by-step walk of `agentbox create --provider daytona`: how `.git` and workspace files get into the box (git bundle + stash + untracked tar), cloud checkpoints, the **base snapshot vs project snapshot** tiers, and the docker-auto-builds-but-daytona-doesn't asymmetry.
 - [`docs/daytona-backlog.md`](./docs/daytona-backlog.md) — what's done vs still missing on the Daytona path. Quick index of where each cloud feature actually lives.
 - [`docs/hertzner_backlog.md`](./docs/hertzner_backlog.md) — Hetzner provider build-out status: phase-by-phase progress, the live e2e smoke results, deferred follow-ups (per-project snapshot tier, `--pause` checkpoint flag, `agentbox prune --provider hetzner`, the install-script post-Chromium trace mystery). Filename uses the user-requested spelling.

@@ -32,6 +32,7 @@ import type {
   ProviderCheckpoint,
   ProviderSync,
   ResyncResult,
+  SyncTransport,
 } from '@agentbox/core';
 import {
   allocateProjectIndex,
@@ -43,6 +44,7 @@ import {
   removeBoxRecord,
 } from '@agentbox/sandbox-core';
 import { makeCloudSync } from './sync/cloud-sync.js';
+import { createCloudSyncTransport } from './sync/sync-transport.js';
 import {
   buildTmuxConfigShellSnippet,
   ensureRelay,
@@ -55,7 +57,10 @@ import {
   registerBoxWithRelay,
   TERM_FALLBACK_SNIPPET,
 } from '@agentbox/sandbox-docker';
-import { ensureAgentVolumesForCloud } from './sync/agent-credentials.js';
+import {
+  ensureAgentVolumesForCloud,
+  reconcileAgentCredentials,
+} from './sync/agent-credentials.js';
 import {
   cloudSnapshotName,
   currentCloudBaseFingerprint,
@@ -71,6 +76,7 @@ import { downloadFromCloudBox, pullCloudDirContents, uploadToCloudBox } from './
 import { kickCloudBootstrap } from './bootstrap-launch.js';
 import { readGitOriginUrl, registerBoxWithPlane } from './plane-register.js';
 import { quoteShellArgv } from './shell.js';
+import { seedGitCredentials } from './sync/git-identity.js';
 import { seedCloudWorkspace } from './sync/workspace-seed.js';
 import type { SeedCloudWorkspaceResult } from './sync/workspace-seed.js';
 
@@ -499,6 +505,22 @@ export function createCloudProvider(
         // best-effort
       }
     }
+    // A woken box carries pause-time credentials; if another box rotated the
+    // claude refresh token meanwhile, this copy is dead. Reconcile with the
+    // host backups (newest-wins both directions; codex/opencode host-wins).
+    // Best-effort — resume/start/reconnect never fail on this. Gated by the
+    // same box.credentialSync switch as the ctl watcher (the create stamped it
+    // into the sandbox env; re-read the config here since the host flag is
+    // what the user controls).
+    try {
+      const credentialSync = (await loadEffectiveConfig(box.workspacePath)).effective.box
+        .credentialSync;
+      if (credentialSync) {
+        await reconcileAgentCredentials(backend, h, { onLog: () => {} });
+      }
+    } catch {
+      // best-effort
+    }
     return next;
   }
 
@@ -521,15 +543,10 @@ export function createCloudProvider(
       const image = opts.provisionImage
         ? await opts.provisionImage(req)
         : (req.image ?? FALLBACK_IMAGE);
-      // Per-create overrides (currently vercel's box.vercelVcpus / vercelTimeoutMs,
-      // threaded through providerOptions). Fall back to the provider's static
-      // defaults so daytona/hetzner are unaffected.
-      const baseResources = opts.defaultResources ?? { cpu: 2, memory: 4, disk: 8 };
-      const vcpuOverride = req.providerOptions?.['vcpus'];
-      const resources =
-        typeof vcpuOverride === 'number' && vcpuOverride > 0
-          ? { ...baseResources, cpu: vcpuOverride }
-          : baseResources;
+      // Per-create overrides threaded through providerOptions (see the CLI's
+      // `cloudSizingProviderOptions`). Fall back to the provider's static
+      // defaults.
+      const resources = opts.defaultResources ?? { cpu: 2, memory: 4, disk: 8 };
       const timeoutOverride = req.providerOptions?.['timeoutMs'];
       const timeoutMs =
         typeof timeoutOverride === 'number' && timeoutOverride > 0 ? timeoutOverride : undefined;
@@ -540,11 +557,17 @@ export function createCloudProvider(
           : undefined;
       // Generic VM-size string, resolved per-provider by the call site
       // (`resolveBoxSize` + `--size` flag). Each backend interprets it natively
-      // (hetzner: server type; daytona: cpu-mem-disk GB); empty/undefined ⇒
-      // backend uses its built-in default.
+      // (hetzner: server type; daytona: cpu-mem-disk GB; vercel: vCPUs);
+      // empty/undefined ⇒ backend uses its built-in default.
       const sizeOpt = req.providerOptions?.['size'];
       const size =
         typeof sizeOpt === 'string' && sizeOpt.trim() !== '' ? sizeOpt.trim() : undefined;
+      // Datacenter / region (hetzner's `--location` / `box.hetznerLocation`).
+      const locationOpt = req.providerOptions?.['location'];
+      const location =
+        typeof locationOpt === 'string' && locationOpt.trim() !== ''
+          ? locationOpt.trim()
+          : undefined;
 
       // Per-box tokens: `relayToken` authenticates the in-box agent to its
       // in-sandbox relay (`/events`, `/rpc` bearer); `bridgeToken` separately
@@ -603,10 +626,18 @@ export function createCloudProvider(
       // the per-service preview-URL map. Best-effort: [] when there's no yaml.
       const exposeServicePorts = await readExposedServicePorts(req.workspacePath);
 
+      // Caller-resolved value wins (it sees CLI overrides like
+      // --no-credential-sync that this local config load can't).
+      const credentialSyncOff =
+        (req.credentialSync ??
+          (await loadEffectiveConfig(req.projectRoot ?? req.workspacePath)).effective.box
+            .credentialSync) === false;
       const provisionEnv = {
         AGENTBOX_BOX_ID: id,
         AGENTBOX_BOX_NAME: name,
         AGENTBOX_BOX_KIND: 'cloud',
+        // Absent = enabled; the ctl credential watcher only checks for '0'.
+        ...(credentialSyncOff ? { AGENTBOX_CREDENTIAL_SYNC: '0' } : {}),
         // In-sandbox relay is on the box's loopback at the in-box port.
         // 8788 is distinct from the host relay's 8787 so a nested agentbox
         // run inside the box can claim :8787 without colliding.
@@ -627,6 +658,7 @@ export function createCloudProvider(
           snapshot,
           resources,
           size,
+          location,
           timeoutMs,
           exposePorts: exposeServicePorts,
           networkPolicy,
@@ -664,6 +696,17 @@ export function createCloudProvider(
         } else {
           throw err;
         }
+      }
+
+      // Surface the real provisioned resources when the backend reports them
+      // (Hetzner reads them from the create response). Best-effort log only.
+      if (handle.resources) {
+        const r = handle.resources;
+        const parts: string[] = [];
+        if (typeof r.cpu === 'number') parts.push(`${String(r.cpu)} vCPU`);
+        if (typeof r.memory === 'number') parts.push(`${String(r.memory)} GB RAM`);
+        if (typeof r.disk === 'number') parts.push(`${String(r.disk)} GB disk`);
+        if (parts.length > 0) log(`provisioned ${parts.join(' / ')}`);
       }
 
       // Optional in-box clone: when the caller passes a leased, token-bearing
@@ -763,6 +806,16 @@ export function createCloudProvider(
           if (result.applied.length > 0) {
             carrySummary = { count: result.applied.length, entries: result.applied };
           }
+        }
+
+        // git.pushMode=direct: the credential files were just carried in; wire
+        // the git config (credential.helper, ssh host-key policy, SSH signing)
+        // that makes the box push/pull/sign with them, with the host off.
+        if (req.gitPushMode === 'direct') {
+          await seedGitCredentials(backend, handle, {
+            hostRepo: req.workspacePath,
+            onLog: log,
+          });
         }
 
         // Per-box VNC password (default-on, matching Docker). Threaded into the
@@ -1030,6 +1083,9 @@ export function createCloudProvider(
             snapshotRef: resolvedCheckpointRef,
             lastState: 'running',
             sessionTimeoutMs: timeoutMs,
+            // Real resources the backend reported (Hetzner: the plan's actual
+            // cores/memory/disk). Absent → readers fall back to defaultResources.
+            resources: handle.resources,
             // Only host-seeded boxes share a fork base with the host, so only
             // they can be resynced back to the host tip on session start (7.5).
             // inBoxClone / plane boxes clone from a leased URL — left unset.
@@ -1337,6 +1393,10 @@ export function createCloudProvider(
 
     sync(box: BoxRecord): ProviderSync {
       return makeCloudSync(backend, handleFor(box));
+    },
+
+    syncTransport(box: BoxRecord): SyncTransport {
+      return createCloudSyncTransport({ backend, handle: handleFor(box) });
     },
 
     // Session-start live-box resync (Phase 7.5): merge the host's current state

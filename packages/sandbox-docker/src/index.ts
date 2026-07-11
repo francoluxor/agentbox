@@ -2,6 +2,7 @@ export { dockerProvider, type DockerCreateOptions } from './docker-provider.js';
 export { providerModule, dockerChecks } from './provider-module.js';
 export { downloadFromBox, uploadToBox, type BoxCpResult } from './box-cp.js';
 export { createDockerSyncTransport, type DockerSyncTransportInit } from './sync/sync-transport.js';
+export { stageItemsFromVolume, volumeSettingsTarget } from './sync/settings-propagate.js';
 export { makeDockerSync, type DockerSyncHandle } from './sync/docker-sync.js';
 
 export {
@@ -164,6 +165,9 @@ export {
   BOX_IMAGE_REGISTRY,
   registryRefForSha,
   ensureImage,
+  classifyDockerBaseFreshness,
+  evaluateDockerBaseFreshness,
+  type DockerBaseFreshness,
   pullOrBuild,
   pullImage,
   tagImage,
@@ -352,8 +356,10 @@ export {
   resetPortlessCache,
   resolvePortlessHostStateDir,
   startPortlessProxy,
+  startPortlessProxyRoot,
   type PortlessBrowserEnvOptions,
   type PortlessState,
+  type RootProxyStartResult,
 } from './portless.js';
 export {
   AmbiguousBoxError,
@@ -365,6 +371,7 @@ export {
   openBoxInFinder,
   pauseBox,
   pruneBoxes,
+  refreshBoxSshd,
   resyncBox,
   snapshotPresent,
   startBox,
@@ -387,7 +394,21 @@ export {
   type VncLaunchResult,
   type VncUrls,
 } from './vnc.js';
-export { browserSessionActive, ensureBoxBrowser, type BoxBrowserResult } from './browser.js';
+export {
+  installAuthorizedKey,
+  launchSshdDaemon,
+  setUpBoxSshd,
+  SSH_CONTAINER_PORT,
+  type BoxSshSetup,
+  type SshLaunchResult,
+} from './ssh.js';
+export {
+  browserSessionActive,
+  ensureBoxBrowser,
+  ensureBoxBrowserShowingApp,
+  type BoxBrowserAppResult,
+  type BoxBrowserResult,
+} from './browser.js';
 export {
   allocateShellSessionName,
   buildShellSessionAttachArgv,

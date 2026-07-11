@@ -11,11 +11,17 @@ export interface Box {
   repo: string;
   branch: string;
   task: string;
+  // Cosmetic user-set label (via rename), null when unset. `task` already folds
+  // this in as the primary label; kept separate so the rename UI can seed its input.
+  displayName?: string | null;
   agent: AgentId | string;
   status: BoxStatus;
   createdAt: number;
   lastActivity: number;
   host: string;
+  // Sandbox provider (docker | daytona | hetzner | vercel | e2b). Drives which
+  // host "open in" targets are offered for this box on the detail page.
+  provider: string;
   // null when the metric has no host-side source yet (rendered as "—").
   commits: number | null;
   filesTouched: number | null;
@@ -24,6 +30,25 @@ export interface Box {
   // box has no such endpoint or it isn't reachable (e.g. paused/stopped).
   webUrl?: string | null;
   vncUrl?: string | null;
+  // ── Raw host-side fields (host/localhost topology only; the hosted/Postgres
+  // source leaves them all undefined). Native clients (the tray app) key off
+  // these instead of the UI-normalized fields above. ──
+  // Raw provider runtime state. ABSENT on synthetic job boxes — its presence is
+  // how a client tells a real box whose agent errored (state 'running', status
+  // 'error') from a failed create job (no state). 'destroyed' exists only for
+  // assignability from BoxState; the list never emits it.
+  state?: 'running' | 'paused' | 'stopped' | 'missing' | 'destroyed';
+  name?: string;
+  // Absolute host path of the project — host topology only, never hosted.
+  projectRoot?: string;
+  projectIndex?: number;
+  vncEnabled?: boolean;
+  gitWorktrees?: Array<{ kind?: string; branch?: string }>;
+  claudeSessionTitle?: string;
+  codexSessionTitle?: string;
+  opencodeSessionTitle?: string;
+  claudeActivity?: string;
+  codexActivity?: string;
 }
 
 export interface Project {
@@ -104,8 +129,9 @@ export interface ProviderOption {
   // ?freshness=1) — computing it loads provider code + hashes the build context,
   // so it stays OFF the default fast path. 'stale' means `agentbox prepare
   // --provider <id>` should be re-run; 'unknown' = couldn't verify (e.g. a dev
-  // tree without a built runtime); absent = not requested or docker. Never set
-  // for docker (its base self-heals).
+  // tree without a built runtime); absent = not requested. Docker reports real
+  // freshness too ('unprepared'/'stale' = the next create will bake first) —
+  // it stays `configured: true` regardless, since its base self-heals.
   baseStatus?: 'fresh' | 'stale' | 'unprepared' | 'unknown';
   // Human-readable reason when baseStatus === 'stale' (the fingerprint delta).
   baseStaleReason?: string;

@@ -18,10 +18,13 @@ export {
   ensureAgentHomeDirsOwned,
   ensureAgentVolumesForCloud,
   extractCloudAgentCredentials,
+  reconcileAgentCredentials,
+  reconcileAgentCredentialsViaTransport,
   seedAgentVolumesIfFresh,
   seedOpencodeModelState,
   type CloudAgentKind,
   type EnsureAgentVolumesResult,
+  type ReconcileAgentCredentialsOptions,
   type SeedAgentVolumesOptions,
 } from './sync/agent-credentials.js';
 export { uploadEnvFiles, type UploadEnvFilesArgs, type UploadEnvFilesResult } from './sync/env-files.js';
@@ -32,8 +35,13 @@ export {
   seedClaudeJsonAtCreate,
   type SeedClaudeJsonOptions,
 } from './sync/claude-json-overlay.js';
-export { seedGitIdentity, type SeedGitIdentityOptions } from './sync/git-identity.js';
+export {
+  seedGitIdentity,
+  seedGitCredentials,
+  type SeedGitIdentityOptions,
+} from './sync/git-identity.js';
 export { bashScript, quoteShellArg, quoteShellArgv } from './shell.js';
+export { openWebAppOnVncScreen, type CloudVncBrowserResult } from './vnc-browser.js';
 export {
   makeMockCloudBackend,
   type MockCloudBackend,
@@ -52,6 +60,7 @@ export {
   cloudSnapshotName,
   currentCloudBaseFingerprint,
   listAllCloudCheckpoints,
+  listCloudBackendDirs,
   listCloudCheckpoints,
   probeCloudCheckpoint,
   removeCloudCheckpointDir,

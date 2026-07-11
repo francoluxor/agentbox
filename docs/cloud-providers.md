@@ -78,8 +78,15 @@ sandbox: when it's `running` it calls `reEnsureCloudBox` directly (re-resolve
 preview URLs, re-open the Hetzner tunnel + forwards, re-register host portless
 aliases + the relay poller, relaunch the in-box ctl/dockerd/vnc daemons) and
 skips `backend.start`; only a `paused`/`stopped` sandbox falls back to the
-power-cycling `resume`/`start`. Docker's `reconnect` is the idempotent `startBox`
-(a `docker start` on a live container is a no-op). `recover --provider <cloud>
+power-cycling `resume`/`start`. `reEnsureCloudBox` also finishes with a
+best-effort `reconcileAgentCredentials` (gated by `box.credentialSync`): a
+woken box carries pause-time agent credentials, and if another box rotated the
+claude refresh token meanwhile that copy is dead — claude is compared both
+directions via `claudeAiOauth.expiresAt` (push host-newer / capture box-newer),
+codex/opencode are host-wins push-if-different. Note the SDK's *implicit*
+auto-resume (an `exec` against a paused vercel/e2b sandbox) bypasses this hook
+until the next explicit resume/start/reconnect. Docker's `reconnect` is the
+idempotent `startBox` (a `docker start` on a live container is a no-op). `recover --provider <cloud>
 --adopt` additionally rebuilds a missing `BoxRecord` from `backend.list()` (the
 `agentbox.name` tag), minting fresh relay/bridge tokens that reach the in-box
 agent when `reconnect` relaunches the ctl daemon (it writes
@@ -185,15 +192,20 @@ users who go through `install` skip both the error and the nudge.
 
 ### 2.0 Sizing
 
-Default sandbox shape is **2 vCPU / 4 GB RAM / 8 GB disk**. Override via
-`--size <cpu-mem-disk>` on `agentbox create` (GB units, e.g. `4-8-20`), or
-`box.sizeDaytona` / `box.size` in config. Precedence: `--size` >
-`box.sizeDaytona` > `box.size` > built-in. **Caveat:** Daytona rejects
-`resources` on the snapshot-resume path, so a custom size only takes
-effect on the from-image create (i.e. first prepare/build); subsequent
-snapshot-based creates inherit the snapshot's baked resources. Invalid
-specs (anything other than three positive integers separated by `-`) are
-logged and ignored, falling back to the default.
+Default sandbox shape is **2 vCPU / 4 GB RAM / 8 GB disk**. Size is
+`cpu-mem-disk` GB (e.g. `4-8-20`), from `--size` / `box.sizeDaytona` /
+`box.size` (precedence: `--size` > `box.sizeDaytona` > `box.size` >
+built-in). **Caveat:** Daytona rejects `resources` on the snapshot-resume
+path, so size is fixed at **bake time**: `agentbox prepare --provider
+daytona --size <spec>` bakes it into the snapshot (the snapshot name gets a
+`-<cpu>-<mem>-<disk>` suffix so re-sized bakes don't collide, and the size
+is recorded in `daytona-prepared.json` `extras.size` so a changed size
+re-bakes — NOT folded into `contextSha256`, so live freshness checks are
+unchanged). A `create --size` that differs from the baked snapshot's size
+still boots but logs a loud warning pointing at `prepare … --size … --force`.
+On the rare from-image create path the size is applied directly. Invalid
+specs (anything other than positive integers separated by `-`) throw at
+prepare time with the `4-8-20` example.
 
 ### 2.1 Workspace seeding
 
@@ -402,13 +414,37 @@ The `CloudBackend` interface is the same, but the implementation
 
 - **One VPS per box** (1:1, like Daytona). Default `cx23` (2 vCPU / 4 GB / 40 GB
   x86, ~€4/mo while running). Default location `nbg1`. Both configurable
-  per provision request.
+  per provision request (`CloudProvisionRequest.size` / `.location`, threaded
+  from the CLI by `cloudSizingProviderOptions`).
 - **Per-box VM size** — set via `--size <server-type>` on `agentbox create`,
   or `box.sizeHetzner` (per-provider override) / `box.size` (generic
   fallback) in config. Precedence: `--size` > `box.sizeHetzner` >
-  `box.size` > built-in `cx23`. Value is passed straight through as
-  Hetzner's `server_type` (e.g. `cx33`, `cx43`); unknown types fail
-  create with the API's `invalid_input`.
+  `box.size` > built-in `cx23`. Value is passed through as Hetzner's
+  `server_type` (e.g. `cx33`, `cx43`).
+- **Per-box location** — set via `--location <name>` on `agentbox create`, or
+  `box.hetznerLocation` in config (default `nbg1`). Precedence: `--location` >
+  `box.hetznerLocation`. `--location` on a non-hetzner provider is warned and
+  ignored. `agentbox prepare --provider hetzner --location <name>` sets the
+  bake VPS location the same way.
+- **Preflight validation** (`src/preflight.ts`, pure) — before any billable
+  resource is created, `validateServerChoice` checks the choice against the
+  live `/server_types` catalog + the base image, in order: type exists (else
+  suggests non-deprecated x86 names) → x86-only (`cax*`/ARM rejected — base
+  snapshots are x86) → not deprecated → the type's disk fits the snapshot's
+  `disk_size` → the location offers the type (`prices[].location`). Each failure
+  throws a `UserFacingError` with the fix. This runs *before* firewall/SSH-key
+  creation, so a bad `--size`/`--location` never bills a half-created box.
+- **Provision error mapping** (`mapHetznerProvisionError`) — the create call is
+  wrapped so late Hetzner errors become actionable: `resource_limit_exceeded` →
+  account-limits explanation + the Hetzner Console Limits page (dedicated `ccx*`
+  types trip this on new accounts); `resource_unavailable` / `placement_error` →
+  "no capacity for `<type>` in `<location>`, try another `--location`". Original
+  messages are preserved; unrecognized codes pass through untouched.
+- **Real reported resources** — `provision` reads the actual
+  `server.server_type` back from the create response and returns
+  `CloudHandle.resources {cpu, memory, disk}`. The cloud scaffold stores this on
+  the box record and logs `provisioned <c> vCPU / <m> GB RAM / <d> GB disk`
+  (falling back to the provider's static `defaultResources` for old records).
 - **Per-box ed25519 SSH key** minted at `provision` time into
   `~/.agentbox/boxes/<sandboxId>/ssh/{id_ed25519,id_ed25519.pub,known_hosts}`.
   Private key never leaves the host. Pubkey is injected via cloud-init's
@@ -496,7 +532,7 @@ and Playwright would reject `https://<box>.localhost`. The baked
 docker `create` invoke it to trust the CA in both the system store
 (`update-ca-certificates`) and the box user's NSS db (`certutil`, from
 `libnss3-tools`), and export `NODE_EXTRA_CA_CERTS` for Node clients. No-TLS host
-proxies (the `--no-tls -p 1355` default) serve plain `http` and skip this entirely.
+proxies (the no-root `--no-tls -p 1355` fallback) serve plain `http` and skip this entirely.
 
 ### 3.4 Checkpoints
 
@@ -647,9 +683,11 @@ brief:
   manifest's `snapshotName` field, and restore via `Sandbox.create({
   template: snapshotId })`. `createSnapshot` pauses the source while
   capturing; the next op auto-resumes it.
-- **Hard platform limits:** template-level resources (vCPU / RAM / disk are
-  baked at `Template.build()` time; per-create overrides are advisory
-  metadata only), 1-hour session cap on Hobby, max upload chunk constraints
+- **Hard platform limits:** template-level resources (vCPU / RAM baked at
+  `Template.build()` time via `agentbox prepare --provider e2b --size
+  <cpu-mem>`; E2B has no disk knob, and a per-create `--size` that differs
+  from the baked size just logs a warning — E2B rejects per-create
+  resources), 1-hour session cap on Hobby, max upload chunk constraints
   from the SDK (handled by the cloud scaffold). E2B itself runs in multiple
   regions; the SDK chooses one transparently.
 
@@ -763,7 +801,7 @@ Two ways to ship it:
   literal-import block in `resolveCloudBackend`
   (`packages/relay/src/host-actions.ts`).
 - **External / community plugin**: publish `agentbox-provider-<name>` built on
-  `@agentbox/provider-sdk` and `agentbox plugin add` it — **no edits to AgentBox**.
+  `@madarco/agentbox-provider-sdk` and `agentbox plugin add` it — **no edits to AgentBox**.
   This is the recommended path for third-party clouds. See
   [`provider-plugins.md`](./provider-plugins.md).
 

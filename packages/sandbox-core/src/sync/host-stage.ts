@@ -100,6 +100,18 @@ async function mkStageDir(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `agentbox-${prefix}-stage-`));
 }
 
+// A stage dir is a throwaway scratch copy that we rewrite in place (filter
+// settings.json, sanitize config.toml, rewrite plugin paths) and then `rm`.
+// `rsync -a` implies `-p`, so it preserves the *source's* modes — and when the
+// source is read-only (skill/plugin symlinks into the Nix store, or any
+// root-owned / 0444 dotfiles), the copy comes out read-only too. That breaks us
+// two ways: the in-place `writeFile` rewrites fail with EACCES, and `rm` can't
+// unlink children of a 0555 dir (`EACCES unlink .../skills/*/SKILL.md`). Force
+// the copy user-writable — a scratch dir has no business inheriting the store's
+// perms. Only GNU rsync honors this; macOS's openrsync ignores it (and doesn't
+// hit the read-only-source case in practice), so it's a safe no-op there.
+const STAGE_WRITABLE_CHMOD = '--chmod=Du+rwx,Fu+rw';
+
 function emptyResult(warnings: string[] = []): StageResult {
   return { tarballPath: null, cleanup: async () => {}, warnings };
 }
@@ -298,6 +310,7 @@ export async function stageClaudeStaticForUpload(
     ];
     await execa('rsync', [
       '-a',
+      STAGE_WRITABLE_CHMOD,
       '--copy-unsafe-links',
       ...excludes,
       `${hostClaude}/`,
@@ -394,6 +407,9 @@ export interface StageCodexOptions {
 // `packages`/`plugins/.plugin-appserver`/`computer-use` are heavy macOS-only
 // artifacts that balloon the staged tarball (~800 MB → ~0.5 MB).
 const CODEX_STATIC_EXCLUDES = resolveAgentSpec('codex').staticPaths[0]?.exclude ?? [];
+// `--include` carve-ins (the `.tmp/marketplaces/` snapshots) — must be emitted
+// before the excludes; see the registry's codex spec for the rationale.
+const CODEX_STATIC_INCLUDES = resolveAgentSpec('codex').staticPaths[0]?.include ?? [];
 
 const CODEX_KEYCHAIN_WARNING =
   'codex: ~/.codex/auth.json missing. On macOS the codex CLI defaults to ' +
@@ -420,14 +436,54 @@ const CODEX_KEYCHAIN_WARNING =
  * `mcp_servers` / `notify` / local marketplaces via {@link
  * sanitizeCodexConfigForBox}. A missing file, a parse failure, or any IO error
  * leaves the file untouched — staging must never fail on config sanitization.
+ *
+ * Returns the marketplace names kept in the sanitized config (the keep-set for
+ * {@link purgeOrphanCodexMarketplaceDirs}); a missing config keeps nothing, and
+ * `null` signals "unknown" (parse/IO failure) so the caller skips the purge —
+ * never delete on unknown.
  */
-async function sanitizeStagedCodexConfig(configPath: string, hostHome: string): Promise<void> {
+async function sanitizeStagedCodexConfig(
+  configPath: string,
+  hostHome: string,
+): Promise<{ keptMarketplaces: string[] } | null> {
   try {
-    if (!(await pathExists(configPath))) return;
-    const { text, changed } = sanitizeCodexConfigForBox(await readFile(configPath, 'utf8'), hostHome);
+    if (!(await pathExists(configPath))) return { keptMarketplaces: [] };
+    const { text, changed, keptMarketplaces } = sanitizeCodexConfigForBox(
+      await readFile(configPath, 'utf8'),
+      hostHome,
+    );
     if (changed) await writeFile(configPath, text);
+    return { keptMarketplaces };
   } catch {
     // leave the rsynced copy as-is
+    return null;
+  }
+}
+
+/**
+ * Delete staged marketplace artifacts whose marketplace is absent from the
+ * sanitized config: `plugins/cache/<name>` (installed-plugin payloads — the
+ * host's desktop-app caches carry macOS junk like native-prebuild
+ * node_modules) and `.tmp/marketplaces/<name>` (snapshot checkouts, incl.
+ * codex's transient `.staging`). Best-effort; missing dirs are fine.
+ */
+async function purgeOrphanCodexMarketplaceDirs(
+  stageDir: string,
+  keptMarketplaces: string[],
+): Promise<void> {
+  const kept = new Set(keptMarketplaces);
+  for (const rel of ['plugins/cache', '.tmp/marketplaces']) {
+    const dir = join(stageDir, rel);
+    let entries: string[];
+    try {
+      entries = await readdir(dir);
+    } catch {
+      continue; // dir absent — nothing staged for it
+    }
+    for (const name of entries) {
+      if (kept.has(name)) continue;
+      await rm(join(dir, name), { recursive: true, force: true });
+    }
   }
 }
 
@@ -442,10 +498,16 @@ export async function stageCodexStaticForUpload(
   let tarballPath: string | null = null;
   try {
     const codexBroken = await findBrokenSymlinks(hostCodex);
+    // Rule order matters (first-match-wins): broken-symlink excludes first
+    // (exact anchored paths — a broken symlink inside a marketplace checkout
+    // would abort the `-L` rsync if the includes matched it first), then the
+    // `.tmp/marketplaces` includes, then the static excludes.
     await execa('rsync', [
       '-a',
+      STAGE_WRITABLE_CHMOD,
       '-L',
       ...codexBroken.map((r) => `--exclude=/${r}`),
+      ...CODEX_STATIC_INCLUDES.map((p) => `--include=${p}`),
       ...CODEX_STATIC_EXCLUDES.map((p) => `--exclude=${p}`),
       `${hostCodex}/`,
       `${stageDir}/`,
@@ -454,7 +516,13 @@ export async function stageCodexStaticForUpload(
     // node_repl, a macOS notify helper, local-source marketplaces) from the
     // staged config.toml so the in-box codex doesn't try to exec macOS paths.
     // Best-effort: a parse failure leaves the rsynced copy intact.
-    await sanitizeStagedCodexConfig(join(stageDir, 'config.toml'), hostHome);
+    const sanitized = await sanitizeStagedCodexConfig(join(stageDir, 'config.toml'), hostHome);
+    // Drop caches/snapshots of marketplaces the sanitize removed (or that no
+    // config references). Skipped when the keep-set is unknown (sanitize
+    // failure) — never delete on unknown.
+    if (sanitized !== null) {
+      await purgeOrphanCodexMarketplaceDirs(stageDir, sanitized.keptMarketplaces);
+    }
     tarballPath = await tarballFromDir(stageDir, 'codex-static');
     return {
       tarballPath,
@@ -490,6 +558,7 @@ export async function stageAgentsStaticForUpload(
     const broken = await findBrokenSymlinks(hostAgents);
     await execa('rsync', [
       '-a',
+      STAGE_WRITABLE_CHMOD,
       '-L',
       ...broken.map((r) => `--exclude=/${r}`),
       `${hostAgents}/`,
@@ -574,6 +643,7 @@ export async function stageOpencodeStaticForUpload(
       const dataBroken = await findBrokenSymlinks(hostData);
       await execa('rsync', [
         '-a',
+        STAGE_WRITABLE_CHMOD,
         '-L',
         ...dataBroken.map((r) => `--exclude=/${r}`),
         ...OPENCODE_DATA_EXCLUDES.map((p) => `--exclude=${p}`),
@@ -586,6 +656,7 @@ export async function stageOpencodeStaticForUpload(
       const cfgBroken = await findBrokenSymlinks(hostConfig);
       await execa('rsync', [
         '-a',
+        STAGE_WRITABLE_CHMOD,
         '-L',
         ...cfgBroken.map((r) => `--exclude=/${r}`),
         `${hostConfig}/`,

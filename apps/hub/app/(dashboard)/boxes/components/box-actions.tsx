@@ -5,7 +5,7 @@ import { useTransition, type MouseEvent } from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Icons } from '@/components/icons';
-import { destroyBoxAction, pauseBoxAction, resumeBoxAction, stopBoxAction } from '@/lib/boxes/actions';
+import { destroyBoxAction, pauseBoxAction, renameBoxAction, resumeBoxAction, stopBoxAction } from '@/lib/boxes/actions';
 import type { ActionResult } from '@/lib/boxes/backend-types';
 import type { Box } from '@/lib/boxes/types';
 
@@ -15,6 +15,9 @@ export function BoxActions({ box, size }: { box: Box; size?: 'lg' }) {
   const running = box.status === 'running';
   const paused = box.status === 'paused';
   const stopped = box.status === 'stopped';
+  // Synthetic create-job box (id `job:<id>`, no real container): the only sensible
+  // action is Dismiss (clear a failed create). Pause/Stop/Rename would error server-side.
+  const synthetic = box.id.startsWith('job:');
   const lg = size === 'lg';
   const sz = lg ? 'sm' : 'icon-sm';
 
@@ -27,6 +30,36 @@ export function BoxActions({ box, size }: { box: Box; size?: 'lg' }) {
       router.refresh();
     });
   };
+
+  const rename = (e: MouseEvent) => {
+    e.stopPropagation();
+    // Cosmetic label only — does not touch the container/branch/URL. Blank clears it.
+    const next = window.prompt('Rename box (label only — leave blank to reset)', box.displayName ?? box.task);
+    if (next === null) return;
+    startTransition(async () => {
+      const res = await renameBoxAction(box.id, next.trim());
+      if (!res.ok) window.alert(`Rename failed: ${res.error}`);
+      router.refresh();
+    });
+  };
+
+  if (synthetic) {
+    // Only errored creates can be dismissed; a `creating` job has nothing to clear yet.
+    return (
+      <div className={cn('flex gap-1.5', lg ? '' : 'justify-end')}>
+        <Button
+          variant="destructive"
+          size={sz}
+          title="Dismiss"
+          disabled={pending || box.status !== 'error'}
+          onClick={(e) => run(e, destroyBoxAction, `Dismiss failed box ${box.id}? This clears the failed create.`)}
+        >
+          <Icons.trash />
+          {lg ? 'Dismiss' : null}
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className={cn('flex gap-1.5', lg ? '' : 'justify-end')}>
@@ -64,6 +97,10 @@ export function BoxActions({ box, size }: { box: Box; size?: 'lg' }) {
       >
         <Icons.stop />
         {lg ? 'Stop' : null}
+      </Button>
+      <Button variant="outline" size={sz} disabled={pending} title="Rename" onClick={rename}>
+        <Icons.pencil />
+        {lg ? 'Rename' : null}
       </Button>
       <Button
         variant="destructive"

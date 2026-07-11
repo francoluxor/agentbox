@@ -99,6 +99,14 @@ export interface CreateBoxRequest {
   vnc?: { enabled: boolean };
   limits?: CreateBoxLimits;
   /**
+   * `box.credentialSync` resolved by the caller (`false` = disable the in-box
+   * credential watcher; stamped into the box as `AGENTBOX_CREDENTIAL_SYNC=0`).
+   * Undefined → the provider resolves the config key itself. The CLI threads
+   * it so `--no-credential-sync` (a CLI override the provider's own config
+   * load can't see) actually reaches the box.
+   */
+  credentialSync?: boolean;
+  /**
    * Cap on commits shipped in the cloud-seed git bundle (daytona, hetzner).
    * `undefined` → adaptive default (last 200 commits, re-bundle at 100 if the
    * result exceeds 20 MB). `0` → full history (`git bundle create --all`).
@@ -152,11 +160,12 @@ export interface CreateBoxRequest {
    */
   controlPlaneUrl?: string;
   /**
-   * Git push routing (`git.pushMode`): `'auto' | 'relay' | 'lease'`. Mirrors
-   * config's `GitPushMode` (core doesn't depend on config). Threaded to the box
-   * bootstrap to gate `AGENTBOX_GIT_LEASE`. Docker ignores it (always relay).
+   * Git push routing (`git.pushMode`): `'auto' | 'relay' | 'lease' | 'direct'`.
+   * Mirrors config's `GitPushMode` (core doesn't depend on config). Threaded to
+   * the box bootstrap to gate `AGENTBOX_GIT_LEASE` / `AGENTBOX_GIT_DIRECT`.
+   * Docker ignores it (always relay).
    */
-  gitPushMode?: 'auto' | 'relay' | 'lease';
+  gitPushMode?: 'auto' | 'relay' | 'lease' | 'direct';
   /** Provider-specific knobs (docker: sharedCache/portless; daytona: resources/region). */
   providerOptions?: Record<string, unknown>;
   onLog?: (line: string) => void;
@@ -315,6 +324,20 @@ export interface PrepareOptions {
    * installer 403s. Bake-time only — resolved from `box.claudeInstall`.
    */
   claudeInstall?: 'native' | 'npm';
+  /**
+   * Bake-time VM size for providers whose resources are fixed at snapshot/
+   * template-build time (daytona: `cpu-memory-disk` GB, e.g. `4-8-20`; e2b:
+   * `cpu-memory` GB, e.g. `4-8`). Resolved by the CLI from `--size` /
+   * `box.size<Provider>` / `box.size`. Docker/hetzner/vercel ignore it (their
+   * size is a per-create knob, not baked).
+   */
+  size?: string;
+  /**
+   * Datacenter / region the bake VPS is created in. Hetzner reads it (defaults
+   * to `box.hetznerLocation`, else `nbg1`); other providers ignore it (their
+   * base template/snapshot has no per-region placement at bake time).
+   */
+  location?: string;
   /**
    * Progress sink for the build-side log stream (Docker BuildKit output,
    * Daytona's `onLogs` chunks). Wired to the CLI spinner / latest.log.
