@@ -119,17 +119,18 @@ See [local Docker](/docs/local-docker), [Hetzner](/docs/hetzner), [Daytona](/doc
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `box.size` | string | empty | generic cloud size, provider-interpreted: hetzner = server type (`cx33`), daytona = `cpu-memory-disk` GB (`4-8-20`), vercel = vCPU count (`1`/`2`/`4`/`8`), e2b = `cpu-memory` GB (`4-8`, baked at `prepare` time); docker ignores it |
-| `box.sizeDaytona` / `box.sizeHetzner` / `box.sizeVercel` / `box.sizeE2b` | string (advanced) | empty | per-provider override of `box.size` |
+| `box.size` | string | empty | generic cloud size, provider-interpreted: hetzner = server type (`cx33`), digitalocean = Droplet size slug (`s-4vcpu-8gb`), daytona = `cpu-memory-disk` GB (`4-8-20`), vercel = vCPU count (`1`/`2`/`4`/`8`), e2b = `cpu-memory` GB (`4-8`, baked at `prepare` time); docker ignores it |
+| `box.sizeDaytona` / `box.sizeHetzner` / `box.sizeDigitalocean` / `box.sizeVercel` / `box.sizeE2b` | string (advanced) | empty | per-provider override of `box.size` |
 | `box.sizeDocker` | string (advanced) | empty | reserved — docker uses `box.memory` / `box.cpus` / `box.disk` |
 | `box.hetznerLocation` | string | `nbg1` | Hetzner datacenter new boxes are created in (`nbg1`, `fsn1`, `hel1`, `ash`); override per box with `--location`. Hetzner-only |
+| `box.digitaloceanRegion` | string | `nyc3` | DigitalOcean region new boxes are created in (`nyc3`, `sfo3`, `ams3`, `fra1`, …); override per box with `--location`. DigitalOcean-only |
 
 ### Box image
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `box.image` | string (advanced) | `agentbox/box:dev` | generic image ref; the default is a sentinel cloud backends read as "boot from the prepared base snapshot" |
-| `box.imageDocker` / `box.imageDaytona` / `box.imageHetzner` / `box.imageVercel` | string (advanced) | empty | per-provider override; the cloud ones are written by `agentbox prepare --provider <name>` |
+| `box.imageDocker` / `box.imageDaytona` / `box.imageHetzner` / `box.imageDigitalocean` / `box.imageVercel` | string (advanced) | empty | per-provider override; the cloud ones are written by `agentbox prepare --provider <name>` |
 | `box.imageRegistry` | string (advanced, docker only) | `ghcr.io/madarco/agentbox/box` | registry to pull the prebuilt base from before building locally; empty = always build |
 
 <Callout type="warn" title="HEADS UP">

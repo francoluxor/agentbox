@@ -96,6 +96,18 @@ export const PROVIDERS = [
     imageDesc:
       'Per-provider override of `box.image` for e2b (template id or `name:tag`, e.g. `agentbox-base:latest`). Written by `agentbox prepare --provider e2b`.',
   },
+  {
+    name: 'digitalocean',
+    kind: 'cloud',
+    label: 'DigitalOcean (cloud VPS)',
+    loginHint: 'paste a Personal Access Token from the DigitalOcean Console',
+    rebuildMinutes: '7-10',
+    blurb: 'DigitalOcean Droplets',
+    sizeDesc:
+      'Per-provider override of `box.size` for digitalocean. Droplet size slug (e.g. `s-2vcpu-4gb`, `s-4vcpu-8gb`).',
+    imageDesc:
+      'Per-provider override of `box.image` for digitalocean (numeric snapshot id). Written by `agentbox prepare --provider digitalocean`.',
+  },
 ] as const satisfies readonly ProviderMeta[];
 
 /** Sandbox backend new boxes are created on. Derived from the `PROVIDERS` table. */

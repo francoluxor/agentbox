@@ -161,6 +161,10 @@ export async function resolveCloudBackend(name: string): Promise<CloudBackend> {
     const pkg = '@agentbox/sandbox-' + 'e2b';
     return loadCloudBackend(pkg, async () => ((await import(pkg)) as { e2bBackend: CloudBackend }).e2bBackend);
   }
+  if (name === 'digitalocean') {
+    const pkg = '@agentbox/sandbox-' + 'digitalocean';
+    return loadCloudBackend(pkg, async () => ((await import(pkg)) as { digitaloceanBackend: CloudBackend }).digitaloceanBackend);
+  }
   // External provider plugins: not bundle-inlined, so resolve from the same
   // `~/.agentbox/plugins.json` registry the CLI writes and `import()` the
   // recorded entry with a TRUE variable specifier. The relay runs on the host

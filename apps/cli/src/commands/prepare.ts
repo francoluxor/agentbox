@@ -355,8 +355,15 @@ export async function runPrepare(
   const registry = providerName === 'docker' ? cfg?.effective.box.imageRegistry : undefined;
   // Bake-time Claude install method: CLI flag wins over the config key.
   const claudeInstall = opts.claudeInstall ?? cfg?.effective.box.claudeInstall ?? 'native';
-  // Bake-time datacenter (Hetzner only): CLI flag wins over box.hetznerLocation.
-  const location = opts.location?.trim() || cfg?.effective.box.hetznerLocation || undefined;
+  // Bake-time datacenter/region (Hetzner + DigitalOcean): CLI flag wins over
+  // the provider's location config key; other providers ignore it.
+  const configuredLocation =
+    providerName === 'hetzner'
+      ? cfg?.effective.box.hetznerLocation
+      : providerName === 'digitalocean'
+        ? cfg?.effective.box.digitaloceanRegion
+        : undefined;
+  const location = opts.location?.trim() || configuredLocation || undefined;
   // Bake-time size (daytona/e2b): CLI flag wins over the cascaded box.size /
   // box.size<Provider>. Empty resolves to undefined so the provider bakes its
   // default resources.
@@ -446,7 +453,7 @@ export const prepareCommand = new Command('prepare')
   )
   .option(
     '-p, --provider <name>',
-    'provider to prepare (docker | daytona | hetzner | vercel | e2b). Omit for status-only.',
+    'provider to prepare (docker | daytona | hetzner | vercel | e2b | digitalocean). Omit for status-only.',
   )
   .option('-n, --name <name>', 'snapshot name (Daytona only; default: agentbox-base-<timestamp>)')
   .option('-f, --force', 'rebuild even if the image / snapshot already exists')
@@ -462,7 +469,7 @@ export const prepareCommand = new Command('prepare')
   )
   .option(
     '--location <name>',
-    'Hetzner datacenter the bake VPS runs in (e.g. nbg1, fsn1, hel1, ash). Overrides box.hetznerLocation. Hetzner-only.',
+    'Datacenter/region the bake VPS runs in. Hetzner: nbg1, fsn1, hel1, ash (overrides box.hetznerLocation). DigitalOcean: nyc3, sfo3, ams3, fra1 (overrides box.digitaloceanRegion). Hetzner/DigitalOcean-only.',
   )
   .option(
     '--size <spec>',

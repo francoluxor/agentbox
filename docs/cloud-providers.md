@@ -1,8 +1,8 @@
 # Cloud providers
 
-> _Status: v1 ships with Daytona + Hetzner + Vercel + E2B. The provider abstraction is generic — adding another cloud is ~150 lines (see §6)._
+> _Status: v1 ships with Daytona + Hetzner + Vercel + E2B + DigitalOcean. The provider abstraction is generic — adding another cloud is ~150 lines (see §6)._
 
-AgentBox runs on five backends today, behind a single `Provider` interface
+AgentBox runs on six backends today, behind a single `Provider` interface
 (`packages/core/src/provider.ts`):
 
 | Provider | Where the box lives | When to use it |
@@ -12,12 +12,34 @@ AgentBox runs on five backends today, behind a single `Provider` interface
 | `hetzner` | Hetzner Cloud VPS (1:1 per box) | When you want bare-VPS control (root, full kernel, your own region), pure OpenSSH (no third-party agent in the box), and a Cloud Firewall locked to your egress IP. ~€4/mo per running box. |
 | `vercel` | Vercel Sandbox (Firecracker microVM) | When you want a fast snapshot-based remote env with public HTTPS preview URLs and persistent pause/resume. In-box `docker` (DinD) is baked in and auto-started; region `iad1` only. See §3b. |
 | `e2b` | E2B Sandbox (Firecracker microVM) | When you want a Firecracker microVM with public HTTPS preview URLs and **the base image built straight from a Dockerfile** (`Template.build()`) — the only cloud provider that bakes from a Dockerfile rather than a one-time snapshot. In-box docker (DinD) supported, no SSH; 1-hour platform session cap on Hobby. See §3c. |
+| `digitalocean` | DigitalOcean Droplet (1:1 per box) | Same VPS-over-OpenSSH shape as Hetzner — bare-Droplet control (root, full kernel, your own region), pure OpenSSH, and a Cloud Firewall locked to your egress IP. Auth is a single Personal Access Token; the firewall attaches at boot via a per-box tag (with explicit allow-all egress, since DO blocks outbound otherwise); checkpoints are droplet snapshots. ~$24/mo per running `s-2vcpu-4gb` box. See §3d. |
 
 Switch backends per box: `agentbox create --provider daytona` (or `--provider
-hetzner` / `--provider vercel` / `--provider e2b`), or pin project-wide via
-`box.provider: <name>` in `agentbox.yaml`. The rest of the CLI surface (`shell`,
-`claude`, `url`, `cp`, `checkpoint`, …) routes on `box.provider` and Just Works
-for all five.
+hetzner` / `--provider vercel` / `--provider e2b` / `--provider digitalocean`),
+or pin project-wide via `box.provider: <name>` in `agentbox.yaml`. The rest of
+the CLI surface (`shell`, `claude`, `url`, `cp`, `checkpoint`, …) routes on
+`box.provider` and Just Works for all six.
+
+### §3d. DigitalOcean specifics
+
+DigitalOcean is a near-exact clone of the Hetzner backend (1 Droplet per box,
+OpenSSH ControlMaster for all I/O, snapshot-based checkpoints, a one-time base
+snapshot baked by `agentbox prepare --provider digitalocean` since DO can't
+build images from a Dockerfile). Three things differ from Hetzner:
+
+- **Auth** is a single Personal Access Token (`DIGITALOCEAN_TOKEN`), pasted via
+  `agentbox digitalocean login` from `https://cloud.digitalocean.com/account/api/tokens`.
+- **Firewall attach is tag-based.** Hetzner attaches the firewall at
+  server-create; DO can't, so the per-box firewall is created *first* with a
+  unique tag and the droplet is created with that same tag — DO auto-applies it
+  at boot, leaving no unprotected window.
+- **Egress must be explicitly allowed.** A DO firewall with only inbound rules
+  blocks *all* outbound traffic, so the per-box firewall ships allow-all
+  outbound rules (tcp/udp/icmp → `0.0.0.0/0` + `::/0`) alongside the SSH-only
+  inbound rule locked to the host egress IP.
+
+Defaults: size `s-2vcpu-4gb`, region `nyc3`, stock image `ubuntu-24-04-x64`.
+Override per box with `box.sizeDigitalocean` / `AGENTBOX_DIGITALOCEAN_REGION`.
 
 ## 1. The provider abstraction
 
