@@ -57,6 +57,8 @@ import { mapHetznerProvisionError, validateServerChoice } from './preflight.js';
 import { readPreparedState } from './prepared-state.js';
 import { ensureHetznerBaseSnapshot } from './prepare.js';
 import { mintSshKey } from './ssh-key.js';
+import { describeInbound, parseInboundSpec, resolveInboundSources } from '@agentbox/sandbox-core';
+import type { InboundPolicy } from '@agentbox/core';
 import { waitForSsh, sshOptArgs, type SshTargetArgs } from './ssh-cli.js';
 import { SshTunnelManager, defaultBoxSshDir } from './ssh-tunnel.js';
 import { withHetznerRetry } from './retry.js';
@@ -242,8 +244,8 @@ function buildSshTarget(state: PerBoxState, vpsIp: string, controlPath?: string)
  */
 interface FirewallEgressStatus {
   firewallId: number;
-  /** The CIDR the firewall currently allows for inbound SSH (`source_ips[0]`). */
-  allowedSource: string | undefined;
+  /** All CIDRs the firewall currently allows for inbound SSH (`source_ips`). */
+  allowedSources: string[];
   /** The host's current egress IP as a `/32` CIDR. */
   currentEgress: string;
   /** Friendly box ref for the `firewall sync` hint (the `agentbox.box` label). */
@@ -259,7 +261,7 @@ async function firewallEgressStatus(sandboxId: string): Promise<FirewallEgressSt
   if (!Number.isFinite(firewallId)) return null;
   const firewall = await client().getFirewall(firewallId);
   const sshRule = firewall?.rules.find((r) => r.direction === 'in' && r.port === '22');
-  const allowedSource = sshRule?.source_ips?.[0];
+  const allowedSources = sshRule?.source_ips ?? [];
   // A FRESH probe (not cached): this runs only on a connection-failure path, and
   // a stale value could read the new IP as "unchanged" and skip the heal — the
   // very mismatch we exist to catch. The poller already de-dupes its recover
@@ -267,7 +269,7 @@ async function firewallEgressStatus(sandboxId: string): Promise<FirewallEgressSt
   const currentEgress = `${await detectEgressIp({})}/32`;
   return {
     firewallId,
-    allowedSource,
+    allowedSources,
     currentEgress,
     boxRef: server.labels['agentbox.box'] ?? sandboxId,
   };
@@ -287,10 +289,10 @@ async function ensureTunnel(sandboxId: string, state: PerBoxState, vpsIp: string
     // the error with the fix. Never let the diagnostic mask the original error
     // on a match (box is just down) or a probe failure.
     const s = await firewallEgressStatus(sandboxId).catch(() => null);
-    if (s && firewallNeedsSync(s.allowedSource, s.currentEgress)) {
+    if (s && firewallNeedsSync(s.allowedSources, s.currentEgress)) {
       throw new Error(
         `${(err as Error).message}\n\n` +
-          `hetzner: SSH is blocked by the box firewall — it allows ${s.allowedSource ?? '(no rule)'} ` +
+          `hetzner: SSH is blocked by the box firewall — it allows ${s.allowedSources.join(', ') || '(no rule)'} ` +
           `but your egress IP is now ${s.currentEgress}. Your IP changed; run:\n` +
           `  agentbox hetzner firewall sync ${s.boxRef}\n` +
           `(or \`agentbox recover ${s.boxRef}\`, which auto-syncs).`,
@@ -356,13 +358,20 @@ export const hetznerBackend: CloudBackend = {
     const catalog = await c.listServerTypes();
     validateServerChoice(choice, catalog, image);
 
-    // 2. Detect egress IP + normalize firewall source.
+    // 2. Resolve the inbound-access policy (`--inbound` / `box.inbound`) into
+    // the firewall's source CIDRs. `locked`/`whitelist` need the host egress IP
+    // (env override wins, else detect); `open` (0.0.0.0/0) skips detection.
+    const inboundPolicy = parseInboundSpec(req.inbound);
     const egressOverride =
       req.env?.AGENTBOX_HETZNER_FIREWALL_SOURCE ?? process.env.AGENTBOX_HETZNER_FIREWALL_SOURCE;
-    const source = egressOverride
-      ? normalizeSourceCidr(egressOverride)
-      : `${await detectEgressIp({ onLog })}/32`;
-    progress(`firewall source: ${source}`);
+    const hostEgress =
+      inboundPolicy.mode === 'open'
+        ? null
+        : egressOverride
+          ? normalizeSourceCidr(egressOverride)
+          : `${await detectEgressIp({ onLog })}/32`;
+    const sources = resolveInboundSources(inboundPolicy, hostEgress);
+    progress(`firewall inbound: ${describeInbound(inboundPolicy)} -> ${sources.join(', ')}`);
 
     // 3. Mint per-box SSH key into a temp dir keyed by a fresh uuid; we
     // rename it to `~/.agentbox/hetzner/boxes/<sandboxId>/ssh/` once the
@@ -383,7 +392,7 @@ export const hetznerBackend: CloudBackend = {
       // 4. Firewall.
       const firewall = await createPerBoxFirewall(c, {
         name: `agentbox-${req.name}-${stamp}`,
-        sourceCidr: source,
+        sources,
         labels: {
           'agentbox.box': req.name,
           'agentbox.role': 'box',
@@ -480,6 +489,7 @@ export const hetznerBackend: CloudBackend = {
       // scaffold's `provisioned …` log line read this.
       return {
         sandboxId,
+        inbound: inboundPolicy,
         resources: {
           cpu: provisioned.cores,
           memory: provisioned.memory,
@@ -745,13 +755,34 @@ export const hetznerBackend: CloudBackend = {
     // establishment failure (`recover`, the initial attach connect), never on a
     // mid-session drop. A `0.0.0.0/0` firewall (explicit dynamic-IP opt-in) is
     // already open, so it's a no-op.
+    const policy: InboundPolicy = h.inbound ?? { mode: 'locked', sources: [] };
+    if (policy.mode === 'open') return { changed: false };
     const s = await firewallEgressStatus(h.sandboxId).catch(() => null);
-    if (!s || !firewallNeedsSync(s.allowedSource, s.currentEgress)) return { changed: false };
-    await syncFirewallSource(client(), s.firewallId, s.currentEgress);
+    if (!s || !firewallNeedsSync(s.allowedSources, s.currentEgress)) return { changed: false };
+    // Merge the stored whitelist with the refreshed egress so a drift heal
+    // never narrows a whitelisted box down to just the host IP.
+    const sources = resolveInboundSources(policy, s.currentEgress);
+    await syncFirewallSource(client(), s.firewallId, sources);
     return {
       changed: true,
-      detail: `firewall updated: SSH now allowed from ${s.currentEgress} (was ${s.allowedSource ?? '(no rule)'})`,
+      detail: `firewall updated: SSH now allowed from ${sources.join(', ')} (was ${s.allowedSources.join(', ') || '(no rule)'})`,
     };
+  },
+
+  async setInbound(h: CloudHandle, policy: InboundPolicy): Promise<{ sources: string[] }> {
+    // Apply an inbound-access policy to the box's firewall (`agentbox inbound`).
+    // `locked`/`whitelist` re-detect the host egress; `open` skips it.
+    const id = Number.parseInt(h.sandboxId, 10);
+    const server = await client().getServer(id);
+    if (!server) throw new Error(`hetzner: server ${h.sandboxId} not found`);
+    const firewallId = Number.parseInt(server.labels['agentbox.firewall'] ?? '', 10);
+    if (!Number.isFinite(firewallId)) {
+      throw new Error(`hetzner: no per-box firewall recorded for server ${h.sandboxId}`);
+    }
+    const hostEgress = policy.mode === 'open' ? null : `${await detectEgressIp({})}/32`;
+    const sources = resolveInboundSources(policy, hostEgress);
+    await syncFirewallSource(client(), firewallId, sources);
+    return { sources };
   },
 
   async startInBoxPortless(h, opts): Promise<void> {

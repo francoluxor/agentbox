@@ -19,6 +19,23 @@ export interface CloudVolumeMount {
   subpath?: string;
 }
 
+/**
+ * Inbound-access policy for a VPS-style box's per-box firewall (Hetzner /
+ * DigitalOcean). `locked` = SSH reachable only from the host's egress IP (the
+ * default); `open` = SSH reachable from anywhere (0.0.0.0/0, key-only — for
+ * driving the box from a phone/other device with the laptop off); `whitelist` =
+ * the host egress IP plus the extra `sources` CIDRs. `sources` holds ONLY the
+ * extra whitelisted CIDRs (not the host egress, which is re-detected on each
+ * sync so a host-IP drift can be merged in without clobbering the whitelist).
+ * Providers without a firewall ignore it.
+ */
+export type InboundMode = 'locked' | 'open' | 'whitelist';
+export interface InboundPolicy {
+  mode: InboundMode;
+  /** Extra whitelisted CIDRs (whitelist mode only); never includes the host egress. */
+  sources: string[];
+}
+
 export interface CloudProvisionRequest {
   name: string;
   /** Resolved base image / snapshot ref. */
@@ -65,6 +82,13 @@ export interface CloudProvisionRequest {
    * primitive ignore it (hetzner locks egress via its own firewall instead).
    */
   networkPolicy?: string;
+  /**
+   * Raw `--inbound` / `box.inbound` spec (`locked` | `open` | a CIDR list). The
+   * VPS backends (hetzner, digitalocean) parse it via `parseInboundSpec` and
+   * resolve it against the detected host egress IP to build the per-box
+   * firewall's inbound sources; other backends ignore it. Absent ⇒ `locked`.
+   */
+  inbound?: string;
   /** Env vars baked into the sandbox at provision time. */
   env?: Record<string, string>;
   /** Persistent volumes to attach. Backends without a volume API ignore this. */
@@ -82,6 +106,12 @@ export interface CloudHandle {
    * older records, omit it and readers fall back to `defaultResources`.
    */
   resources?: { cpu?: number; memory?: number; disk?: number };
+  /**
+   * The inbound-access policy the backend applied to the box's firewall (VPS
+   * backends only), persisted on the record so drift re-syncs preserve the
+   * whitelist. Omitted by backends without a per-box firewall.
+   */
+  inbound?: InboundPolicy;
 }
 
 export type CloudState = 'running' | 'paused' | 'stopped' | 'missing';
@@ -217,6 +247,16 @@ export interface CloudBackend {
    * not an IP change). Backends with public URLs / no host transport omit it.
    */
   repairReachability?(h: CloudHandle): Promise<{ changed: boolean; detail?: string }>;
+
+  /**
+   * Apply an inbound-access policy to the box's per-box firewall (VPS backends
+   * only — `agentbox inbound <box>`). The backend detects the host egress IP
+   * (for `locked`/`whitelist`), resolves the policy into the firewall source
+   * list, applies it (no reboot), and returns the applied CIDRs for logging.
+   * Backends without a per-box firewall omit it → the CLI reports "not
+   * supported for provider X".
+   */
+  setInbound?(h: CloudHandle, policy: InboundPolicy): Promise<{ sources: string[] }>;
 
   /**
    * Browser-bound signed preview URL with the auth token embedded in the URL

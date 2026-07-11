@@ -4,8 +4,10 @@ import { resolveBoxSize, type EffectiveConfig } from '@agentbox/config';
 export interface CloudSizingFlags {
   /** `--size <spec>` */
   size?: string;
-  /** `--location <name>` (hetzner only) */
+  /** `--location <name>` (hetzner / digitalocean) */
   location?: string;
+  /** `--inbound <spec>` (hetzner / digitalocean) */
+  inbound?: string;
 }
 
 /**
@@ -22,6 +24,8 @@ export interface CloudSizingFlags {
  *   `box.hetznerLocation`.
  * - **digitalocean**: `location` — region, `--location` flag first, else
  *   `box.digitaloceanRegion`.
+ * - **hetzner + digitalocean**: `inbound` — per-box firewall access policy
+ *   (`locked`/`open`/CIDR list), `--inbound` flag first, else `box.inbound`.
  * - **vercel**: `timeoutMs` (session length before auto-snapshot), `networkPolicy`.
  * - **e2b**: `timeoutMs` — the session timeout the box is created with (and
  *   records as `cloud.sessionTimeoutMs`, which seeds the host keepalive loop so
@@ -39,12 +43,20 @@ export function cloudSizingProviderOptions(
   const size = flags.size?.trim() || resolveBoxSize(cfg, providerName);
   const out: Record<string, unknown> = size.length > 0 ? { size } : {};
   if (providerName === 'hetzner') {
-    const location = flags.location?.trim() || cfg.box.hetznerLocation;
+    const location = (flags.location?.trim() || cfg.box.hetznerLocation || '').trim();
     if (location.length > 0) out.location = location;
   }
   if (providerName === 'digitalocean') {
-    const location = flags.location?.trim() || cfg.box.digitaloceanRegion;
+    const location = (flags.location?.trim() || cfg.box.digitaloceanRegion || '').trim();
     if (location.length > 0) out.location = location;
+  }
+  // VPS-only inbound-access policy (`--inbound` / `box.inbound`). Passed through
+  // to the backend's per-box firewall; other providers ignore it. Only emitted
+  // when non-default — the backend treats an absent value as `locked`, so the
+  // common case carries nothing.
+  if (providerName === 'hetzner' || providerName === 'digitalocean') {
+    const inbound = (flags.inbound?.trim() || cfg.box.inbound || '').trim();
+    if (inbound.length > 0 && !/^lock(ed)?$/i.test(inbound)) out.inbound = inbound;
   }
   if (providerName === 'vercel') {
     out.timeoutMs = cfg.box.vercelTimeoutMs;

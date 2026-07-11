@@ -12,7 +12,7 @@
  */
 
 import { basename, resolve } from 'node:path';
-import { generateBoxId, resolveSyncTopology } from '@agentbox/core';
+import { generateBoxId, resolveSyncTopology, UserFacingError } from '@agentbox/core';
 import type {
   AttachKind,
   AttachSpec,
@@ -27,6 +27,7 @@ import type {
   ExecOptions,
   ExecResult,
   GitWorktreeRecord,
+  InboundPolicy,
   InspectedBox,
   Provider,
   ProviderCheckpoint,
@@ -36,8 +37,10 @@ import type {
 } from '@agentbox/core';
 import {
   allocateProjectIndex,
+  describeInbound,
   detectGitRepos,
   makeSyncContext,
+  parseInboundSpec,
   readCliStamp,
   readState,
   recordBox,
@@ -267,7 +270,10 @@ export function createCloudProvider(
     if (!sandboxId) {
       throw new Error(`cloud box ${box.name} has no sandboxId — record is malformed`);
     }
-    return { sandboxId };
+    // Carry the persisted inbound policy so firewall ops (repairReachability
+    // drift re-sync, setInbound) can merge the whitelist with the current host
+    // egress instead of clobbering it.
+    return { sandboxId, inbound: box.cloud?.inbound };
   }
 
   /** Resolve a fresh per-cloud-box id + name + branch. */
@@ -568,6 +574,10 @@ export function createCloudProvider(
         typeof locationOpt === 'string' && locationOpt.trim() !== ''
           ? locationOpt.trim()
           : undefined;
+      // Inbound-access policy for VPS firewalls (`--inbound` / `box.inbound`).
+      const inboundOpt = req.providerOptions?.['inbound'];
+      const inbound =
+        typeof inboundOpt === 'string' && inboundOpt.trim() !== '' ? inboundOpt.trim() : undefined;
 
       // Per-box tokens: `relayToken` authenticates the in-box agent to its
       // in-sandbox relay (`/events`, `/rpc` bearer); `bridgeToken` separately
@@ -659,6 +669,7 @@ export function createCloudProvider(
           resources,
           size,
           location,
+          inbound,
           timeoutMs,
           exposePorts: exposeServicePorts,
           networkPolicy,
@@ -1086,6 +1097,9 @@ export function createCloudProvider(
             // Real resources the backend reported (Hetzner: the plan's actual
             // cores/memory/disk). Absent → readers fall back to defaultResources.
             resources: handle.resources,
+            // Inbound-access policy the backend applied to the per-box firewall
+            // (VPS providers). Persisted so drift re-syncs preserve the whitelist.
+            inbound: handle.inbound,
             // Only host-seeded boxes share a fork base with the host, so only
             // they can be resynced back to the host tip on session start (7.5).
             // inBoxClone / plane boxes clone from a leased URL — left unset.
@@ -1144,6 +1158,23 @@ export function createCloudProvider(
       // Delegate to the backend (only Hetzner self-heals its firewall); other
       // backends have no host transport to repair.
       return (await backend.repairReachability?.(handleFor(box))) ?? { changed: false };
+    },
+
+    async setInbound(box: BoxRecord, spec: string, onLog?: (line: string) => void): Promise<InboundPolicy> {
+      if (!backend.setInbound) {
+        throw new UserFacingError(
+          `inbound access control isn't supported for provider '${providerName}' — it has no per-box firewall (only hetzner / digitalocean do).`,
+        );
+      }
+      const policy = parseInboundSpec(spec);
+      const { sources } = await backend.setInbound(handleFor(box), policy);
+      onLog?.(`${describeInbound(policy)} -> ${sources.join(', ')}`);
+      // Persist so a later drift re-sync merges the whitelist, and `--show` /
+      // `connect` report the box's current exposure. `handleFor` already
+      // asserted a sandboxId, so `box.cloud` is present here.
+      const cloud = box.cloud;
+      if (cloud) await recordBox({ ...box, cloud: { ...cloud, inbound: policy } });
+      return policy;
     },
 
     async pause(box: BoxRecord): Promise<void> {

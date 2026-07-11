@@ -42,6 +42,13 @@ export {
 } from './cloud-ssh.js';
 export { mintSshKey, type MintedSshKey } from './ssh-key.js';
 export {
+  OPEN_INBOUND_SOURCES,
+  normalizeInboundCidr,
+  parseInboundSpec,
+  resolveInboundSources,
+  describeInbound,
+} from './inbound.js';
+export {
   claudeSettingsPath,
   claudeSshEntryFor,
   pruneOrphanClaudeSshConfigs,

@@ -129,6 +129,7 @@ export interface UserConfig {
     e2bTimeoutMs?: number;
     cpMaxBytes?: number;
     credentialSync?: boolean;
+    inbound?: string;
   };
   checkpoint?: {
     maxLayers?: number;
@@ -286,6 +287,7 @@ export interface EffectiveConfig {
     e2bTimeoutMs: number;
     cpMaxBytes: number;
     credentialSync: boolean;
+    inbound: string;
   };
   checkpoint: {
     maxLayers: number;
@@ -450,6 +452,7 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     e2bTimeoutMs: 2_700_000,
     cpMaxBytes: 100 * 1024 * 1024,
     credentialSync: true,
+    inbound: 'locked',
   },
   checkpoint: {
     maxLayers: 3,
@@ -765,6 +768,12 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     type: 'bool',
     description:
       'Automatically sync refreshed agent credentials (claude/codex/opencode) from boxes to the host backup and out to all other running boxes. Claude OAuth refresh rotates the refresh token, so without this every other copy 401s after any box refreshes. Default true; --no-credential-sync at create disables the in-box watcher for that box.',
+  },
+  {
+    key: 'box.inbound',
+    type: 'string',
+    description:
+      "Inbound-access policy for VPS boxes (hetzner, digitalocean per-box firewall). `locked` (default) = SSH reachable only from your host's egress IP; `open` = SSH reachable from anywhere (0.0.0.0/0, key-only — to drive a box from a phone with the laptop off); a CIDR list (e.g. `203.0.113.5/32`) = host egress plus those. Override per box with `--inbound` or after create with `agentbox inbound <box>`. Ignored by non-VPS providers.",
   },
   {
     key: 'box.vercelNetworkPolicy',
