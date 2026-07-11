@@ -44,6 +44,7 @@ import { mapDigitalOceanProvisionError, validateSizeChoice } from './preflight.j
 import { readPreparedState } from './prepared-state.js';
 import { ensureDigitalOceanBaseSnapshot } from './prepare.js';
 import { mintSshKey } from './ssh-key.js';
+import { describeInbound, parseInboundSpec, resolveInboundSources } from '@agentbox/sandbox-core';
 import { waitForSsh, sshOptArgs, type SshTargetArgs } from './ssh-cli.js';
 import { SshTunnelManager, defaultBoxSshDir } from './ssh-tunnel.js';
 import { withDigitalOceanRetry } from './retry.js';
@@ -314,13 +315,20 @@ export const digitaloceanBackend: CloudBackend = {
     validateSizeChoice(choice, sizeCatalog, snapshotMeta);
     const plan = sizeCatalog.find((s) => s.slug === size);
 
-    // 2. Detect egress IP + normalize firewall source.
+    // 2. Resolve the inbound-access policy (`--inbound` / `box.inbound`) into
+    // the firewall's source CIDRs. `locked`/`whitelist` need the host egress IP
+    // (env override wins, else detect); `open` (0.0.0.0/0) skips detection.
+    const inboundPolicy = parseInboundSpec(req.inbound);
     const egressOverride =
       req.env?.AGENTBOX_DIGITALOCEAN_FIREWALL_SOURCE ?? process.env.AGENTBOX_DIGITALOCEAN_FIREWALL_SOURCE;
-    const source = egressOverride
-      ? normalizeSourceCidr(egressOverride)
-      : `${await detectEgressIp({ onLog })}/32`;
-    progress(`firewall source: ${source}`);
+    const hostEgress =
+      inboundPolicy.mode === 'open'
+        ? null
+        : egressOverride
+          ? normalizeSourceCidr(egressOverride)
+          : `${await detectEgressIp({ onLog })}/32`;
+    const sources = resolveInboundSources(inboundPolicy, hostEgress);
+    progress(`firewall inbound: ${describeInbound(inboundPolicy)} -> ${sources.join(', ')}`);
 
     // 3. Mint per-box SSH key into a temp dir keyed by a fresh stamp; we
     // rename it into the sandboxId-keyed dir once the droplet id is known.
@@ -342,7 +350,7 @@ export const digitaloceanBackend: CloudBackend = {
       // DigitalOcean auto-applies it the moment the droplet boots.
       const firewall = await createPerBoxFirewall(c, {
         name: `agentbox-${sanitizeTag(req.name)}-${stamp}`,
-        sourceCidr: source,
+        sources,
         tag: boxTag,
       });
       firewallId = firewall.id;
@@ -430,13 +438,14 @@ export const digitaloceanBackend: CloudBackend = {
       return plan
         ? {
             sandboxId,
+            inbound: inboundPolicy,
             resources: {
               cpu: plan.vcpus,
               memory: Math.round(plan.memory / 1024),
               disk: plan.disk,
             },
           }
-        : { sandboxId };
+        : { sandboxId, inbound: inboundPolicy };
     } catch (err) {
       // Cleanup on failure: droplet + firewall + temp ssh dir.
       if (dropletId !== null) {

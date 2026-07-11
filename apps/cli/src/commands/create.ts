@@ -73,6 +73,8 @@ interface CreateOptions {
   size?: string;
   /** --location <name>: Hetzner datacenter (nbg1, fsn1, hel1, ash). Hetzner-only. */
   location?: string;
+  /** --inbound <spec>: VPS firewall access policy (locked | open | CIDR list). Hetzner/DigitalOcean-only. */
+  inbound?: string;
   /** --from-branch <ref>: base the box's per-box branch on this ref (branch / tag / SHA) instead of HEAD. */
   fromBranch?: string;
   /** -b / --use-branch <name>: reuse an existing branch directly instead of forking agentbox/<name>. */
@@ -207,6 +209,10 @@ export const createCommand = new Command('create')
     'Datacenter/region for the new box. Hetzner: nbg1, fsn1, hel1, ash (overrides box.hetznerLocation). DigitalOcean: nyc3, sfo3, ams3, fra1 (overrides box.digitaloceanRegion). Hetzner/DigitalOcean-only.',
   )
   .option(
+    '--inbound <spec>',
+    'Inbound-access policy for the VPS firewall. `locked` (default, host egress IP only), `open` (0.0.0.0/0, key-only — reach the box from a phone with the laptop off), or a CIDR list (e.g. 203.0.113.5/32). Overrides box.inbound. Hetzner/DigitalOcean-only.',
+  )
+  .option(
     '--bundle-depth <n>',
     'cap commits shipped in the cloud-seed git bundle (daytona, hetzner). 0 = full history. Unset = adaptive (200 commits, re-bundle at 100 if >20 MB). Ignored for docker.',
     (v) => {
@@ -283,6 +289,9 @@ export const createCommand = new Command('create')
     );
     if (opts.location && providerName !== 'hetzner' && providerName !== 'digitalocean') {
       log.warn(`--location applies to hetzner/digitalocean only; ignored for provider ${providerName}`);
+    }
+    if (opts.inbound && providerName !== 'hetzner' && providerName !== 'digitalocean') {
+      log.warn(`--inbound applies to hetzner/digitalocean only; ignored for provider ${providerName}`);
     }
     // Box image: same precedence pattern as --size. `--image` wins; otherwise
     // the cascaded box.image / box.image<Provider> (written by `agentbox
@@ -503,6 +512,7 @@ export const createCommand = new Command('create')
           ...cloudSizingProviderOptions(provider.name, cfg.effective, {
             size: opts.size,
             location: opts.location,
+            inbound: opts.inbound,
           }),
         },
       });

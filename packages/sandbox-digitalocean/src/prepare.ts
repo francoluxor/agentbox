@@ -173,7 +173,7 @@ export async function prepareDigitalOcean(
     progress(`creating firewall ${firewallName} (source ${source})`);
     const firewall = await createPerBoxFirewall(client, {
       name: firewallName,
-      sourceCidr: source,
+      sources: [source],
       tag: prepareTag,
     });
     firewallId = firewall.id;

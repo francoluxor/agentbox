@@ -5,6 +5,7 @@
  * live flat (Docker, for historical reasons) or under `cloud` (cloud backends).
  */
 
+import type { InboundPolicy } from './cloud-backend.js';
 import type { BoxRuntimeState } from './provider.js';
 import type { SyncTopology } from './sync/types.js';
 
@@ -129,6 +130,15 @@ export interface CloudBoxFields {
    * on pre-feature records → readers fall back to the provider's static defaults.
    */
   resources?: { cpu?: number; memory?: number; disk?: number };
+  /**
+   * Inbound-access policy for VPS boxes (hetzner / digitalocean per-box
+   * firewall). Persisted so a host-egress-IP drift re-sync (`repairReachability`
+   * / `agentbox inbound`) recomputes `sources ∪ current-host-egress` without
+   * losing the whitelist, and so `agentbox inbound --show` / `connect` can
+   * report the box's current exposure. Absent on non-VPS backends / pre-feature
+   * records → treated as `locked`.
+   */
+  inbound?: InboundPolicy;
   /**
    * True when this box's `/workspace` was seeded from the host checkout (the
    * laptop `create` path), i.e. it has a real fork base shared with the host.

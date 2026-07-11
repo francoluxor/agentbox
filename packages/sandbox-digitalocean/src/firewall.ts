@@ -30,13 +30,19 @@ import {
 } from './client.js';
 import { withDigitalOceanRetry } from './retry.js';
 
-/** Build the SSH-only inbound rule for a given source CIDR. */
-export function sshInboundRules(sourceCidr: string): DigitalOceanInboundRule[] {
+/**
+ * Build the SSH-only inbound rule for one or more source CIDRs. DigitalOcean's
+ * `sources.addresses` is a list, so all allowed CIDRs ride a single tcp/22 rule
+ * (host egress for `locked`, `0.0.0.0/0`+`::/0` for `open`, host egress + the
+ * whitelist for `whitelist`). Accepts a bare string for back-compat callers.
+ */
+export function sshInboundRules(sources: string | string[]): DigitalOceanInboundRule[] {
+  const addresses = Array.isArray(sources) ? sources : [sources];
   return [
     {
       protocol: 'tcp',
       ports: '22',
-      sources: { addresses: [sourceCidr] },
+      sources: { addresses },
     },
   ];
 }
@@ -60,8 +66,8 @@ export function allowAllOutboundRules(): DigitalOceanOutboundRule[] {
 export interface CreateFirewallOptions {
   /** Human-readable name (visible in the DigitalOcean dashboard). Must be unique-ish. */
   name: string;
-  /** Source CIDR (e.g. `1.2.3.4/32`). The caller normalizes the suffix. */
-  sourceCidr: string;
+  /** Inbound source CIDRs (already normalized/resolved by the caller). */
+  sources: string[];
   /**
    * Per-box tag the firewall is bound to. The droplet is created with the
    * same tag so DigitalOcean auto-applies this firewall the moment the
@@ -89,7 +95,7 @@ export async function createPerBoxFirewall(
   );
   const body: CreateFirewallRequest = {
     name: opts.name,
-    inbound_rules: sshInboundRules(opts.sourceCidr),
+    inbound_rules: sshInboundRules(opts.sources),
     outbound_rules: allowAllOutboundRules(),
     tags: [opts.tag],
   };
@@ -108,11 +114,11 @@ export async function createPerBoxFirewall(
 export async function syncFirewallSource(
   client: DigitalOceanClient,
   firewall: DigitalOceanFirewall,
-  sourceCidr: string,
+  sources: string | string[],
 ): Promise<void> {
   const body: CreateFirewallRequest = {
     name: firewall.name,
-    inbound_rules: sshInboundRules(sourceCidr),
+    inbound_rules: sshInboundRules(sources),
     outbound_rules: allowAllOutboundRules(),
     droplet_ids: firewall.droplet_ids,
     tags: firewall.tags,

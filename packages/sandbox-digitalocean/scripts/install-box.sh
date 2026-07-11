@@ -128,6 +128,27 @@ echo 'vscode ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/90-agentbox-vscode
 chmod 0440 /etc/sudoers.d/90-agentbox-vscode
 done_ "vscode user (UID 1000) + sudoers"
 
+step "sshd hardening drop-in"
+# Key-only, vscode-only sshd. Load-bearing for `--inbound open` (SSH port
+# exposed to 0.0.0.0/0): password auth off + AllowUsers vscode means the only
+# way in is the per-box key. Safe for `locked`/`whitelist` too. Baked into the
+# snapshot; takes effect on next boot — we don't reload sshd here (the rest of
+# the install still needs root SSH).
+cat > /etc/ssh/sshd_config.d/agentbox.conf <<'SSHD'
+# Written by AgentBox install-box.sh — see plan §"safety model".
+PasswordAuthentication no
+PermitRootLogin no
+PubkeyAuthentication yes
+AllowUsers vscode
+AllowTcpForwarding yes
+GatewayPorts no
+PermitTunnel no
+X11Forwarding no
+ChallengeResponseAuthentication no
+KbdInteractiveAuthentication no
+SSHD
+done_ "sshd hardening drop-in"
+
 step "agentbox base dirs + /workspace ownership"
 mkdir -p /workspace /run/agentbox /var/log/agentbox /var/lib/agentbox /etc/agentbox /etc/claude-code \
          /usr/local/share/agentbox

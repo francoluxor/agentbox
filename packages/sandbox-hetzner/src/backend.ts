@@ -57,6 +57,7 @@ import { mapHetznerProvisionError, validateServerChoice } from './preflight.js';
 import { readPreparedState } from './prepared-state.js';
 import { ensureHetznerBaseSnapshot } from './prepare.js';
 import { mintSshKey } from './ssh-key.js';
+import { describeInbound, parseInboundSpec, resolveInboundSources } from '@agentbox/sandbox-core';
 import { waitForSsh, sshOptArgs, type SshTargetArgs } from './ssh-cli.js';
 import { SshTunnelManager, defaultBoxSshDir } from './ssh-tunnel.js';
 import { withHetznerRetry } from './retry.js';
@@ -356,13 +357,20 @@ export const hetznerBackend: CloudBackend = {
     const catalog = await c.listServerTypes();
     validateServerChoice(choice, catalog, image);
 
-    // 2. Detect egress IP + normalize firewall source.
+    // 2. Resolve the inbound-access policy (`--inbound` / `box.inbound`) into
+    // the firewall's source CIDRs. `locked`/`whitelist` need the host egress IP
+    // (env override wins, else detect); `open` (0.0.0.0/0) skips detection.
+    const inboundPolicy = parseInboundSpec(req.inbound);
     const egressOverride =
       req.env?.AGENTBOX_HETZNER_FIREWALL_SOURCE ?? process.env.AGENTBOX_HETZNER_FIREWALL_SOURCE;
-    const source = egressOverride
-      ? normalizeSourceCidr(egressOverride)
-      : `${await detectEgressIp({ onLog })}/32`;
-    progress(`firewall source: ${source}`);
+    const hostEgress =
+      inboundPolicy.mode === 'open'
+        ? null
+        : egressOverride
+          ? normalizeSourceCidr(egressOverride)
+          : `${await detectEgressIp({ onLog })}/32`;
+    const sources = resolveInboundSources(inboundPolicy, hostEgress);
+    progress(`firewall inbound: ${describeInbound(inboundPolicy)} -> ${sources.join(', ')}`);
 
     // 3. Mint per-box SSH key into a temp dir keyed by a fresh uuid; we
     // rename it to `~/.agentbox/hetzner/boxes/<sandboxId>/ssh/` once the
@@ -383,7 +391,7 @@ export const hetznerBackend: CloudBackend = {
       // 4. Firewall.
       const firewall = await createPerBoxFirewall(c, {
         name: `agentbox-${req.name}-${stamp}`,
-        sourceCidr: source,
+        sources,
         labels: {
           'agentbox.box': req.name,
           'agentbox.role': 'box',
@@ -480,6 +488,7 @@ export const hetznerBackend: CloudBackend = {
       // scaffold's `provisioned …` log line read this.
       return {
         sandboxId,
+        inbound: inboundPolicy,
         resources: {
           cpu: provisioned.cores,
           memory: provisioned.memory,

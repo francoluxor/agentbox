@@ -166,7 +166,7 @@ export async function prepareHetzner(
     progress(`creating firewall ${firewallName} (source ${source})`);
     const firewall = await createPerBoxFirewall(client, {
       name: firewallName,
-      sourceCidr: source,
+      sources: [source],
       labels: { 'agentbox.role': 'prepare' },
     });
     firewallId = firewall.id;

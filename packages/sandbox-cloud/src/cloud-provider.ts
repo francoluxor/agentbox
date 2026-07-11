@@ -568,6 +568,10 @@ export function createCloudProvider(
         typeof locationOpt === 'string' && locationOpt.trim() !== ''
           ? locationOpt.trim()
           : undefined;
+      // Inbound-access policy for VPS firewalls (`--inbound` / `box.inbound`).
+      const inboundOpt = req.providerOptions?.['inbound'];
+      const inbound =
+        typeof inboundOpt === 'string' && inboundOpt.trim() !== '' ? inboundOpt.trim() : undefined;
 
       // Per-box tokens: `relayToken` authenticates the in-box agent to its
       // in-sandbox relay (`/events`, `/rpc` bearer); `bridgeToken` separately
@@ -659,6 +663,7 @@ export function createCloudProvider(
           resources,
           size,
           location,
+          inbound,
           timeoutMs,
           exposePorts: exposeServicePorts,
           networkPolicy,
@@ -1086,6 +1091,9 @@ export function createCloudProvider(
             // Real resources the backend reported (Hetzner: the plan's actual
             // cores/memory/disk). Absent → readers fall back to defaultResources.
             resources: handle.resources,
+            // Inbound-access policy the backend applied to the per-box firewall
+            // (VPS providers). Persisted so drift re-syncs preserve the whitelist.
+            inbound: handle.inbound,
             // Only host-seeded boxes share a fork base with the host, so only
             // they can be resynced back to the host tip on session start (7.5).
             // inBoxClone / plane boxes clone from a leased URL — left unset.
