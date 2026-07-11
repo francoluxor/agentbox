@@ -248,7 +248,9 @@ export async function prepareDigitalOcean(
       throw new Error(
         `install-box.sh failed on temp Droplet (exit ${String(installRes.exitCode)})\n` +
           `Last stderr: ${installRes.stderr.slice(-500) || '(empty)'}\n` +
-          `The full trace was preserved at /var/log/agentbox/install.log inside any box made from the resulting snapshot.`,
+          `The full install trace was streamed to the prepare log above (the '[install] …' lines; ` +
+          `also in ~/.agentbox/logs/latest.log). No snapshot was created and the temp Droplet is being ` +
+          `deleted, so the in-box /var/log/agentbox/install.log does not survive this failure.`,
       );
     }
     progress('install script complete');
