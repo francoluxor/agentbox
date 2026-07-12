@@ -9,6 +9,67 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [0.24.0] - 2026-07-12
+
+### Added
+
+- **DigitalOcean provider** (`--provider digitalocean`, or `agentbox digitalocean
+  <cmd>`): one DigitalOcean Droplet per box, reached over pure SSH, with a per-box
+  Cloud Firewall locked to your egress IP, snapshot checkpoints, and
+  Docker-in-Docker. Sign in with `agentbox digitalocean login`, bake the base
+  snapshot with `agentbox prepare --provider digitalocean`. At parity with the
+  Hetzner provider (sizing, credentials, checkpoints, `prune`).
+- **Remote access — drive a box from your phone with your laptop off** (Hetzner /
+  DigitalOcean). `--inbound open` (or a CIDR list; also `box.inbound`) opens the
+  box's SSH to another device; `agentbox inbound <box> open|lock|<cidr…>` changes
+  it live with no reboot; `agentbox connect <box>` prints the SSH connection
+  bundle, adds another device's key with `--add-key`, or exports the box key with
+  `--export-key`.
+- **Independent boxes** — `--dangerously-with-credentials` copies one git
+  credential into a cloud box so it can `git push`/`fetch`/`pull` on its own with
+  your PC off (`git.pushMode=direct`; an interactive prompt asks token vs SSH).
+  Add it to an already-running box with `agentbox connect <box>
+  --dangerously-git-credentials`.
+- **Unified `--size` and `--location`** across cloud providers — Hetzner server
+  type, DigitalOcean Droplet slug, Daytona/E2B `cpu-mem-disk`, Vercel vCPUs; pin
+  per provider with `box.size<Provider>` / `box.hetznerLocation` /
+  `box.digitaloceanRegion`. Choices are preflight-validated against the provider's
+  live catalog, and the real provisioned resources are reported after create.
+- **Agent settings sync + credential fan-out** — a refreshed agent login
+  (Claude/Codex/OpenCode) now propagates to every running box and the host backup
+  so other copies don't 401 after a token rotation (`box.credentialSync`, on by
+  default; `--no-credential-sync` to opt a box out). Pulled agent settings
+  propagate to other boxes too.
+- **`agentbox download claude|codex|opencode`** — copy an agent's login out of a
+  cloud box back to the host.
+- Every base image now ships the `docker compose` and `docker buildx` CLI plugins,
+  so in-box `docker compose` / `docker buildx` work out of the box.
+- (Provider plugins) `@madarco/agentbox-provider-sdk` 2.1.0: the inbound-access
+  surface (`Provider.setInbound` / `enableDirectGit`, `CloudProvisionRequest.inbound`,
+  `CloudHandle.inbound`, `CloudBoxFields.inbound`) is now exported. The retired
+  `box.vercelVcpus` config field was removed (superseded by the unified `--size`).
+  Must be republished separately from the CLI.
+
+### Changed
+
+- Agent sign-in now runs under a PTY and prompts on the host, so interactive
+  provider/agent logins behave consistently.
+
+### Fixed
+
+- `git` inside a box: `file://` and local-path clones pass straight through to
+  real git, clone tokens are classified correctly, and read-only flags plus
+  `pull --ff-only` route properly.
+- Hetzner: the SSH provisioning deadline is now 10 minutes with an actionable
+  timeout message instead of an opaque failure.
+- `carry:` skips macOS AppleDouble (`._*`) stubs and now carries E2B and
+  Codex/OpenCode credentials.
+- Codex: the seeded `hooks.json` no longer includes a `$comment` key that Codex's
+  strict parser rejected.
+- Cloud create: mount-safe workspace seeding, root-exec extraction (fixes
+  "dubious ownership" on root-exec sandboxes), and a bootstrap spawn guard so a
+  missing best-effort daemon no longer aborts the whole bootstrap.
+
 ## [0.23.5] - 2026-07-08
 
 ### Added
