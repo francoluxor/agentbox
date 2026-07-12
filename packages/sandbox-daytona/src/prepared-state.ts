@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { DaytonaSandboxClass } from '@agentbox/config';
 import {
   claudeInstallFingerprint,
   computeContextSha256,
@@ -29,9 +30,13 @@ const SCHEMA = 1 as const;
 
 /** Provider-specific extras baked into the daytona snapshot. `size` is the
  *  normalized `cpu-memory-disk` spec the snapshot was created with (absent =
- *  a default-resource bake). */
+ *  a default-resource bake). `class` is the sandbox class it was baked as —
+ *  absent means a snapshot from before classes existed, i.e. a container.
+ *  A snapshot's class is immutable and cannot make a sandbox of the other
+ *  class, so this is what `provision` records on the box record. */
 export interface DaytonaPreparedExtras {
   size?: string;
+  class?: DaytonaSandboxClass;
 }
 
 export type PreparedDaytonaState = PreparedBaseSnapshot<string, DaytonaPreparedExtras>;
@@ -133,8 +138,14 @@ export function writePreparedDaytonaState(opts: {
   contextSha256: string;
   /** Normalized `cpu-memory-disk` size the snapshot was baked with (absent = default). */
   size?: string;
+  /** Sandbox class the snapshot was baked as. Absent on pre-class bakes = container. */
+  class?: DaytonaSandboxClass;
 }): void {
   const stamp = readCliStamp();
+  const extras: DaytonaPreparedExtras = {
+    ...(opts.size ? { size: opts.size } : {}),
+    ...(opts.class ? { class: opts.class } : {}),
+  };
   const state: PreparedDaytonaState = {
     schema: SCHEMA,
     base: {
@@ -144,24 +155,30 @@ export function writePreparedDaytonaState(opts: {
       cliCommit: stamp.cliCommit,
       createdAt: new Date().toISOString(),
     },
-    ...(opts.size ? { extras: { size: opts.size } } : {}),
+    ...(Object.keys(extras).length > 0 ? { extras } : {}),
   };
   writePreparedStateRaw('daytona', state);
 }
 
 /**
- * A prepared snapshot matches when its build-context fingerprint AND its baked
- * size both equal the requested ones. `size` is deliberately NOT folded into
- * `contextSha256` — the live freshness check (`currentDaytonaBaseFingerprintLive`)
- * compares fingerprints only, and folding size in would make every sized bake
- * read as "context drifted". An absent baked size matches an absent request
- * (the default-resource bake).
+ * A prepared snapshot matches when its build-context fingerprint, its baked
+ * size AND its baked class all equal the requested ones. Neither size nor class
+ * is folded into `contextSha256` — the live freshness check
+ * (`currentDaytonaBaseFingerprintLive`) compares fingerprints only and takes no
+ * config, so folding either in would make every sized/classed bake read as
+ * "context drifted".
+ *
+ * An absent baked class means a snapshot from before classes existed, which was
+ * necessarily a container — so it only matches a container request.
  */
 export function preparedMatches(
   state: PreparedDaytonaState | null,
   current: string,
   size?: string,
+  sandboxClass?: DaytonaSandboxClass,
 ): boolean {
   if (state?.base?.contextSha256 !== current) return false;
-  return (state?.extras?.size ?? undefined) === (size ?? undefined);
+  if ((state?.extras?.size ?? undefined) !== (size ?? undefined)) return false;
+  if (sandboxClass === undefined) return true;
+  return (state?.extras?.class ?? 'container') === sandboxClass;
 }

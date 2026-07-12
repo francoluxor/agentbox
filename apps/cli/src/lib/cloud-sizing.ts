@@ -1,4 +1,9 @@
-import { resolveBoxSize, type EffectiveConfig } from '@agentbox/config';
+import {
+  resolveBoxSize,
+  resolveDaytonaClass,
+  resolveDaytonaRegion,
+  type EffectiveConfig,
+} from '@agentbox/config';
 
 /** Per-create overrides from the CLI; each wins over the resolved config value. */
 export interface CloudSizingFlags {
@@ -33,6 +38,11 @@ export interface CloudSizingFlags {
  * - **e2b**: `timeoutMs` — the session timeout the box is created with (and
  *   records as `cloud.sessionTimeoutMs`, which seeds the host keepalive loop so
  *   it can push the deadline forward while the agent is working).
+ * - **daytona**: `timeoutMs` (auto-stop inactivity window, same keepalive rail
+ *   as e2b), `sandboxClass` (`linux-vm` | `container`) and `location` (region).
+ *   The class and region are coupled — only `us-east-1` has linux-vm runners —
+ *   so both come from `resolveDaytonaClass`/`resolveDaytonaRegion`, which own
+ *   that rule.
  *
  * Shared by `agentbox create`, the agent-create commands (`claude` / `codex`
  * / `opencode`) and the queued-job worker so a box gets the same size and
@@ -74,6 +84,17 @@ export function cloudSizingProviderOptions(
   }
   if (providerName === 'e2b') {
     out.timeoutMs = cfg.box.e2bTimeoutMs;
+  }
+  if (providerName === 'daytona') {
+    // `timeoutMs` rides the same rail vercel/e2b use: cloud-provider records it
+    // as `cloud.sessionTimeoutMs`, which seeds the host keepalive loop. Daytona
+    // reads it as an *inactivity* window (auto-stop) rather than an absolute
+    // TTL, so the loop's `refreshActivity` renewals hold a working box open and
+    // only a genuinely idle one lapses.
+    out.timeoutMs = cfg.box.daytonaTimeoutMs;
+    out.sandboxClass = resolveDaytonaClass(cfg);
+    const region = resolveDaytonaRegion(cfg);
+    if (region.length > 0) out.location = region;
   }
   return out;
 }

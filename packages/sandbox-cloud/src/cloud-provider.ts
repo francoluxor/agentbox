@@ -273,8 +273,13 @@ export function createCloudProvider(
     }
     // Carry the persisted inbound policy so firewall ops (repairReachability
     // drift re-sync, setInbound) can merge the whitelist with the current host
-    // egress instead of clobbering it.
-    return { sandboxId, inbound: box.cloud?.inbound };
+    // egress instead of clobbering it. Same for the Daytona sandbox class,
+    // which pause/resume branch on and which no SDK call can read back.
+    return {
+      sandboxId,
+      inbound: box.cloud?.inbound,
+      sandboxClass: box.cloud?.sandboxClass,
+    };
   }
 
   /** Resolve a fresh per-cloud-box id + name + branch. */
@@ -555,8 +560,12 @@ export function createCloudProvider(
       // defaults.
       const resources = opts.defaultResources ?? { cpu: 2, memory: 4, disk: 8 };
       const timeoutOverride = req.providerOptions?.['timeoutMs'];
+      // `>= 0`, not `> 0`: daytona treats 0 as "disable auto-stop entirely", and
+      // dropping it would silently hand the box Daytona's own 15-min default —
+      // the opposite of what the user asked for. The other providers' schemas
+      // enforce `minimum: 1`, so they can't reach 0 anyway.
       const timeoutMs =
-        typeof timeoutOverride === 'number' && timeoutOverride > 0 ? timeoutOverride : undefined;
+        typeof timeoutOverride === 'number' && timeoutOverride >= 0 ? timeoutOverride : undefined;
       const networkPolicyOpt = req.providerOptions?.['networkPolicy'];
       const networkPolicy =
         typeof networkPolicyOpt === 'string' && networkPolicyOpt.trim() !== ''
@@ -583,6 +592,10 @@ export function createCloudProvider(
       const projectOpt = req.providerOptions?.['project'];
       const project =
         typeof projectOpt === 'string' && projectOpt.trim() !== '' ? projectOpt.trim() : undefined;
+      // Sandbox class (daytona's `box.daytonaClass`): `linux-vm` | `container`.
+      const classOpt = req.providerOptions?.['sandboxClass'];
+      const sandboxClass =
+        typeof classOpt === 'string' && classOpt.trim() !== '' ? classOpt.trim() : undefined;
 
       // Per-box tokens: `relayToken` authenticates the in-box agent to its
       // in-sandbox relay (`/events`, `/rpc` bearer); `bridgeToken` separately
@@ -633,7 +646,12 @@ export function createCloudProvider(
       // Daytona only attaches volumes at create time, not after. Backends
       // without a volume primitive return an empty list and we degrade to
       // "user logs in inside the box" the way cloud worked before.
-      const agentVolumes = await ensureAgentVolumesForCloud(backend, { onLog: log });
+      const agentVolumes = await ensureAgentVolumesForCloud(backend, {
+        onLog: log,
+        // Daytona's linux-vm class accepts volume mounts and never honors them
+        // (see ensureAgentVolumesForCloud) — take the per-create upload path.
+        volumesUsable: sandboxClass !== 'linux-vm',
+      });
 
       // Read the `expose:` service ports up front so port-capped backends
       // (vercel) can declare them at create time — a preview URL only routes to
@@ -676,6 +694,7 @@ export function createCloudProvider(
           location,
           project,
           inbound,
+          sandboxClass,
           timeoutMs,
           exposePorts: exposeServicePorts,
           networkPolicy,
@@ -1106,6 +1125,10 @@ export function createCloudProvider(
             // Inbound-access policy the backend applied to the per-box firewall
             // (VPS providers). Persisted so drift re-syncs preserve the whitelist.
             inbound: handle.inbound,
+            // Daytona sandbox class, read back from the class of the snapshot the
+            // box actually booted from (not from config, which can disagree).
+            // pause() branches on it: a VM pauses, a container archives.
+            sandboxClass: handle.sandboxClass,
             // Only host-seeded boxes share a fork base with the host, so only
             // they can be resynced back to the host tip on session start (7.5).
             // inBoxClone / plane boxes clone from a leased URL — left unset.

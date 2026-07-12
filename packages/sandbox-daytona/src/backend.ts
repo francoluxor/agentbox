@@ -54,29 +54,42 @@ function retry<T>(
  */
 export const DEFAULT_BOX_IMAGE_REF = 'agentbox/box:dev';
 
-let client: Daytona | null = null;
-export function getClient(): Daytona {
-  if (!client) {
-    // Pull DAYTONA_* keys from `.env.local` / `.env` / `~/.agentbox/secrets.env`
-    // into process.env first — the SDK reads from process.env and most users
-    // keep secrets in a project file rather than their shell rc.
-    ensureDaytonaEnvLoaded();
-    try {
-      // Daytona() reads DAYTONA_API_KEY / DAYTONA_JWT_TOKEN + DAYTONA_ORGANIZATION_ID
-      // from env.
-      client = new Daytona();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // The interactive prompt in `agentbox daytona login` handles first-run
-      // setup; this error path is for non-TTY callers (CI, scripts) where the
-      // prompt was skipped.
-      throw new Error(
-        `Daytona credentials not configured: ${msg}\n` +
-          `Run \`agentbox daytona login\` interactively, or set DAYTONA_API_KEY in the environment.`,
-      );
-    }
+/**
+ * Clients keyed by region target ('' = the account default).
+ *
+ * Region only matters for **create**: `Daytona.create()` places the sandbox in
+ * its *client's* target region (the `regionId` create param is ignored), and
+ * only `us-east-1` has linux-vm runners. Everything else — `get`, `exec`,
+ * `list`, start/stop/pause/delete — is region-agnostic: a default-target client
+ * reaches a `us-east-1` sandbox fine and `list()` spans regions (verified
+ * 2026-07-12). So the rest of the backend can keep using the default client and
+ * only `provision` asks for a targeted one.
+ */
+const clients = new Map<string, Daytona>();
+
+export function getClient(target = ''): Daytona {
+  const cached = clients.get(target);
+  if (cached) return cached;
+  // Pull DAYTONA_* keys from `.env.local` / `.env` / `~/.agentbox/secrets.env`
+  // into process.env first — the SDK reads from process.env and most users
+  // keep secrets in a project file rather than their shell rc.
+  ensureDaytonaEnvLoaded();
+  try {
+    // Daytona() reads DAYTONA_API_KEY / DAYTONA_JWT_TOKEN + DAYTONA_ORGANIZATION_ID
+    // from env.
+    const created = target.length > 0 ? new Daytona({ target }) : new Daytona();
+    clients.set(target, created);
+    return created;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // The interactive prompt in `agentbox daytona login` handles first-run
+    // setup; this error path is for non-TTY callers (CI, scripts) where the
+    // prompt was skipped.
+    throw new Error(
+      `Daytona credentials not configured: ${msg}\n` +
+        `Run \`agentbox daytona login\` interactively, or set DAYTONA_API_KEY in the environment.`,
+    );
   }
-  return client;
 }
 
 async function getSandbox(id: string): Promise<Sandbox> {
@@ -220,8 +233,17 @@ export const daytonaBackend: CloudBackend = {
             ? { volumes: req.volumes.map(toDaytonaVolumeMount) }
             : {}),
           labels: { 'agentbox.name': req.name },
+          // Daytona auto-stops a sandbox after N minutes of INACTIVITY (its own
+          // default is 15). The host keepalive loop pushes this forward via
+          // `renewTimeout` while an agent is working, so only a genuinely idle
+          // box lapses. 0 disables it entirely.
+          ...(typeof req.timeoutMs === 'number'
+            ? { autoStopInterval: Math.max(0, Math.round(req.timeoutMs / 60_000)) }
+            : {}),
         };
-        const client = getClient();
+        // `create` places the sandbox in its CLIENT's region — the `regionId`
+        // create param is ignored — and only `us-east-1` has linux-vm runners.
+        const client = getClient(req.location ?? '');
         // The first-time Dockerfile.box snapshot build is ~41 layers and pulls
         // Chromium — comfortably 5+ minutes wall time. Daytona's default ready
         // timeout is too short for that; override with 15 min so a cold build
@@ -265,6 +287,18 @@ export const daytonaBackend: CloudBackend = {
             );
           }
         }
+        // The image path builds a Dockerfile through Daytona's declarative
+        // builder, which is CONTAINER-ONLY. Falling through to it when the user
+        // asked for a VM would hand them a container box that silently can't
+        // pause — so refuse, and point at the bake that produces a VM base.
+        if (!snapshotName && req.sandboxClass === 'linux-vm') {
+          throw new Error(
+            `no linux-vm base snapshot for daytona: Daytona can only build a VM snapshot from a ` +
+              `prebuilt image, not from a Dockerfile, so there is nothing to boot.\n` +
+              `Run \`agentbox prepare --provider daytona\` to bake one, or set ` +
+              `\`agentbox config set box.daytonaClass container\` to use the container class.`,
+          );
+        }
         const sandbox = snapshotName
           ? await client.create({ snapshot: snapshotName, ...snapshotParams }, { timeout: 900 })
           : await client.create(
@@ -274,7 +308,20 @@ export const daytonaBackend: CloudBackend = {
                 ...(req.onLog ? { onSnapshotCreateLogs: req.onLog } : {}),
               },
             );
-        return { sandboxId: sandbox.id };
+        // Record the class of the snapshot the box ACTUALLY booted from, not the
+        // requested one — a user who flips `box.daytonaClass` while
+        // `box.imageDaytona` still points at a snapshot of the other class would
+        // otherwise have us persist a lie, and pause() would then pick the wrong
+        // call. Prepared state is the only place the bake's class is written down.
+        const prepared = readPreparedDaytonaState();
+        const bootedClass =
+          snapshotName && snapshotName === prepared?.base?.imageRef
+            ? prepared.extras?.class
+            : req.sandboxClass;
+        return {
+          sandboxId: sandbox.id,
+          ...(bootedClass ? { sandboxClass: bootedClass } : {}),
+        };
       },
       { retryOnAmbiguous: false, attemptTimeoutMs: 900_000 },
     );
@@ -373,19 +420,35 @@ export const daytonaBackend: CloudBackend = {
   },
 
   async pause(h: CloudHandle): Promise<void> {
-    // Our pause == cold storage (Daytona archive). The tradeoff is documented
-    // in CloudBackend's interface comment.
+    // The two classes need different calls and each rejects the other's:
+    //   - linux-vm: `pause()` freezes CPU + memory, so running processes and
+    //     tmux sessions survive a resume. It cannot be archived
+    //     ("Sandboxes in this region or class cannot be archived").
+    //   - container: no pause primitive; `archive()` moves it to cold storage
+    //     (filesystem only) — the historical AgentBox behavior.
+    //
+    // `h.sandboxClass` comes off the box record. It's absent for records written
+    // before the class existed and for the keepalive loop's synthetic handles,
+    // so fall back to trying both rather than guessing wrong.
     return retry(
       'pause',
       async () => {
         const sb = await getSandbox(h.sandboxId);
-        await sb.archive();
+        if (h.sandboxClass === 'linux-vm') return sb.pause();
+        if (h.sandboxClass === 'container') return sb.archive();
+        try {
+          await sb.pause();
+        } catch {
+          await sb.archive();
+        }
       },
       { attemptTimeoutMs: 60_000 },
     );
   },
 
   async resume(h: CloudHandle): Promise<void> {
+    // `start()` resumes both classes — a paused VM thaws (memory intact), an
+    // archived container is restored from cold storage.
     return retry(
       'resume',
       async () => {
@@ -393,6 +456,27 @@ export const daytonaBackend: CloudBackend = {
         await sb.start();
       },
       { attemptTimeoutMs: 60_000 },
+    );
+  },
+
+  /**
+   * Hold off Daytona's auto-stop while the in-box agent is working.
+   *
+   * Daytona's timeout is an INACTIVITY window, not an absolute deadline like
+   * vercel's/e2b's, so there is nothing to extend to a target time — the box
+   * simply needs to look active. `refreshActivity()` resets that clock, which
+   * grants another full `autoStopInterval`. So both deadline args are unused:
+   * the host loop calls us precisely when it wants the box kept alive, and that
+   * call is the whole signal.
+   */
+  async renewTimeout(h: CloudHandle): Promise<void> {
+    await retry(
+      'renewTimeout',
+      async () => {
+        const sb = await getSandbox(h.sandboxId);
+        await sb.refreshActivity();
+      },
+      { attemptTimeoutMs: 30_000 },
     );
   },
 

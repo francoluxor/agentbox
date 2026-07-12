@@ -29,6 +29,7 @@
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
+    "@agentbox/config": "workspace:*",
     "@agentbox/core": "workspace:*",
     "@agentbox/sandbox-cloud": "workspace:*",
     "@agentbox/sandbox-core": "workspace:*",

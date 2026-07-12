@@ -58,10 +58,21 @@ export interface CloudProvisionRequest {
    */
   size?: string;
   /**
-   * Backend-interpreted datacenter / region. Only Hetzner reads it today
-   * (`nbg1`, `fsn1`, …); other backends have a fixed or account-level region.
+   * Backend-interpreted datacenter / region. Hetzner reads it as a datacenter
+   * (`nbg1`, `fsn1`, …); Daytona as a region (`us`, `eu`, `us-east-1`) that
+   * also selects which SDK client target is used, since `create` takes its
+   * region from the client rather than a param. Other backends have a fixed or
+   * account-level region.
    */
   location?: string;
+  /**
+   * Backend-interpreted sandbox class. Only Daytona reads it: `linux-vm` (real
+   * pause/resume, one region, no volume mounts) or `container` (archivable,
+   * Dockerfile-buildable). The class is a property of the *snapshot* the box
+   * boots from, so this is the class the caller expects — the backend still
+   * derives the truth from the prepared state and records that.
+   */
+  sandboxClass?: string;
   /**
    * Backend-interpreted resource grouping to place the box in. Only DigitalOcean
    * reads it today (a Project name or UUID, from `box.digitaloceanProject`);
@@ -118,6 +129,17 @@ export interface CloudHandle {
    * whitelist. Omitted by backends without a per-box firewall.
    */
   inbound?: InboundPolicy;
+  /**
+   * Daytona sandbox class (`linux-vm` | `container`), persisted on the record
+   * and threaded back in so lifecycle ops can branch without an extra API call.
+   * It cannot be read off the SDK's `Sandbox` (the class lives only on the
+   * api-client DTO), and the two classes need different calls: a VM pauses and
+   * cannot be archived; a container archives and cannot be paused.
+   *
+   * Absent for non-Daytona backends and for records written before the class
+   * existed — `pause()` falls back to trying both.
+   */
+  sandboxClass?: string;
 }
 
 export type CloudState = 'running' | 'paused' | 'stopped' | 'missing';
