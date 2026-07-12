@@ -9,6 +9,17 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [0.24.6] - 2026-07-12
+
+### Fixed
+
+- `self-update` no longer deletes the box image. It's content-addressed, so an
+  update that doesn't change the build context now costs nothing — and when the
+  context *has* changed, `doctor` and the app both flag it as stale (fix with
+  `agentbox prepare --provider docker`) instead of it surfacing at create.
+- `agentbox install` no longer offers to install the menu-bar app when it's
+  already installed; it offers an update only when one is actually available.
+
 ## [0.24.5] - 2026-07-12
 
 ### Fixed
