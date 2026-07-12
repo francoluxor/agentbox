@@ -7,6 +7,67 @@ Status legend:
 - 🟡 **friction** — has a workaround; smooths UX when fixed.
 - 🟢 **polish** — nice-to-have / cleanup / aesthetics.
 
+## Linux-VM sandbox class — PoC findings (2026-07-12)
+
+Daytona added a second sandbox **class** (`linux-vm` beside the default `container`). PoC run live
+against `@daytona/sdk@0.196.0` before writing any provider code. Every claim below is measured, not
+read off the docs — several contradict the docs.
+
+**Green (VM works, and is fast):**
+
+| Probe | Result |
+|---|---|
+| GHCR box image → VM snapshot | **66s** (vs ~7 min for today's container Dockerfile build) |
+| `pause()` / `start()` | 5s / 1s. A running `sleep` **and** a live tmux session survive — real memory freeze |
+| Cold snapshot (`_experimental_createSnapshot`) | stop 4s → capture **2s** → `active`. Endpoint is live again (it 404'd when §5.1.1 was written) |
+| Restore from that snapshot | 1s; filesystem intact; the restored box is **still a VM** (class inherits) |
+| toolbox `exec` | runs as `vscode`, `HOME=/home/vscode` — same as container |
+| `fs.uploadFile`, `getPreviewLink`, `getSignedPreviewUrl`, `createSshAccess` | all work |
+| DinD | `dockerd` is **already running** at boot; `vscode` is in the `docker` group; `docker run hello-world` works with no sudo |
+| `archive()` on a VM | Rejected — *"Sandboxes in this region or class cannot be archived"* |
+
+**Three constraints that shape the implementation:**
+
+1. **`linux-vm` exists in exactly one region: `us-east-1`.** Both shared regions (`us` — the
+   default — and `eu`) return *"No runners are configured in region '<r>' for sandbox class
+   'linux-vm'"*. Scope is contained, though: `get` / `exec` / `list` / lifecycle are
+   **region-agnostic** (a default-target client reaches a `us-east-1` VM fine, and `list()` spans
+   regions). Only two calls are region-sensitive — `snapshot.create` needs `regionId`, and
+   `daytona.create` takes its region from the **client target** (`new Daytona({ target })`; the
+   `regionId` create param is ignored). So: a per-target client cache, not per-box region plumbing.
+
+2. **Volume mounts are silently ignored on `linux-vm`.** `create({ volumes: [...] })` is *accepted*,
+   the mount is echoed back in the sandbox DTO — and the path simply does not exist in the guest
+   (nothing in the mount table). Today every Daytona box mounts the org-scoped
+   `agentbox-credentials` volume, so **VM boxes must push credentials with `uploadFile` at create
+   instead** — the shape Hetzner already uses (it has no shared-volume primitive either).
+
+3. **The VM rootfs conversion strips setuid bits — `sudo` is mode `755`, so it cannot escalate.**
+   Only `mount`, `umount`, `su` keep theirs. This breaks the agent-static seed (installing
+   `/etc/claude-code/CLAUDE.md` needs root), and breaks the passwordless-sudo the in-box agent is
+   told it has. `create({ user: 'root' })` is **not** a way out — the sandbox fails to start.
+   The fix is the docker socket, which we already have: a privileged container repairs it, and the
+   repair **persists into the baked snapshot**:
+   ```
+   docker run --rm --privileged -v /:/host alpine \
+     sh -c 'chown root:root /host/usr/bin/sudo && chmod 4755 /host/usr/bin/sudo'
+   ```
+   Verified: `sudo -n id -un` → `root` afterwards, and it survives stop → snapshot → restore.
+   (Minor: `sudo` also warns `unable to resolve host sandbox` — add the hostname to `/etc/hosts` in
+   the same bake step.)
+
+**Also confirmed:** the declarative builder really is container-only. `snapshot.create({ image:
+Image.fromDockerfile(...), sandboxClass: LINUX_VM })` fails with `build snapshot: rpc error: code =
+Unauthenticated` — but *only once you're in a region that has VM runners*; elsewhere the region
+error masks it. So a VM base **must** come from a prebuilt registry image, which is why the bake
+targets the public multi-arch `ghcr.io/madarco/agentbox/box:sha-<fingerprint>` that
+`.github/workflows/box-image.yml` already publishes (amd64 present; anonymous pull confirmed).
+
+Consequence for §5.1.1 below: **no longer blocked** — cold snapshot-from-sandbox works on both
+classes now.
+
+---
+
 ## Already landed (for context — not in backlog)
 
 `create --provider daytona` · `list` (with `PROVIDER` column distinguishing `docker` / `daytona` rows) · `status` · `inspect` · `url --print` · `pause`/`unpause`/`stop`/`start` · `destroy` (with sync stop+delete) · `shell` (incl. `-- <cmd>` one-shot) · `claude attach`/`start`, `codex attach`/`start`, `opencode attach`/`start` (via SSH + tmux) · `cp` both directions (file + dir, via `provider.uploadPath`/`downloadPath`) · `download` bulk workspace pull (via `provider.downloadDirContents`) · in-box `agentbox-ctl git push` (host bundle pull-back executor with `askPrompt` gate) · `relay restart` rehydrates cloud pollers from persisted state · `agentbox daytona login` interactive credential setup (auto-prompts on first `--provider daytona`, persists to `~/.agentbox/secrets.env`, never harvests creds from project `.env` files).

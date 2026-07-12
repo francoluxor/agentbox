@@ -23,7 +23,7 @@
 import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { Image } from '@daytonaio/sdk';
+import { Image } from '@daytona/sdk';
 import type { PrepareOptions, PrepareResult } from '@agentbox/core';
 import {
   claudeInstallFingerprint,

@@ -1,10 +1,10 @@
 /**
  * Daytona `CloudBackend` — maps the provider-neutral cloud primitives onto
- * `@daytonaio/sdk`. Lazy SDK client + lazy sandbox handle resolution so
+ * `@daytona/sdk`. Lazy SDK client + lazy sandbox handle resolution so
  * importing this module costs nothing until a daytona-tagged box does something.
  */
 
-import { Daytona, DaytonaNotFoundError, Image, SandboxState, type Sandbox } from '@daytonaio/sdk';
+import { Daytona, DaytonaNotFoundError, Image, SandboxState, type Sandbox } from '@daytona/sdk';
 import type { CloudSandboxSummary } from '@agentbox/core';
 import type {
   CloudBackend,
@@ -92,10 +92,14 @@ async function maybeGetSandbox(id: string): Promise<Sandbox | null> {
 }
 
 /**
- * Map Daytona's `SandboxState` (16 fine-grained values incl. transitional ones)
- * onto our 4-value `CloudState`. Transitional states ('starting', 'creating')
- * are reported as 'running' so callers don't ping-pong; 'archived' maps to
- * 'paused' (our pause is Daytona's archive).
+ * Map Daytona's `SandboxState` (fine-grained, incl. transitional values) onto
+ * our 4-value `CloudState`. Transitional states ('starting', 'creating') are
+ * reported as 'running' so callers don't ping-pong.
+ *
+ * Both of Daytona's cold states collapse to our 'paused': `archived` is what a
+ * container box gets (our pause == Daytona's archive), `paused` is the real
+ * VM freeze. A linux-vm box can never be archived and a container box can never
+ * be paused, so the two are mutually exclusive per box — see `pause()`.
  */
 function mapState(s: SandboxState | string | undefined): CloudState {
   switch (s) {
@@ -108,11 +112,14 @@ function mapState(s: SandboxState | string | undefined): CloudState {
     case SandboxState.PULLING_SNAPSHOT:
     case SandboxState.PENDING_BUILD:
     case SandboxState.STOPPING:
+    case SandboxState.RESUMING:
       return 'running';
     case SandboxState.STOPPED:
       return 'stopped';
     case SandboxState.ARCHIVED:
     case SandboxState.ARCHIVING:
+    case SandboxState.PAUSED:
+    case SandboxState.PAUSING:
       return 'paused';
     case SandboxState.DESTROYED:
     case SandboxState.DESTROYING:
@@ -321,12 +328,11 @@ export const daytonaBackend: CloudBackend = {
   async list(): Promise<CloudSandboxSummary[]> {
     return retry('list', async () => {
       const client = getClient();
-      // `client.list()` returns `PaginatedSandboxes { items: Sandbox[] }`
-      // (page 1 by default). For prune we don't need multi-page traversal
-      // yet — sandboxes per org are bounded; if that changes, loop on page.
-      const page = await client.list();
-      const items = Array.isArray(page) ? page : (page.items ?? []);
-      return items.map((sb): CloudSandboxSummary => {
+      // `client.list()` is an AsyncIterableIterator that pages internally (it
+      // was a single awaited page before SDK 0.196). It spans regions, so one
+      // pass sees `us` container boxes and `us-east-1` VM boxes alike.
+      const items: CloudSandboxSummary[] = [];
+      for await (const sb of client.list()) {
         const summary: CloudSandboxSummary = { sandboxId: sb.id };
         const raw = sb as unknown as {
           name?: string;
@@ -338,8 +344,9 @@ export const daytonaBackend: CloudBackend = {
         if (friendly) summary.name = friendly;
         if (raw.createdAt) summary.createdAt = raw.createdAt;
         if (typeof raw.state === 'string') summary.state = mapState(raw.state);
-        return summary;
-      });
+        items.push(summary);
+      }
+      return items;
     });
   },
 

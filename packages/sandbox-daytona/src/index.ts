@@ -1,6 +1,6 @@
 /**
  * The Daytona Cloud sandbox provider. A thin `CloudBackend` over
- * `@daytonaio/sdk`, composed via `@agentbox/sandbox-cloud`'s `createCloudProvider`
+ * `@daytona/sdk`, composed via `@agentbox/sandbox-cloud`'s `createCloudProvider`
  * for everything provider-agnostic (workspace seeding, ctl launch, state).
  */
 
