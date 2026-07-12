@@ -58,21 +58,28 @@ export function sshOptArgs(target: SshTargetArgs): string[] {
     // A dedicated known_hosts only makes sense when we also isolate the global
     // one; without `knownHosts` we deliberately fall through to the user's.
     out.push(
-      '-o', 'StrictHostKeyChecking=accept-new',
-      '-o', `UserKnownHostsFile=${target.knownHosts}`,
-      '-o', 'GlobalKnownHostsFile=/dev/null',
+      '-o',
+      'StrictHostKeyChecking=accept-new',
+      '-o',
+      `UserKnownHostsFile=${target.knownHosts}`,
+      '-o',
+      'GlobalKnownHostsFile=/dev/null',
     );
   }
   out.push(
-    '-o', 'BatchMode=yes',
-    '-o', 'LogLevel=ERROR',
+    '-o',
+    'BatchMode=yes',
+    '-o',
+    'LogLevel=ERROR',
     // Detect a dead/stalled peer and drop the connection instead of hanging
     // forever. If the host's IP flaps mid-command (roaming Wi-Fi, VPN toggle)
     // the return traffic is silently dropped and the ssh channel would
     // otherwise block with no EOF — seen as an `exec` that never returns.
     // 15s * 4 = a ~60s fail-fast so callers (retry wrappers, cleanup) can react.
-    '-o', 'ServerAliveInterval=15',
-    '-o', 'ServerAliveCountMax=4',
+    '-o',
+    'ServerAliveInterval=15',
+    '-o',
+    'ServerAliveCountMax=4',
   );
   // `-o Port=` rather than `-p`, because scp spells the same flag `-P`.
   if (target.port !== undefined) {
@@ -151,11 +158,7 @@ export async function scpUpload(
   remotePath: string,
   opts: SshExecOptions = {},
 ): Promise<void> {
-  const argv = [
-    ...sshOptArgs(target),
-    localPath,
-    `${sshDestination(target)}:${remotePath}`,
-  ];
+  const argv = [...sshOptArgs(target), localPath, `${sshDestination(target)}:${remotePath}`];
   const res = await execa('scp', argv, { reject: false, timeout: opts.timeoutMs });
   if (res.exitCode !== 0) {
     throw new Error(
@@ -171,11 +174,7 @@ export async function scpDownload(
   localPath: string,
   opts: SshExecOptions = {},
 ): Promise<void> {
-  const argv = [
-    ...sshOptArgs(target),
-    `${sshDestination(target)}:${remotePath}`,
-    localPath,
-  ];
+  const argv = [...sshOptArgs(target), `${sshDestination(target)}:${remotePath}`, localPath];
   const res = await execa('scp', argv, { reject: false, timeout: opts.timeoutMs });
   if (res.exitCode !== 0) {
     throw new Error(

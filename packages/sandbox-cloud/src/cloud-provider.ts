@@ -583,6 +583,11 @@ export function createCloudProvider(
       const projectOpt = req.providerOptions?.['project'];
       const project =
         typeof projectOpt === 'string' && projectOpt.trim() !== '' ? projectOpt.trim() : undefined;
+      // SSH destination whose docker engine runs the box (remote-docker's
+      // `docker:<host>` / `--remote-host` / `box.remoteDockerHost`).
+      const hostOpt = req.providerOptions?.['remoteHost'];
+      const host =
+        typeof hostOpt === 'string' && hostOpt.trim() !== '' ? hostOpt.trim() : undefined;
 
       // Per-box tokens: `relayToken` authenticates the in-box agent to its
       // in-sandbox relay (`/events`, `/rpc` bearer); `bridgeToken` separately
@@ -675,6 +680,7 @@ export function createCloudProvider(
           size,
           location,
           project,
+          host,
           inbound,
           timeoutMs,
           exposePorts: exposeServicePorts,

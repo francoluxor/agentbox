@@ -115,32 +115,38 @@ export class SshTunnelManager {
     }
 
     const connectTimeout = opts.connectTimeoutSeconds ?? 10;
-    const argv = [
-      '-fNT',
-      '-M',
-      '-S', controlPath,
-    ];
+    const argv = ['-fNT', '-M', '-S', controlPath];
     // A provider that mints its own key pins the host key too. One that rides
     // the user's `~/.ssh/config` (remote-docker) must inherit BOTH — see
     // `sshOptArgs` in ./ssh-exec.ts.
     if (opts.identity) {
       argv.push(
-        '-i', opts.identity,
-        '-o', 'StrictHostKeyChecking=accept-new',
-        '-o', `UserKnownHostsFile=${knownHosts}`,
-        '-o', 'GlobalKnownHostsFile=/dev/null',
+        '-i',
+        opts.identity,
+        '-o',
+        'StrictHostKeyChecking=accept-new',
+        '-o',
+        `UserKnownHostsFile=${knownHosts}`,
+        '-o',
+        'GlobalKnownHostsFile=/dev/null',
       );
     }
     if (opts.port !== undefined) {
       argv.push('-o', `Port=${String(opts.port)}`);
     }
     argv.push(
-      '-o', 'BatchMode=yes',
-      '-o', 'LogLevel=ERROR',
-      '-o', 'ExitOnForwardFailure=yes',
-      '-o', 'ServerAliveInterval=30',
-      '-o', 'ServerAliveCountMax=3',
-      '-o', `ConnectTimeout=${String(connectTimeout)}`,
+      '-o',
+      'BatchMode=yes',
+      '-o',
+      'LogLevel=ERROR',
+      '-o',
+      'ExitOnForwardFailure=yes',
+      '-o',
+      'ServerAliveInterval=30',
+      '-o',
+      'ServerAliveCountMax=3',
+      '-o',
+      `ConnectTimeout=${String(connectTimeout)}`,
       opts.vpsUser ? `${opts.vpsUser}@${opts.vpsHost}` : opts.vpsHost,
     );
     const res = await execa('ssh', argv, { reject: false });
@@ -175,9 +181,12 @@ export class SshTunnelManager {
     }
     const localPort = await pickFreePort();
     const argv = [
-      '-O', 'forward',
-      '-L', `${HOST}:${String(localPort)}:${HOST}:${String(remotePort)}`,
-      '-S', tunnel.controlPath,
+      '-O',
+      'forward',
+      '-L',
+      `${HOST}:${String(localPort)}:${HOST}:${String(remotePort)}`,
+      '-S',
+      tunnel.controlPath,
       'dummy', // the target host is ignored when -O is used, but argv needs one
     ];
     const res = await execa('ssh', argv, { reject: false });
@@ -228,9 +237,12 @@ export class SshTunnelManager {
     const localPort = tunnel.forwards.get(remotePort);
     if (localPort === undefined) return;
     const argv = [
-      '-O', 'cancel',
-      '-L', `${HOST}:${String(localPort)}:${HOST}:${String(remotePort)}`,
-      '-S', tunnel.controlPath,
+      '-O',
+      'cancel',
+      '-L',
+      `${HOST}:${String(localPort)}:${HOST}:${String(remotePort)}`,
+      '-S',
+      tunnel.controlPath,
       'dummy',
     ];
     await execa('ssh', argv, { reject: false });

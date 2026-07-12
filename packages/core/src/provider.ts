@@ -340,6 +340,13 @@ export interface PrepareOptions {
    */
   location?: string;
   /**
+   * SSH destination whose Docker engine the bake targets, for providers whose
+   * "cloud" is a machine the user supplies (`remote-docker`). Resolved by the
+   * CLI from `--provider docker:<host>` / `--remote-host` / `box.remoteDockerHost`.
+   * Ignored by every provider that owns its own infrastructure.
+   */
+  host?: string;
+  /**
    * Progress sink for the build-side log stream (Docker BuildKit output,
    * Daytona's `onLogs` chunks). Wired to the CLI spinner / latest.log.
    */

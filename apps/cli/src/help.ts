@@ -36,8 +36,10 @@ export const HELP_GROUPS: HelpGroup[] = [
       'docker',
       'daytona',
       'hetzner',
+      'digitalocean',
       'vercel',
       'e2b',
+      'remote-docker',
     ],
   },
 ];
