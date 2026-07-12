@@ -26,6 +26,7 @@
     "integrations-linear",
     "---Providers---",
     "local-docker",
+    "remote-docker",
     "hetzner",
     "digitalocean",
     "daytona",
