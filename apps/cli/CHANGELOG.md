@@ -9,6 +9,26 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [0.24.1] - 2026-07-12
+
+### Fixed
+
+- **Menu-bar app updates were never offered.** The app is released separately from
+  the CLI, so an app-only release bumps no CLI version — and the post-update
+  prompt only fired on a CLI version change. A new app build could sit published
+  and unnoticed indefinitely, and you had to know to run `agentbox install app`
+  yourself. An interactive command now offers to install a newer app build even
+  when the CLI itself is unchanged, reading the existing daily check (no extra
+  network on the command path). Answering no remembers that build, so you are
+  asked once, not on every command — and only the app is reinstalled, without
+  touching the box image or the relay.
+- Menu-bar app **0.1.10** — "Check for Updates…" now reports the app as well as
+  the CLI (it only ever compared the CLI, so it could report "up to date" while
+  the app itself was stale), and offers `agentbox install app` when only the app
+  is behind. Also fixes the DigitalOcean provider settings, which sent the API
+  token under the wrong key and always failed with "token is required". Update
+  with `agentbox install app` (or accept the new prompt).
+
 ## [0.24.0] - 2026-07-12
 
 ### Added
