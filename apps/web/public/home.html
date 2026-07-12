@@ -472,8 +472,11 @@
     display: flex; flex-wrap: wrap; gap: 0;
     border-bottom: 1px solid var(--line);
     font-family: var(--mono); font-size: 12px; color: var(--muted);
+    /* tighter than the .pad default: the envs list only clears the 920px frame
+       on one row at this inset — at 40px it wraps the os cell onto a second row */
+    padding-left: 16px; padding-right: 16px;
   }
-  .meta span { padding: 9px 18px; border-right: 1px solid var(--line); }
+  .meta span { padding: 9px 10px; border-right: 1px solid var(--line); }
   .meta span:last-child { border-right: none; }
   .meta b { color: var(--ink); font-weight: 500; }
   @media (max-width: 640px){
@@ -1150,7 +1153,7 @@
   <div class="meta pad">
     <span><b>npm</b> @madarco/agentbox</span>
     <span><b>license</b> MIT</span>
-    <span class="m-envs"><b>envs</b> Docker · Vercel · Hetzner · E2B · Daytona</span>
+    <span class="m-envs"><b>envs</b> Docker · Vercel · Hetzner · DigitalOcean · E2B · Daytona</span>
     <span class="m-os"><b>os</b> macOS · Linux</span>
   </div>
 
@@ -1268,6 +1271,7 @@
                   <div class="pop-it on" data-name="Docker" data-hint="local, connected"><span class="ck">✓</span>Docker<span class="hint">local · connected</span></div>
                   <div class="pop-it" data-name="Vercel" data-hint="connected"><span class="ck">✓</span>Vercel<span class="hint">connected</span></div>
                   <div class="pop-it" data-name="Hetzner" data-hint="connected"><span class="ck">✓</span>Hetzner<span class="hint">connected</span></div>
+                  <div class="pop-it" data-name="DigitalOcean" data-hint="connected"><span class="ck">✓</span>DigitalOcean<span class="hint">connected</span></div>
                   <div class="pop-it dis" data-name="Daytona" data-hint="needs API key"><span class="ck">✓</span>Daytona<span class="hint">needs API key</span></div>
                 </div>
               </div>
@@ -1315,6 +1319,7 @@
       <span class="ls-item"><img class="si" src="https://cdn.simpleicons.org/docker/16181c" alt="" width="15" height="15">Docker</span>
       <span class="ls-item"><img class="si" src="https://cdn.simpleicons.org/vercel/16181c" alt="" width="15" height="15">Vercel</span>
       <span class="ls-item"><img class="si" src="https://cdn.simpleicons.org/hetzner/16181c" alt="" width="15" height="15">Hetzner</span>
+      <span class="ls-item"><img class="si" src="https://cdn.simpleicons.org/digitalocean/16181c" alt="" width="15" height="15">DigitalOcean</span>
       <span class="ls-item"><svg><use href="#i-cube"></use></svg>Daytona</span>
     </div>
     <div class="ls-group">
@@ -1661,6 +1666,7 @@ AgentBox gives you the whole machine: a live browser you can screen-share into, 
                   <div class="pop-it on" data-name="Docker" data-hint="local, connected"><span class="ck">✓</span>Docker<span class="hint">local · connected</span></div>
                   <div class="pop-it" data-name="Vercel" data-hint="connected"><span class="ck">✓</span>Vercel<span class="hint">connected</span></div>
                   <div class="pop-it" data-name="Hetzner" data-hint="connected"><span class="ck">✓</span>Hetzner<span class="hint">connected</span></div>
+                  <div class="pop-it" data-name="DigitalOcean" data-hint="connected"><span class="ck">✓</span>DigitalOcean<span class="hint">connected</span></div>
                   <div class="pop-it dis" data-name="Daytona" data-hint="needs API key"><span class="ck">✓</span>Daytona<span class="hint">needs API key</span></div>
                 </div>
               </div>
@@ -1721,7 +1727,7 @@ AgentBox gives you the whole machine: a live browser you can screen-share into, 
       <div class="cgroup-h">create &amp; run</div>
       <div class="crow"><code>agentbox create</code><span>Create and start a new agent box.</span></div>
       <div class="crow"><code>agentbox claude</code><span>Create a sandboxed box and launch Claude Code in a detachable tmux session.</span></div>
-      <div class="crow"><code>agentbox &lt;provider&gt; claude</code><span>Launch sandboxed boxes on <b>Vercel</b>, <b>Hetzner</b>, <b>Daytona</b> or local <b>Docker</b>.</span></div>
+      <div class="crow"><code>agentbox &lt;provider&gt; claude</code><span>Launch sandboxed boxes on <b>Vercel</b>, <b>Hetzner</b>, <b>DigitalOcean</b>, <b>Daytona</b> or local <b>Docker</b>.</span></div>
       <div class="crow"><code>agentbox &lt;provider&gt; codex</code><span>Same, for <b>Codex</b> and <b>Open Code</b> — any agent, any provider.</span></div>
       <div class="crow"><code>agentbox claude attach 2</code><span>Reattach to a running Claude session on box <span class="mono">2</span>.</span></div>
 
@@ -1752,13 +1758,13 @@ AgentBox gives you the whole machine: a live browser you can screen-share into, 
     <div class="ptable">
       <table>
         <thead>
-          <tr><th>capability</th><th class="col">local docker</th><th class="col">hetzner</th><th class="col">daytona</th><th class="col">vercel</th></tr>
+          <tr><th>capability</th><th class="col">local docker</th><th class="col">hetzner</th><th class="col">digitalocean</th><th class="col">daytona</th><th class="col">vercel</th></tr>
         </thead>
         <tbody>
-          <tr><td>support</td><td><span class="yes">full</span></td><td><span class="yes">full</span></td><td><span class="warn">partial</span></td><td><span class="yes">full</span></td></tr>
-          <tr><td>base image</td><td>Dockerfile</td><td>setup script (Ubuntu)</td><td>Dockerfile</td><td>setup script</td></tr>
-          <tr><td>live snapshots</td><td><span class="yes">yes</span></td><td><span class="yes">yes</span></td><td>experimental</td><td><span class="yes">yes</span></td></tr>
-          <tr><td>private preview urls</td><td><span class="yes">portless · orbstack</span></td><td><span class="yes">portless</span></td><td><span class="yes">native</span></td><td><span class="yes">native</span></td></tr>
+          <tr><td>support</td><td><span class="yes">full</span></td><td><span class="yes">full</span></td><td><span class="yes">full</span></td><td><span class="warn">partial</span></td><td><span class="yes">full</span></td></tr>
+          <tr><td>base image</td><td>Dockerfile</td><td>setup script (Ubuntu)</td><td>setup script (Ubuntu)</td><td>Dockerfile</td><td>setup script</td></tr>
+          <tr><td>live snapshots</td><td><span class="yes">yes</span></td><td><span class="yes">yes</span></td><td><span class="yes">yes</span></td><td>experimental</td><td><span class="yes">yes</span></td></tr>
+          <tr><td>private preview urls</td><td><span class="yes">portless · orbstack</span></td><td><span class="yes">portless</span></td><td><span class="yes">portless</span></td><td><span class="yes">native</span></td><td><span class="yes">native</span></td></tr>
         </tbody>
       </table>
     </div>
