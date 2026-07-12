@@ -9,6 +9,31 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [0.24.2] - 2026-07-12
+
+### Fixed
+
+- **A box created from the hub or the menu-bar app could fail instantly, showing a
+  Node stack trace as its status and a progress bar that crept forward forever.**
+  The relay/hub is a long-lived daemon, but `npm install -g` (what `self-update`
+  runs) replaces the package directory underneath it — so a daemon left running
+  across an update ends up in a deleted working directory, and every box-create
+  worker it spawned inherited that and died before it started. Workers now run
+  from a fixed directory, so an update no longer poisons creates from a hub that
+  was already running.
+- A create worker that died mid-flight stayed `running` forever — nothing ever
+  marked it failed, so `agentbox queue list` kept reporting it as in progress and
+  the app's progress card waited on a job that was never coming back. Dead workers
+  are now detected while the queue runs, not only when the relay restarts, and
+  report as `failed`.
+- The job-log stream now sends a keep-alive during quiet stretches. A cloud create
+  is legitimately silent for a minute or more (a VM boots, an SSH wait), which a
+  client could mistake for a dead connection — it would reconnect, the log replayed
+  from the start, and the progress bar jumped ahead while the text appeared frozen.
+- Menu-bar app **0.1.11** — the create progress bar no longer double-counts a
+  replayed log or advances on blank lines, and DigitalOcean creates now use a
+  calibrated bar instead of a generic fallback. Update with `agentbox install app`.
+
 ## [0.24.1] - 2026-07-12
 
 ### Fixed
