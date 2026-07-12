@@ -212,8 +212,20 @@ Implementation: per-agent option added to the `.option(...)` chain + provider-na
 
 **API note**: Replaces the old `agentbox daytona publish-snapshot`, which used `sandbox._experimental_createSnapshot(name)` — Daytona deprecated that endpoint (`POST /api/sandbox/<id>/snapshot` now 404s). The new path uses the documented snapshot API (https://www.daytona.io/docs/en/snapshots/) and never touches the broken experimental method.
 
-### 5.1.1 ⏭️ Sandbox workspace-state checkpoint (deferred — no stable API)
-The user-facing need: snapshot a running box after `npm install` / build cache warm-up, so future `create`s skip the same setup. Daytona's `@daytonaio/sdk@0.179.0` has no stable API for this — only `sandbox._experimental_createSnapshot` (broken upstream as above). `@daytonaio/api-client@0.27.1`'s `sandbox-api` exposes zero snapshot endpoints; the only documented snapshot path is `snapshot.create({ name, image|buildInfo })`, which builds from an `Image`, not a running sandbox. **Workaround design** for later: capture `/workspace` as a tarball + build a derived snapshot whose Dockerfile COPYs the tarball into `/workspace`. Not in this iteration. Existing cloud-checkpoint code in `packages/sandbox-cloud/src/cloud-provider.ts` still calls `backend.createSnapshot(handle, name)` (the broken experimental method) — same upstream-blocked state.
+### 5.1.1 ✅ Sandbox workspace-state checkpoint (done — 2026-07-12)
+The user-facing need: snapshot a running box after `npm install` / build cache warm-up, so future `create`s skip the same setup.
+
+~~Deferred — no stable API~~. The endpoint this was blocked on is **live again** (Daytona changelog V0.165.0, "Sandbox Fork & Snapshot Endpoints"); it 404'd when this item was written. `sandbox._experimental_createSnapshot` now works on **both** sandbox classes, capturing the filesystem in ~2 s. No tarball workaround needed.
+
+Two properties made it more than a re-enable, so `daytonaProvider` overrides the generic cloud checkpoint (`makeDaytonaCheckpoint`, `packages/sandbox-daytona/src/checkpoint.ts`):
+
+- **A cold capture requires the sandbox STOPPED, and the API won't stop it for you.** So the backend stops → captures → starts. That kills the in-box `ctl`, dockerd, VNC and the agent's tmux session, so the checkpoint must `reconnect(box)` afterwards or the user is left with a running sandbox whose services are all dead. `agentbox checkpoint` now warns daytona users the box will reboot, as it already did for vercel.
+- **A snapshot name must never be reused** (see the PoC findings at the top). The Daytona-side name carries a nonce; the user-facing checkpoint name is unchanged, and the manifest maps one to the other.
+
+The hot (filesystem **+ memory**, linux-vm only) variant would skip the stop entirely, but it needs `includeMemory`, which the published TS SDK silently drops — out of reach until upstream fixes the wrapper. Tracked below.
+
+### 5.1.2 ⏭️ Hot (memory-inclusive) checkpoints — blocked on the SDK
+`linux-vm` supports a filesystem **+ memory** snapshot of a *running* sandbox — no stop, no reboot, and the restored box comes back with its process state intact. That is strictly better than the cold path for our use case (it's the true analogue of `docker commit`'s no-pause default). The REST layer supports it (`CreateSandboxSnapshot { name, includeMemory }`), but `@daytona/sdk@0.196.0`'s wrapper takes only `(name, timeout)` and **drops the third argument on the floor**, so it cannot be reached from the SDK. Options when we want it: call `@daytona/api-client`'s `SandboxApi.createSandboxSnapshot` directly, or wait for an upstream fix (worth filing).
 
 ### 5.2 ✅ Cloud boxes auto-start in-box dockerd (done)
 ~~Manual `dockerd &` / explicit `agentbox dockerd <box>`~~ — `cloudProvider.create()` and `cloudProvider.start()` now call `launchCloudDockerdDaemon({ backend, handle, timeoutMs: 60_000 })` automatically (best-effort, after `launchCloudCtlDaemon`, before VNC). Mirrors the docker provider's always-on pattern (`packages/sandbox-docker/src/create.ts:788` + `lifecycle.ts:276`).

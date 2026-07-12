@@ -195,7 +195,96 @@ users who go through `install` skip both the error and the nudge.
 
 ## 2. The Daytona shape
 
-### 2.0 Sizing
+### 2.0 Sandbox class: `linux-vm` (default) vs `container`
+
+Daytona has two sandbox **classes**, and they are not interchangeable — the class
+is a property of the *snapshot*, and a snapshot of one class cannot create a
+sandbox of the other. `box.daytonaClass` picks it; changing it forces a re-bake.
+
+|                                | `linux-vm` (default)                                     | `container`                          |
+| ------------------------------ | -------------------------------------------------------- | ------------------------------------ |
+| `agentbox pause` / `unpause`   | **real VM freeze** — CPU *and memory*; running processes and tmux sessions survive | archive (cold storage, filesystem only) |
+| Archive                        | not supported (rejected)                                  | yes — this is what pause maps to     |
+| Checkpoints                    | cold snapshot (~2 s capture)                              | cold snapshot                        |
+| Base bake                      | ~1 min (boots a prebuilt registry image)                  | ~7 min (Dockerfile build)            |
+| Region                         | **`us-east-1` only**                                      | any (`us`, `eu`, …)                  |
+| Volume mounts                  | **silently ignored** (see 2.2)                            | supported                            |
+
+**The region lock is the tradeoff.** Only `us-east-1` has linux-vm runners; asking
+for a VM anywhere else fails at create with *"No runners are configured in region
+'<r>' for sandbox class 'linux-vm'"*. So `box.daytonaRegion` defaults to empty and
+is *derived* from the class — `linux-vm` ⇒ `us-east-1`, `container` ⇒ the account
+default — rather than to a constant that would contradict the default class. If you
+need EU data residency or lower EU latency, set `box.daytonaClass=container`.
+
+Only two calls are region-sensitive: `snapshot.create` (takes `regionId`) and
+`Daytona.create` (takes its region from the **client target**, not a param — the
+`regionId` create param is ignored). `get`/`exec`/`list`/lifecycle are
+region-agnostic, so the backend keeps a small per-target client cache rather than
+threading a region through every call.
+
+#### Why the VM base is baked from a registry image
+
+Daytona builds a VM snapshot **only from a prebuilt registry image**, never from a
+Dockerfile — handing `snapshot.create` a declarative `Image` with
+`sandboxClass: LINUX_VM` fails with `build snapshot: rpc error: code =
+Unauthenticated`. So `prepare --provider daytona` can't use the declarative
+builder for VMs. Instead it boots the box image CI already publishes to GHCR
+(`ghcr.io/madarco/agentbox/box:sha-<docker-context-sha>`, public + amd64), then
+seeds and cold-snapshots it — the same "boot, provision in place, snapshot" shape
+Hetzner and Vercel use.
+
+Consequences:
+
+- **`--claude-install npm` can't be a VM.** CI publishes only the native variant
+  (the workflow passes no build-arg). Prepare falls back to a container snapshot
+  with a warning rather than dead-ending you.
+- **Monorepo contributors can't bake a VM by default.** A local `pnpm build`
+  regenerates `packages/ctl/dist/bin.cjs`, which shifts the build-context sha off
+  the one CI published, so no tag matches. Prepare falls back to a container.
+  Set **`box.daytonaVmBaseImage`** to bake from an explicit image instead (this is
+  also the knob for a private registry mirror).
+
+#### `sudo` is repaired at bake time
+
+Converting the container image into a VM rootfs **strips setuid bits**: `sudo`
+lands as mode 0755 and cannot escalate (only `mount`/`umount`/`su` keep theirs).
+That would break the seed (`/etc/claude-code/CLAUDE.md` needs root) and the
+passwordless sudo the in-box agent is told it has. `create({ user: 'root' })` is
+not a way out — the sandbox then fails to start.
+
+The bake repairs it through the docker socket, which the image already grants
+(`dockerd` runs at boot; `vscode` is in the `docker` group, which is
+root-equivalent by construction):
+
+```
+docker run --rm --privileged -v /:/host alpine \
+  sh -c 'chown root:root /host/usr/bin/sudo && chmod 4755 /host/usr/bin/sudo'
+```
+
+The fix persists into the snapshot, so every box booted from that base has working
+sudo from the start.
+
+#### Snapshot names are never reused
+
+Recreating a snapshot under a **recently deleted name** yields one that reports
+`active` but cannot boot (*"Sandbox failed to start: internal error"*) — Daytona's
+delete is async and racing it corrupts the new snapshot. So every capture takes a
+fresh name (a nonce suffix), the bake reaps the snapshot it replaces *after* the
+new one is recorded, and a base that fails to boot is treated as poisoned and
+rebuilt once under a never-used name.
+
+#### Idle handling
+
+`box.daytonaTimeoutMs` (default **25 min**, `0` disables) is passed as Daytona's
+`autoStopInterval`. Unlike vercel/e2b — where the timeout is an absolute session
+TTL — Daytona's is an **inactivity window**, so the backend's `renewTimeout` maps
+to `refreshActivity()`: there's no deadline to extend, the box just has to look
+active. The existing host keepalive loop (`packages/relay/src/cloud-keepalive.ts`)
+drives it, so a working agent holds its box open and only a genuinely idle one
+lapses to stopped.
+
+### 2.0.1 Sizing
 
 Default sandbox shape is **2 vCPU / 4 GB RAM / 8 GB disk**. Size is
 `cpu-mem-disk` GB (e.g. `4-8-20`), from `--size` / `box.sizeDaytona` /
@@ -234,16 +323,36 @@ the host workspace into the sandbox:
 
 ### 2.2 Agent state split: snapshot bake + credentials volume
 
+> **`linux-vm` caveat — volume mounts are silently ignored.** A VM sandbox
+> *accepts* `create({ volumes: [...] })`, echoes the mount back in its DTO, and
+> then the path simply does not exist in the guest. So the shared
+> `agentbox-credentials` volume described below **does not work on VM boxes**.
+> They take the per-create upload path instead — the same one Hetzner uses (it has
+> no shared-volume primitive either): `ensureAgentVolumesForCloud` is told the
+> volume is unusable and returns no mounts, and credentials are uploaded into
+> `~/.agentbox-creds/<agent>/` at create time. The practical difference: a
+> credential refresh no longer propagates to already-running boxes by rewriting one
+> volume — each box gets its own copy at create. Container boxes are unaffected.
+
 Agent state lives in two distinct places:
 
 **Static config** (plugins, skills, marketplaces, settings, `_claude.json`,
-codex `config.toml` + `prompts/`, opencode `config/`) is **layered into a
-published Daytona snapshot** at `agentbox prepare --provider daytona` time
-via the documented snapshot API — see `prepareDaytona` in
-`packages/sandbox-daytona/src/prepare.ts`. It builds an `Image` fluently
-(`Image.fromDockerfile(Dockerfile.box).addLocalFile(...).runCommands(...)`)
-and calls `daytona.snapshot.create({ name, image })`. Daytona handles the
-build + register in one server-side operation; the resulting snapshot
+codex `config.toml` + `prompts/`, opencode `config/`) is baked into the base
+snapshot at `agentbox prepare --provider daytona` time — see `prepareDaytona` in
+`packages/sandbox-daytona/src/prepare.ts`. **How** it's baked depends on the class:
+
+- **container** — layered with Daytona's declarative builder:
+  `Image.fromDockerfile(Dockerfile.box)` + `.dockerfileCommands(...)`, then
+  `daytona.snapshot.create({ name, image })`. Build + register in one server-side
+  operation.
+- **linux-vm** — the declarative builder is unavailable (§2.0), so the seed runs
+  against a *live* sandbox instead: boot the GHCR base, upload the staged
+  tarballs, extract them, cold-snapshot the result. The upload+extract step is
+  provider-neutral (`seedAgentStaticIntoCloudBox` in `@agentbox/sandbox-cloud`,
+  built on just `uploadFile` + `exec`), so Hetzner can adopt it in place of its
+  inline ssh/scp copy.
+
+Either way the resulting snapshot
 already contains `/home/vscode/.claude/`, `/home/vscode/.codex/`, and
 `/home/vscode/.local/share/opencode/` populated from the host's filtered
 config. Subsequent boxes boot from this snapshot — no per-create extract.
