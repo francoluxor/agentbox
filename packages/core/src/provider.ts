@@ -237,6 +237,16 @@ export interface AttachSpec {
    * leaking it into the process argv.
    */
   env?: Record<string, string>;
+  /**
+   * Typed into the PTY immediately after spawn, as if the user had entered it.
+   *
+   * For transports that only allocate a terminal for a *shell* session and not
+   * for an exec one (Daytona's SSH gateway: `ssh -tt host 'cmd'` lands on "not
+   * a tty", while `ssh -tt host` gets a real /dev/pts). Interactive attach needs
+   * a terminal — tmux exits instantly without one — so those backends connect
+   * with NO remote command and hand the command over on stdin instead.
+   */
+  initialInput?: string;
   /** Optional cleanup invoked after the PTY detaches. */
   cleanup?: () => Promise<void>;
 }

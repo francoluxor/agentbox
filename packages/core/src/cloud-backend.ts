@@ -429,4 +429,25 @@ export interface CloudBackend {
    * rather than waiting for a lapse that will never arrive.
    */
   readonly timeoutModel?: 'absolute' | 'inactivity';
+
+  /**
+   * Set when the backend's `attachArgv` transport allocates a terminal for a
+   * SHELL session but not for an EXEC one — i.e. passing a remote command costs
+   * you the TTY.
+   *
+   * Daytona's SSH gateway does exactly this (measured 2026-07-13):
+   *
+   *     ssh -tt <token>@ssh.app.daytona.io 'tty'   ->  not a tty
+   *     ssh -tt <token>@ssh.app.daytona.io          ->  /dev/pts/1
+   *
+   * Interactive attach can't live with that — `tmux attach` exits immediately
+   * with no terminal, which the wrapper reads as the box dropping, so it
+   * reconnects into the same instant failure. `buildAttach` therefore drops the
+   * remote command for these backends and sends it as `AttachSpec.initialInput`
+   * instead, connecting to a plain login shell that does get a terminal.
+   *
+   * Only interactive attach is affected. Detached session-creation and `logs`
+   * pass a command deliberately and want no TTY, so they keep the exec form.
+   */
+  readonly attachExecLacksTty?: boolean;
 }

@@ -397,6 +397,7 @@ export const shellCommand = new Command('shell')
             command: spec.argv[0],
             dockerArgv: spec.argv.slice(1),
             env: spec.env,
+            initialInput: spec.initialInput,
             relayBaseUrl: RELAY_HOST_URL,
             boxId: box.id,
             boxName: box.name,

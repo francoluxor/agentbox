@@ -529,6 +529,15 @@ export const daytonaBackend: CloudBackend = {
   timeoutModel: 'inactivity',
 
   /**
+   * Daytona's SSH gateway gives a shell session a terminal but an exec session
+   * none — `ssh -tt <token>@ssh.app.daytona.io 'tty'` answers "not a tty" while
+   * the same connection with no command lands on /dev/pts/1. So interactive
+   * attach connects command-less and gets its command via stdin. See
+   * `CloudBackend.attachExecLacksTty`.
+   */
+  attachExecLacksTty: true,
+
+  /**
    * Hold off Daytona's auto-stop while the in-box agent is working.
    *
    * Daytona's timeout is an INACTIVITY window, not an absolute deadline like

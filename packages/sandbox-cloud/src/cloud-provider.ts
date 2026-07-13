@@ -1387,9 +1387,31 @@ export function createCloudProvider(
       // skipping TTY when a command is provided would break tmux + readline).
       // A `detached` build only creates the session (no `exec tmux attach`), so
       // it runs as a plain non-interactive exec — no TTY needed.
+      // Backends whose transport withholds a TTY from an exec session (daytona's
+      // SSH gateway) can't take the command as an argument at all: without a
+      // terminal `tmux attach` exits on the spot, the wrapper reads that as the
+      // box dropping, and it reconnects straight back into the same failure.
+      // Connect to a bare login shell — which DOES get a terminal — and hand the
+      // command over on stdin. Detached builds and `logs` genuinely want a
+      // non-interactive exec, so they keep passing the command.
+      const viaStdin = backend.attachExecLacksTty === true && !opts?.detached && kind !== 'logs';
+      // The command is far too big and too quote-heavy to type at an interactive
+      // prompt — the shell's line editor mangles it and lands on a `>`
+      // continuation. So stage it as a script first (a plain exec, which needs no
+      // TTY and is not affected by any of this) and type one short line to run it.
+      const scriptPath = viaStdin ? attachScriptPath(opts?.sessionName ?? kind) : '';
+      if (viaStdin) {
+        const b64 = Buffer.from(inner, 'utf8').toString('base64');
+        await backend.exec(
+          handle,
+          `printf %s '${b64}' | base64 -d > ${scriptPath} && chmod 700 ${scriptPath}`,
+        );
+      }
       const argv = opts?.detached
         ? [...baseArgv.slice(1), inner]
-        : [...baseArgv.slice(1), '-t', inner];
+        : viaStdin
+          ? [...baseArgv.slice(1)]
+          : [...baseArgv.slice(1), '-t', inner];
       // Keep argv[0] = the program name (ssh) so callers can split.
       const fullArgv = [baseArgv[0]!, ...argv];
       const cleanup = backend.revokeAttachToken
@@ -1397,7 +1419,13 @@ export function createCloudProvider(
             await backend.revokeAttachToken!(handle, baseArgv);
           }
         : undefined;
-      return { argv: fullArgv, cleanup };
+      return {
+        argv: fullArgv,
+        // `exec` so the script replaces the login shell: the user never lands
+        // back on a prompt when they detach from tmux.
+        ...(viaStdin ? { initialInput: `exec bash ${scriptPath}\n` } : {}),
+        cleanup,
+      };
     },
 
     async uploadPath(
@@ -1680,6 +1708,16 @@ function makeCloudCheckpoint(backend: CloudBackend): ProviderCheckpoint {
 export function hostTermForCloud(): string {
   const t = process.env['TERM'];
   return t && /^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(t) ? t : 'xterm-256color';
+}
+
+/**
+ * Where the attach command is staged in the box for `attachExecLacksTty`
+ * backends. Per session name, so concurrent attaches to different agents don't
+ * overwrite each other; re-attaching the same session just rewrites the file.
+ */
+export function attachScriptPath(sessionName: string): string {
+  const safe = sessionName.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 40) || 'attach';
+  return `/tmp/agentbox-attach-${safe}.sh`;
 }
 
 export function renderInnerCommand(kind: AttachKind, opts?: BuildAttachOptions): string {

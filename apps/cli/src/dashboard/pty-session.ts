@@ -125,6 +125,7 @@ export class PtySession {
     onExit: (boxId: string) => void,
     cleanup?: () => Promise<void>,
     env?: NodeJS.ProcessEnv,
+    initialInput?: string,
   ) {
     this.boxId = boxId;
     this.keepAlive = keepAlive;
@@ -164,6 +165,11 @@ export class PtySession {
     this.pty.onExit(() => {
       if (!this.disposed) onExit(this.boxId);
     });
+    // Hand the remote shell its command (daytona: its SSH gateway only gives a
+    // terminal to a shell session, so the attach carries no remote command and
+    // the command arrives here instead). The pty buffers the write, so it lands
+    // whether or not the shell has finished printing its prompt.
+    if (initialInput) this.pty.write(initialInput);
   }
 
   write(bytes: Buffer): void {

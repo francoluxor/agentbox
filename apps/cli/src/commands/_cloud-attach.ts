@@ -285,7 +285,12 @@ export async function cloudAgentAttach(args: CloudAgentAttachArgs): Promise<void
         // best-effort
       }
     }
-    return { command: spec.argv[0]!, argv: spec.argv.slice(1), env: spec.env };
+    return {
+      command: spec.argv[0]!,
+      argv: spec.argv.slice(1),
+      env: spec.env,
+      initialInput: spec.initialInput,
+    };
   };
 
   try {
@@ -294,6 +299,7 @@ export async function cloudAgentAttach(args: CloudAgentAttachArgs): Promise<void
       command: spec.argv[0],
       dockerArgv: spec.argv.slice(1),
       env: spec.env,
+      initialInput: spec.initialInput,
       relayBaseUrl: RELAY_HOST_URL,
       boxId: box.id,
       boxName: box.name,
