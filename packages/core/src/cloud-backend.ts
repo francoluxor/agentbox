@@ -404,4 +404,29 @@ export interface CloudBackend {
     targetDeadlineEpochMs: number,
     currentDeadlineEpochMs: number,
   ): Promise<void>;
+
+  /**
+   * How the provider's session timeout behaves — which decides who stops an
+   * idle box.
+   *
+   *   - `absolute` (default): the timeout is a deadline. It expires on its own
+   *     schedule and nothing the box RECEIVES defers it, so an idle box lapses
+   *     by itself once the host stops renewing. vercel + e2b.
+   *   - `inactivity`: the timeout is an idle window that ANY request to the
+   *     sandbox resets. daytona.
+   *
+   * The distinction is load-bearing, not cosmetic. The host relay long-polls
+   * every cloud box's preview URL continuously (`CloudBoxPoller`), and on an
+   * inactivity-model provider that traffic is itself activity — it resets the
+   * clock on every poll, so the box NEVER lapses and an idle one bills until
+   * something stops it. Measured on Daytona 2026-07-13: an untouched sandbox
+   * (autoStopInterval=3) stopped at 3.0 min, while an otherwise identical one
+   * receiving a request every 15 s was still running at 7 min and only stopped
+   * 3 min after the requests ceased.
+   *
+   * So for `inactivity` backends the host must do the stopping itself: the
+   * keepalive loop pauses a box whose agent has been idle for a full window,
+   * rather than waiting for a lapse that will never arrive.
+   */
+  readonly timeoutModel?: 'absolute' | 'inactivity';
 }

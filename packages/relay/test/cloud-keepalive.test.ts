@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  selectBoxesToIdlePause,
   selectBoxesToRenew,
   startCloudKeepaliveLoop,
   type CloudBoxLookup,
@@ -74,6 +75,36 @@ describe('selectBoxesToRenew', () => {
     const a = selectBoxesToRenew([e], WINDOW, NOW);
     const b = selectBoxesToRenew([e], WINDOW, NOW + 30_000);
     expect(a[0]!.targetDeadlineEpochMs).toBe(b[0]!.targetDeadlineEpochMs);
+  });
+});
+
+describe('selectBoxesToIdlePause', () => {
+  it('picks a box idle for a full window', () => {
+    const e = entry({ boxId: 'a', agentState: 'idle', lastActivityMs: NOW - WINDOW });
+    expect(selectBoxesToIdlePause([e], WINDOW, NOW)).toEqual(['a']);
+  });
+
+  it('is the exact complement of the renew rule — never both on one tick', () => {
+    // Still inside the window: renewed, not paused.
+    const fresh = entry({ boxId: 'a', agentState: 'idle', lastActivityMs: NOW - WINDOW + 1 });
+    expect(selectBoxesToRenew([fresh], WINDOW, NOW).map((d) => d.boxId)).toEqual(['a']);
+    expect(selectBoxesToIdlePause([fresh], WINDOW, NOW)).toEqual([]);
+
+    // Past the window: no longer renewed, so now it's ours to pause.
+    const stale = entry({ boxId: 'b', agentState: 'idle', lastActivityMs: NOW - WINDOW });
+    expect(selectBoxesToRenew([stale], WINDOW, NOW)).toEqual([]);
+    expect(selectBoxesToIdlePause([stale], WINDOW, NOW)).toEqual(['b']);
+  });
+
+  it('never picks an active box, however stale its timestamp', () => {
+    const e = entry({ boxId: 'a', agentState: 'active', lastActivityMs: NOW - 100 * WINDOW });
+    expect(selectBoxesToIdlePause([e], WINDOW, NOW)).toEqual([]);
+  });
+
+  it('never picks a box with no agent state or no timestamp', () => {
+    const noState = entry({ boxId: 'a', agentState: null, lastActivityMs: NOW - 10 * WINDOW });
+    const noStamp = entry({ boxId: 'b', agentState: 'idle', lastActivityMs: null });
+    expect(selectBoxesToIdlePause([noState, noStamp], WINDOW, NOW)).toEqual([]);
   });
 });
 
@@ -237,5 +268,129 @@ describe('startCloudKeepaliveLoop', () => {
     await new Promise((r) => setTimeout(r, 40));
     await loop.stop();
     expect(calls).toBe(0);
+  });
+
+  // An inactivity-model backend (daytona) can't stop its own idle boxes while
+  // we poll them, so the loop does it. See `CloudBackend.timeoutModel`.
+  function inactivityBackend(onPause: (h: CloudHandle) => void): CloudBackend {
+    return {
+      name: 'daytona',
+      timeoutModel: 'inactivity',
+      renewTimeout: async () => {},
+      pause: async (h: CloudHandle) => {
+        onPause(h);
+      },
+    } as unknown as CloudBackend;
+  }
+
+  /** Idle long enough to be past the window (never renewed, so never held open). */
+  function idleStatus(idleForMs: number): BoxStatusStore {
+    return statusFor({
+      claude: { state: 'idle', updatedAt: new Date(NOW - idleForMs).toISOString() },
+    } as Partial<BoxStatusSnapshot>);
+  }
+
+  it('pauses an idle box on an inactivity-model backend', async () => {
+    const registry = new BoxRegistry();
+    registerCloud(registry, 'b1', 'daytona');
+    const paused: string[] = [];
+    const got = deferred<void>();
+    const backend = inactivityBackend((h) => {
+      paused.push(h.sandboxId);
+      got.resolve();
+    });
+
+    const loop = startCloudKeepaliveLoop({
+      registry,
+      statusStore: idleStatus(WINDOW + 60_000),
+      log: () => {},
+      intervalMs: 5,
+      now: () => NOW,
+      loadConfig: async () => CFG,
+      resolveBackend: async () => backend,
+      lookupBox: lookupAtNow,
+    });
+
+    await got.promise;
+    await loop.stop();
+    expect(paused).toEqual(['sb-123']);
+  });
+
+  it('pauses such a box only once, not on every tick', async () => {
+    // A paused box keeps reporting the same idle snapshot, so it would re-qualify
+    // forever without the already-paused guard.
+    const registry = new BoxRegistry();
+    registerCloud(registry, 'b1', 'daytona');
+    let pauses = 0;
+    const backend = inactivityBackend(() => {
+      pauses++;
+    });
+
+    const loop = startCloudKeepaliveLoop({
+      registry,
+      statusStore: idleStatus(WINDOW + 60_000),
+      log: () => {},
+      intervalMs: 5,
+      now: () => NOW,
+      loadConfig: async () => CFG,
+      resolveBackend: async () => backend,
+      lookupBox: lookupAtNow,
+    });
+
+    await new Promise((r) => setTimeout(r, 60)); // many ticks
+    await loop.stop();
+    expect(pauses).toBe(1);
+  });
+
+  it('never pauses an idle box on an absolute-TTL backend (it lapses by itself)', async () => {
+    const registry = new BoxRegistry();
+    registerCloud(registry, 'b1', 'vercel');
+    let pauses = 0;
+    const backend = {
+      name: 'vercel',
+      renewTimeout: async () => {},
+      pause: async () => {
+        pauses++;
+      },
+    } as unknown as CloudBackend;
+
+    const loop = startCloudKeepaliveLoop({
+      registry,
+      statusStore: idleStatus(WINDOW + 60_000),
+      log: () => {},
+      intervalMs: 5,
+      now: () => NOW,
+      loadConfig: async () => CFG,
+      resolveBackend: async () => backend,
+      lookupBox: lookupAtNow,
+    });
+
+    await new Promise((r) => setTimeout(r, 40));
+    await loop.stop();
+    expect(pauses).toBe(0);
+  });
+
+  it('leaves a box with no agent state alone (an attached shell is not idle evidence)', async () => {
+    const registry = new BoxRegistry();
+    registerCloud(registry, 'b1', 'daytona');
+    let pauses = 0;
+    const backend = inactivityBackend(() => {
+      pauses++;
+    });
+
+    const loop = startCloudKeepaliveLoop({
+      registry,
+      statusStore: statusFor({}), // no claude/codex/opencode key at all
+      log: () => {},
+      intervalMs: 5,
+      now: () => NOW,
+      loadConfig: async () => CFG,
+      resolveBackend: async () => backend,
+      lookupBox: lookupAtNow,
+    });
+
+    await new Promise((r) => setTimeout(r, 40));
+    await loop.stop();
+    expect(pauses).toBe(0);
   });
 });

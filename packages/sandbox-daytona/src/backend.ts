@@ -480,6 +480,15 @@ export const daytonaBackend: CloudBackend = {
   },
 
   /**
+   * Daytona's `autoStopInterval` is an idle window that any request to the
+   * sandbox resets — including the host relay's own continuous preview-URL
+   * polling, which therefore holds every tracked box open forever. The host
+   * keepalive loop reads this and pauses an idle box itself instead of waiting
+   * for a lapse that never comes. See `CloudBackend.timeoutModel`.
+   */
+  timeoutModel: 'inactivity',
+
+  /**
    * Hold off Daytona's auto-stop while the in-box agent is working.
    *
    * Daytona's timeout is an INACTIVITY window, not an absolute deadline like

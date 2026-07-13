@@ -13,6 +13,13 @@
  *   - active agent -> hold the death-time a full window ahead of NOW.
  *   - idle agent   -> let it lapse a window after it went idle, then stop.
  *
+ * "Let it lapse" only works when the provider's timeout is an absolute deadline
+ * (vercel, e2b). Daytona's is an INACTIVITY window that any request resets —
+ * and this host polls every cloud box's preview URL continuously, so its clock
+ * never runs out and an idle box would bill forever. For those backends
+ * (`CloudBackend.timeoutModel === 'inactivity'`) the loop performs the stop
+ * itself: see `selectBoxesToIdlePause`.
+ *
  * The additive-vs-absolute SDK split (vercel `extendTimeout` adds to the
  * current deadline and can't read remaining; e2b `setTimeout` sets TTL from
  * now) is resolved by tracking each box's intended deadline in memory and
@@ -108,6 +115,36 @@ export function selectBoxesToRenew(
 }
 
 /**
+ * Pure selection: the boxes an `inactivity`-model backend would have stopped by
+ * itself, had our own polling not kept resetting its idle clock (see
+ * `CloudBackend.timeoutModel`). The host pauses these instead.
+ *
+ * Deliberately the exact complement of {@link selectBoxesToRenew}'s idle case:
+ * that one renews an idle box until `lastActivity + window`, and this one takes
+ * over from there. So a box is never both renewed and paused on the same tick.
+ *
+ * Only a box with a definite `idle` agent is a candidate. A box with no agent
+ * state at all (`null` — a plain `agentbox shell` box, or one whose reporter
+ * hasn't spoken yet) is left alone: we have no evidence it's unused, and an
+ * attached human is exactly the case we must not pull the floor out from under.
+ * An `active` agent (incl. waiting/question) is never a candidate.
+ */
+export function selectBoxesToIdlePause(
+  entries: KeepaliveScanEntry[],
+  windowMs: number,
+  now: number,
+): string[] {
+  return entries
+    .filter(
+      (e) =>
+        e.agentState === 'idle' &&
+        e.lastActivityMs != null &&
+        now - e.lastActivityMs >= windowMs,
+    )
+    .map((e) => e.boxId);
+}
+
+/**
  * Collapse the multi-agent `WorkingAgentState` into the coarse keepalive state.
  * Mirrors autopause's `coarsePauseState`, but here any live session expecting
  * attention (waiting/question/end-plan) counts as `active` so we never let it
@@ -181,6 +218,10 @@ export function startCloudKeepaliveLoop(
   const tracked = new Map<string, number>();
   // Per-box "don't attempt before" time, set after a failed renew.
   const backoffUntil = new Map<string, number>();
+  // Boxes we idle-paused, keyed by the `lastActivityMs` they had when we did.
+  // A paused box keeps reporting that same idle snapshot, so without this it
+  // would re-qualify for pausing on every tick.
+  const idlePaused = new Map<string, number | null>();
   // Resolved backends cached across ticks (one dynamic import per provider).
   const backendCache = new Map<string, CloudBackend | null>();
 
@@ -228,6 +269,7 @@ export function startCloudKeepaliveLoop(
       // Drop per-box state for boxes that are gone (destroyed / forgotten).
       for (const id of [...tracked.keys()]) if (!live.has(id)) tracked.delete(id);
       for (const id of [...backoffUntil.keys()]) if (!live.has(id)) backoffUntil.delete(id);
+      for (const id of [...idlePaused.keys()]) if (!live.has(id)) idlePaused.delete(id);
 
       const decisions = selectBoxesToRenew(entries, windowMs, now);
       for (const d of decisions) {
@@ -271,6 +313,44 @@ export function startCloudKeepaliveLoop(
           backoffUntil.set(d.boxId, now + FAILURE_BACKOFF_MS);
           const msg = err instanceof Error ? err.message : String(err);
           log(`cloud-keepalive: renew box ${d.boxId} (${d.backend}) failed: ${msg}`);
+        }
+      }
+
+      // Stop the idle boxes an `inactivity`-model backend can't stop by itself,
+      // because our own preview polling keeps resetting its clock.
+      const byId = new Map(entries.map((e) => [e.boxId, e]));
+      for (const boxId of selectBoxesToIdlePause(entries, windowMs, now)) {
+        const e = byId.get(boxId);
+        if (!e) continue;
+        const backend = await resolveCached(e.backend);
+        if (backend?.timeoutModel !== 'inactivity') continue; // absolute TTL: it lapses on its own
+
+        // Don't re-pause a box we already paused: it stays `idle` with the same
+        // `updatedAt` while paused, so it would otherwise re-qualify every tick.
+        // Any fresh agent activity (a resume that does real work) moves
+        // `lastActivityMs` and re-arms it.
+        if (idlePaused.get(boxId) === e.lastActivityMs) continue;
+        const until = backoffUntil.get(boxId);
+        if (until != null && now < until) continue;
+
+        const lookup = await lookupBox(boxId);
+        if (!lookup) continue;
+        try {
+          await backend.pause({ sandboxId: lookup.sandboxId });
+          idlePaused.set(boxId, e.lastActivityMs);
+          backoffUntil.delete(boxId);
+          const mins = e.lastActivityMs != null ? Math.round((now - e.lastActivityMs) / 60_000) : null;
+          log(
+            `cloud-keepalive: paused idle box ${boxId} (${e.backend})` +
+              (mins != null ? ` after ~${String(mins)}m idle` : '') +
+              ` — ${e.backend}'s own idle timer never fires while we poll it`,
+          );
+        } catch (err) {
+          // Already stopped, mid-transition, or a transient SDK error. Back off
+          // rather than retry every tick; `probeState` stays authoritative.
+          backoffUntil.set(boxId, now + FAILURE_BACKOFF_MS);
+          const msg = err instanceof Error ? err.message : String(err);
+          log(`cloud-keepalive: pause idle box ${boxId} (${e.backend}) failed: ${msg}`);
         }
       }
     } catch (err) {
