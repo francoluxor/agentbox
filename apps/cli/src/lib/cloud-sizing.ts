@@ -1,7 +1,6 @@
 import {
   resolveBoxSize,
   resolveDaytonaClass,
-  resolveDaytonaRegion,
   type EffectiveConfig,
 } from '@agentbox/config';
 
@@ -40,9 +39,11 @@ export interface CloudSizingFlags {
  *   it can push the deadline forward while the agent is working).
  * - **daytona**: `timeoutMs` (auto-stop inactivity window, same keepalive rail
  *   as e2b), `sandboxClass` (`linux-vm` | `container`) and `location` (region).
- *   The class and region are coupled — only `us-east-1` has linux-vm runners —
- *   so both come from `resolveDaytonaClass`/`resolveDaytonaRegion`, which own
- *   that rule.
+ *   `location` carries only an EXPLICIT `box.daytonaRegion` — the class-derived
+ *   region (`linux-vm` ⇒ `us-east-1`, the only region with VM runners) is left
+ *   to the backend, which derives it from the class it actually boots. That's
+ *   the class the base snapshot was BAKED as, which is not always the one asked
+ *   for.
  *
  * Shared by `agentbox create`, the agent-create commands (`claude` / `codex`
  * / `opencode`) and the queued-job worker so a box gets the same size and
@@ -93,7 +94,13 @@ export function cloudSizingProviderOptions(
     // only a genuinely idle one lapses.
     out.timeoutMs = cfg.box.daytonaTimeoutMs;
     out.sandboxClass = resolveDaytonaClass(cfg);
-    const region = resolveDaytonaRegion(cfg);
+    // Only an EXPLICIT region, never the class-derived one. The backend derives
+    // the region from the class it actually boots — which is the class the base
+    // snapshot was BAKED as, not the one config asks for (they diverge whenever
+    // a linux-vm bake fell back to a container). Pre-deriving `us-east-1` here
+    // sent container-base lookups to the one region with no container runners,
+    // where the snapshot reads as missing.
+    const region = (cfg.box.daytonaRegion ?? '').trim();
     if (region.length > 0) out.location = region;
   }
   return out;

@@ -25,14 +25,18 @@ function makeCfg(box: Record<string, unknown> = {}): EffectiveConfig {
 }
 
 /**
- * What every daytona call emits on top of whatever the test is asserting. The
- * class and region are coupled (only us-east-1 has linux-vm runners), and the
- * timeout rides the same keepalive rail as vercel/e2b.
+ * What every daytona call emits on top of whatever the test is asserting.
+ *
+ * No `location`: only an EXPLICIT `box.daytonaRegion` is threaded. The
+ * class-derived region (linux-vm => us-east-1, the only region with VM runners)
+ * belongs to the backend, which derives it from the class it actually boots —
+ * and that is the class the base was BAKED as, which is not always the one
+ * asked for. Pre-deriving it here sent container-base lookups to the one region
+ * with no container runners, where the snapshot reads as missing.
  */
 const DAYTONA_BASE = {
   timeoutMs: 1_500_000,
   sandboxClass: 'linux-vm',
-  location: 'us-east-1',
 };
 
 describe('cloudSizingProviderOptions', () => {
@@ -113,17 +117,37 @@ describe('cloudSizingProviderOptions', () => {
       location: 'fsn1',
     });
     // --location is a hetzner/digitalocean flag; daytona's region comes from
-    // box.daytonaRegion (coupled to the class), not from the flag.
+    // box.daytonaRegion, not from the flag.
     expect(cloudSizingProviderOptions('daytona', cfg, { location: 'fsn1' })).toEqual(DAYTONA_BASE);
+  });
+
+  it('threads only an explicitly pinned daytona region, never the class-derived one', () => {
+    // Default config asks for linux-vm, which implies us-east-1 — but that must
+    // NOT be threaded: the base may have been baked as a container (the linux-vm
+    // bake falls back when no box image is published), and us-east-1 has no
+    // container runners, so the backend would look the snapshot up in the wrong
+    // region and report it missing. The backend derives the region from the class
+    // it actually boots.
+    expect(cloudSizingProviderOptions('daytona', makeCfg())).not.toHaveProperty('location');
+    expect(cloudSizingProviderOptions('daytona', makeCfg({ daytonaRegion: 'eu' }))).toEqual({
+      ...DAYTONA_BASE,
+      location: 'eu',
+    });
   });
 });
 
 describe('daytona class / region coupling', () => {
-  it('pins linux-vm boxes to us-east-1 — the only region with VM runners', () => {
-    expect(cloudSizingProviderOptions('daytona', makeCfg())).toMatchObject({
-      sandboxClass: 'linux-vm',
-      location: 'us-east-1',
-    });
+  it('threads the requested class but leaves the derived region to the backend', () => {
+    // linux-vm implies us-east-1 (the only region with VM runners), but deriving
+    // that HERE is what broke: the base may have been baked as a container (the
+    // linux-vm bake falls back when no box image is published for the build), and
+    // us-east-1 has no container runners — so the snapshot lookup went to the
+    // wrong region and the create died with "no linux-vm base snapshot" right
+    // after a successful `prepare`. The backend derives the region from the class
+    // it actually boots.
+    const out = cloudSizingProviderOptions('daytona', makeCfg());
+    expect(out).toMatchObject({ sandboxClass: 'linux-vm' });
+    expect('location' in out).toBe(false);
   });
 
   it('emits no region for container boxes, leaving them on the account default', () => {
@@ -134,7 +158,7 @@ describe('daytona class / region coupling', () => {
     expect('location' in out).toBe(false);
   });
 
-  it('lets an explicit region override the class-derived one', () => {
+  it('threads an explicitly pinned region', () => {
     expect(
       cloudSizingProviderOptions('daytona', makeCfg({ daytonaRegion: 'eu' })),
     ).toMatchObject({ location: 'eu' });

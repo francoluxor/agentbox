@@ -5,6 +5,7 @@
  */
 
 import { Daytona, DaytonaNotFoundError, Image, SandboxState, type Sandbox } from '@daytona/sdk';
+import { DAYTONA_VM_REGION } from '@agentbox/config';
 import type { CloudSandboxSummary } from '@agentbox/core';
 import type {
   CloudBackend,
@@ -252,9 +253,42 @@ export const daytonaBackend: CloudBackend = {
             ? { autoStopInterval: Math.max(0, Math.round(req.timeoutMs / 60_000)) }
             : {}),
         };
+        // The class the base we're about to boot was ACTUALLY baked as. A
+        // snapshot's class is immutable, so this — not `box.daytonaClass` —
+        // decides what kind of box we can create. The two diverge whenever the
+        // bake fell back: with no published box image (npm install mode, or any
+        // locally shifted fingerprint) a linux-vm bake degrades to a container.
+        // Believing config over reality dead-ended the user immediately after a
+        // successful `prepare`, with "no linux-vm base snapshot — run prepare".
+        const prepared = readPreparedDaytonaState();
+        const baseRef = req.snapshot ?? req.image;
+        // Absent `class` on a recorded base = baked before classes existed, i.e.
+        // a container.
+        const bakedClass =
+          prepared?.base?.imageRef && baseRef === prepared.base.imageRef
+            ? (prepared.extras?.class ?? 'container')
+            : undefined;
+        const sandboxClass = bakedClass ?? req.sandboxClass;
+        if (bakedClass && req.sandboxClass && bakedClass !== req.sandboxClass) {
+          req.onLog?.(
+            `daytona: base '${baseRef ?? ''}' was baked as '${bakedClass}', so this box will be a ` +
+              `'${bakedClass}' one (box.daytonaClass asks for '${req.sandboxClass}'). ` +
+              `Re-bake with \`agentbox prepare --provider daytona --force\` to change it.`,
+          );
+        }
         // `create` places the sandbox in its CLIENT's region — the `regionId`
         // create param is ignored — and only `us-east-1` has linux-vm runners.
-        const client = getClient(req.location ?? '');
+        // An explicit `box.daytonaRegion` wins; otherwise derive the region from
+        // the class we are actually booting, NOT from the requested one, or a
+        // container base gets looked up in the one region that has no container
+        // runners (and then reads as "missing", which is how this surfaced).
+        const region =
+          req.location && req.location.length > 0
+            ? req.location
+            : sandboxClass === 'linux-vm'
+              ? DAYTONA_VM_REGION
+              : '';
+        const client = getClient(region);
         // The first-time Dockerfile.box snapshot build is ~41 layers and pulls
         // Chromium — comfortably 5+ minutes wall time. Daytona's default ready
         // timeout is too short for that; override with 15 min so a cold build
@@ -287,7 +321,7 @@ export const daytonaBackend: CloudBackend = {
         // loudly — silently ignoring `--size` would leave them wondering why the
         // box came up the old size.
         if (snapshotName && sizeResources) {
-          const bakedSize = readPreparedDaytonaState()?.extras?.size;
+          const bakedSize = prepared?.extras?.size;
           const requestedKey = `${String(sizeResources.cpu)}-${String(sizeResources.memory)}-${String(sizeResources.disk)}`;
           if (bakedSize !== requestedKey) {
             req.onLog?.(
@@ -302,7 +336,7 @@ export const daytonaBackend: CloudBackend = {
         // builder, which is CONTAINER-ONLY. Falling through to it when the user
         // asked for a VM would hand them a container box that silently can't
         // pause — so refuse, and point at the bake that produces a VM base.
-        if (!snapshotName && req.sandboxClass === 'linux-vm') {
+        if (!snapshotName && sandboxClass === 'linux-vm') {
           throw new Error(
             `no linux-vm base snapshot for daytona: Daytona can only build a VM snapshot from a ` +
               `prebuilt image, not from a Dockerfile, so there is nothing to boot.\n` +
@@ -319,16 +353,11 @@ export const daytonaBackend: CloudBackend = {
                 ...(req.onLog ? { onSnapshotCreateLogs: req.onLog } : {}),
               },
             );
-        // Record the class of the snapshot the box ACTUALLY booted from, not the
-        // requested one — a user who flips `box.daytonaClass` while
-        // `box.imageDaytona` still points at a snapshot of the other class would
-        // otherwise have us persist a lie, and pause() would then pick the wrong
-        // call. Prepared state is the only place the bake's class is written down.
-        const prepared = readPreparedDaytonaState();
-        const bootedClass =
-          snapshotName && snapshotName === prepared?.base?.imageRef
-            ? prepared.extras?.class
-            : req.sandboxClass;
+        // Record the class the box ACTUALLY booted as (resolved above from the
+        // base's prepared state), never the requested one — a user whose
+        // `box.daytonaClass` disagrees with the snapshot would otherwise have us
+        // persist a lie, and `pause()` would then pick the wrong call.
+        const bootedClass = sandboxClass;
         return {
           sandboxId: sandbox.id,
           ...(bootedClass ? { sandboxClass: bootedClass } : {}),
