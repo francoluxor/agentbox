@@ -35,7 +35,7 @@ jobs:
           path-to-signatures: signatures/v1/cla.json
           # Signatures are committed by the bot; they must not land on the protected main branch.
           branch: cla-signatures
-          allowlist: "*[bot]"
+          allowlist: madarco,*[bot]
           custom-notsigned-prcomment: >
             Thanks for your pull request. Before it can be merged, please read our
             [Contributor License Agreement](https://github.com/madarco/agentbox/blob/main/.github/CLA.md)
