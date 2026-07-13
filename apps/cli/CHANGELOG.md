@@ -9,6 +9,16 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [0.25.1] - 2026-07-13
+
+### Fixed
+
+- `box.claudeInstall: npm` now pulls the prebuilt box image instead of building
+  it locally every time. The pull was hard-disabled for npm mode, from back when
+  only the native image was published — most visible as the throwaway container
+  behind `claude` sign-in baking from scratch. 0.25.0 started publishing the npm
+  image; this actually uses it.
+
 ## [0.25.0] - 2026-07-13
 
 ### Breaking
