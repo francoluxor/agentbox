@@ -160,25 +160,6 @@ export async function prepareDaytona(opts: PrepareOptions): Promise<PrepareResul
   // sandbox of the other — so it belongs in the snapshot name and the cache key.
   let sandboxClass: DaytonaSandboxClass =
     opts.sandboxClass === 'container' ? 'container' : 'linux-vm';
-  // CI publishes only the native-install box image (the workflow passes no
-  // build-arg), and a VM base can only come from a published image. Rather than
-  // dead-end a user who reached for npm mode *because* the native installer was
-  // 403ing on their egress IP, fall back to the class that can still be built.
-  //
-  // Unless they named an image themselves: `box.daytonaVmBaseImage` exists
-  // precisely to supply the published image the fingerprint lookup can't find,
-  // so an explicit override outranks this guess. (Its contents are then the
-  // user's problem — the image decides how Claude is installed, not this flag.)
-  if (sandboxClass === 'linux-vm' && claudeInstall === 'npm' && !opts.vmBaseImage) {
-    log(
-      'daytona: --claude-install npm has no published box image (CI builds only the native ' +
-        'variant), and a linux-vm base must boot from one — baking a container snapshot instead. ' +
-        'It will not support pause/resume. Set `box.daytonaVmBaseImage` to bake a VM from a ' +
-        'specific published image instead.',
-    );
-    sandboxClass = 'container';
-  }
-
   const rawFingerprint = await computeDaytonaContextFingerprint();
   // Fold the install mode into the sha so native↔npm are distinct cache
   // identities (`native` leaves the hash unchanged) — the snapshot name and the
@@ -261,7 +242,7 @@ export async function prepareDaytona(opts: PrepareOptions): Promise<PrepareResul
   }
 
   if (sandboxClass === 'linux-vm') {
-    const dockerBaseSha = await computeDockerBaseSha();
+    const dockerBaseSha = await computeDockerBaseSha(claudeInstall);
     if (!dockerBaseSha) {
       throw new Error(
         'could not fingerprint the docker build context, which names the published box image ' +

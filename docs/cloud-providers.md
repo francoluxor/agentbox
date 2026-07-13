@@ -236,9 +236,13 @@ Hetzner and Vercel use.
 
 Consequences:
 
-- **`--claude-install npm` can't be a VM.** CI publishes only the native variant
-  (the workflow passes no build-arg). Prepare falls back to a container snapshot
-  with a warning rather than dead-ending you.
+- **`--claude-install npm` gets a VM too, as of the two-variant publish.** The
+  install mode is part of the image's identity (the sha is folded with
+  `claudeInstallFingerprint`, same as the docker pull path), and CI now matrixes
+  over it, so both `native` and `npm` images are published under their own
+  fingerprint tags. Only the native build claims `latest` / the version tag — it
+  is the default image. (Before this, only native was ever built, so npm mode had
+  no image to boot from and prepare fell back to a container.)
 - **Monorepo contributors can't bake a VM by default.** A local `pnpm build`
   regenerates `packages/ctl/dist/bin.cjs`, which shifts the build-context sha off
   the one CI published, so no tag matches. Prepare falls back to a container.

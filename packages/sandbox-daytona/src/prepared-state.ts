@@ -104,17 +104,22 @@ export function resolveDockerContextFilesForDaytona(): ContextFile[] | null {
 }
 
 /**
- * The raw docker build-context sha — the tag of the published GHCR box image.
+ * The docker build-context sha for a given install mode — i.e. the tag of the
+ * published GHCR box image the linux-vm base boots from.
  *
- * Deliberately NOT folded with `claudeInstallFingerprint` (unlike the daytona
- * snapshot fingerprint): CI builds the image with no `--build-arg`, so only the
- * `native` variant is ever published. An npm-install bake has no GHCR tag at
- * all, which is why the VM path falls back to the container class for it.
+ * Folded with `claudeInstallFingerprint`, exactly like the docker pull path
+ * (`pullOrBuild`): the same context built with `AGENTBOX_CLAUDE_INSTALL=npm` is
+ * a different image and carries a different tag. CI publishes both variants
+ * (`.github/workflows/box-image.yml` matrixes over the install mode), so an
+ * npm-install bake now has a tag to boot from too — it used to have none, which
+ * is why the VM path had to refuse npm outright and fall back to a container.
  */
-export async function computeDockerBaseSha(): Promise<string | null> {
+export async function computeDockerBaseSha(
+  claudeInstall: 'native' | 'npm' = 'native',
+): Promise<string | null> {
   const files = resolveDockerContextFilesForDaytona();
   if (!files) return null;
-  return computeContextSha256(files);
+  return claudeInstallFingerprint(await computeContextSha256(files), claudeInstall);
 }
 
 export interface DaytonaFingerprint {
