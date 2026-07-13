@@ -115,13 +115,17 @@ export function selectBoxesToRenew(
 }
 
 /**
- * Pure selection: the boxes an `inactivity`-model backend would have stopped by
- * itself, had our own polling not kept resetting its idle clock (see
- * `CloudBackend.timeoutModel`). The host pauses these instead.
+ * Would an `inactivity`-model backend have stopped this box by now, had our own
+ * polling not kept resetting its idle clock (see `CloudBackend.timeoutModel`)?
+ * If so the host pauses it, standing in for the provider's dead timer.
  *
- * Deliberately the exact complement of {@link selectBoxesToRenew}'s idle case:
- * that one renews an idle box until `lastActivity + window`, and this one takes
- * over from there. So a box is never both renewed and paused on the same tick.
+ * `idleWindowMs` is the BOX'S OWN idle timeout — the one it was created with
+ * (`cloud.sessionTimeoutMs`, i.e. `box.daytonaTimeoutMs`, 25 min by default) —
+ * NOT the keepalive/autopause renewal window (5 min). We are emulating the
+ * provider's timer, so we must honour the interval the user configured for it;
+ * using the renewal window would pause boxes five times sooner than
+ * `box.daytonaTimeoutMs` advertises. A window of `0` means the user disabled
+ * the idle timeout, and the caller skips the box entirely.
  *
  * Only a box with a definite `idle` agent is a candidate. A box with no agent
  * state at all (`null` — a plain `agentbox shell` box, or one whose reporter
@@ -129,19 +133,13 @@ export function selectBoxesToRenew(
  * attached human is exactly the case we must not pull the floor out from under.
  * An `active` agent (incl. waiting/question) is never a candidate.
  */
-export function selectBoxesToIdlePause(
-  entries: KeepaliveScanEntry[],
-  windowMs: number,
+export function shouldIdlePause(
+  e: KeepaliveScanEntry,
+  idleWindowMs: number,
   now: number,
-): string[] {
-  return entries
-    .filter(
-      (e) =>
-        e.agentState === 'idle' &&
-        e.lastActivityMs != null &&
-        now - e.lastActivityMs >= windowMs,
-    )
-    .map((e) => e.boxId);
+): boolean {
+  if (e.agentState !== 'idle' || e.lastActivityMs == null) return false;
+  return now - e.lastActivityMs >= idleWindowMs;
 }
 
 /**
@@ -173,6 +171,12 @@ export interface CloudBoxLookup {
   createdAtMs: number | null;
   /** Recorded effective create timeout (ms), or null when not recorded. */
   createTimeoutMs: number | null;
+  /**
+   * Provider-specific sandbox class, when the record carries one. Daytona needs
+   * it to pause: a `linux-vm` freezes, a `container` archives, and each call is
+   * rejected for the other class. Without it the backend has to guess.
+   */
+  sandboxClass?: string;
 }
 
 export interface CloudKeepaliveLoopDeps {
@@ -321,12 +325,12 @@ export function startCloudKeepaliveLoop(
 
       // Stop the idle boxes an `inactivity`-model backend can't stop by itself,
       // because our own preview polling keeps resetting its clock.
-      const byId = new Map(entries.map((e) => [e.boxId, e]));
-      for (const boxId of selectBoxesToIdlePause(entries, windowMs, now)) {
-        const e = byId.get(boxId);
-        if (!e) continue;
+      for (const e of entries) {
+        const boxId = e.boxId;
+        if (e.agentState !== 'idle') continue; // cheap reject before any I/O
         const backend = await resolveCached(e.backend);
         if (backend?.timeoutModel !== 'inactivity') continue; // absolute TTL: it lapses on its own
+        if (typeof backend.pause !== 'function') continue;
 
         // Don't re-pause a box we already paused: it stays `idle` with the same
         // `updatedAt` while paused, so it would otherwise re-qualify every tick.
@@ -338,8 +342,20 @@ export function startCloudKeepaliveLoop(
 
         const lookup = await lookupBox(boxId);
         if (!lookup) continue;
+        // The box's OWN idle timeout (box.daytonaTimeoutMs), not the renewal
+        // window — we're standing in for the provider's timer, so we wait as
+        // long as the user told the provider to wait. `0` disables it.
+        const idleWindowMs =
+          lookup.createTimeoutMs ?? (await fallbackCreateTimeoutMs(e.backend));
+        if (idleWindowMs <= 0) continue;
+        if (!shouldIdlePause(e, idleWindowMs, now)) continue;
         try {
-          await backend.pause({ sandboxId: lookup.sandboxId });
+          // Pass the recorded class: daytona freezes a linux-vm but archives a
+          // container, and each call is rejected for the other class.
+          await backend.pause({
+            sandboxId: lookup.sandboxId,
+            ...(lookup.sandboxClass ? { sandboxClass: lookup.sandboxClass } : {}),
+          });
           idlePaused.set(boxId, e.lastActivityMs);
           backoffUntil.delete(boxId);
           // Best-effort, and deliberately after the pause is already a fact: a
@@ -396,10 +412,12 @@ async function defaultLookupBox(boxId: string): Promise<CloudBoxLookup | null> {
   if (hit.kind !== 'ok') return null;
   const sandboxId = hit.box.cloud?.sandboxId;
   if (!sandboxId) return null;
+  const sandboxClass = hit.box.cloud?.sandboxClass;
   return {
     sandboxId,
     createdAtMs: toEpoch(hit.box.createdAt),
     createTimeoutMs: hit.box.cloud?.sessionTimeoutMs ?? null,
+    ...(sandboxClass ? { sandboxClass } : {}),
   };
 }
 

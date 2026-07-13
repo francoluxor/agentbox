@@ -445,6 +445,17 @@ export const daytonaBackend: CloudBackend = {
       'pause',
       async () => {
         const sb = await getSandbox(h.sandboxId);
+        // linux-vm: freeze in place, memory and all.
+        const freeze = async (): Promise<void> => {
+          await sb.pause();
+        };
+        // container: Daytona archives only a STOPPED sandbox — calling
+        // `archive()` on a running one fails with "Sandbox is not stopped", so
+        // stop it first. (`stop()` is a no-op on an already-stopped sandbox.)
+        const archive = async (): Promise<void> => {
+          await sb.stop();
+          await sb.archive();
+        };
         // Try the recorded class first, then the other. The recorded class can
         // be wrong or absent — pre-feature records, the keepalive loop's
         // synthetic handles, and a checkpoint restored while `box.daytonaClass`
@@ -453,16 +464,16 @@ export const daytonaBackend: CloudBackend = {
         // than doing something surprising, so trying both is safe.
         const preferVm = h.sandboxClass !== 'container';
         try {
-          await (preferVm ? sb.pause() : sb.archive());
+          await (preferVm ? freeze() : archive());
         } catch (err) {
           try {
-            await (preferVm ? sb.archive() : sb.pause());
+            await (preferVm ? archive() : freeze());
           } catch {
             throw err; // report the failure for the class we believed it was
           }
         }
       },
-      { attemptTimeoutMs: 60_000 },
+      { attemptTimeoutMs: 120_000 },
     );
   },
 
