@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { log } from '@clack/prompts';
+import { log, spinner } from '@clack/prompts';
 import { Command } from 'commander';
 import { loadEffectiveConfig, type UserConfig } from '@agentbox/config';
 import {
@@ -321,7 +321,8 @@ export const shellCommand = new Command('shell')
       // resolveBoxOrShift handles the `agentbox shell -- ls` case: commander
       // binds "ls" to [box], which doesn't resolve; if auto-pick succeeds we
       // treat "ls" as the first cmd token instead.
-      const { box, shifted } = await resolveBoxOrShift(idOrName);
+      // eslint-disable-next-line prefer-const -- `box` is reassigned by provider.start() below
+      let { box, shifted } = await resolveBoxOrShift(idOrName);
       const effectiveCmd = shifted && idOrName ? [idOrName, ...cmd] : cmd;
 
       // `--ssh-config` short-circuits the shell: it only writes the SSH alias
@@ -345,6 +346,26 @@ export const shellCommand = new Command('shell')
         const provider = await providerForBox(box);
         const oneShot = effectiveCmd.length > 0;
 
+        // Resume first if the box isn't running — BOTH branches below need it.
+        // `exec` goes straight at the sandbox and fails against a paused one
+        // (daytona: a 502 from the proxy), and `buildAttach` mints an SSH
+        // token/tunnel a paused sandbox can't serve either. `agentbox shell` is
+        // a normal way back into a box that's been paused — by the user, by a
+        // provider TTL, or by the relay's idle sweep — so it has to wake it, the
+        // way `cloudAgentAttach` and `cloudAgentStartDetached` already do.
+        // `start()` returns the record with refreshed preview URLs / relay
+        // tokens, so everything downstream must use IT, not the stale `box`.
+        const state = await provider.probeState(box);
+        if (state === 'missing') {
+          throw new Error(`cloud sandbox for ${box.name} is missing; was it destroyed?`);
+        }
+        if (state !== 'running') {
+          const s = spinner();
+          s.start(state === 'paused' ? 'resuming box' : 'starting box');
+          box = await provider.start(box);
+          s.stop('box running');
+        }
+
         // One-shot (`agentbox shell <box> -- cmd`) goes through the backend
         // `exec` primitive, not the interactive PTY attach. The PTY path
         // (buildAttach) always allocates a TTY and the wrapper waits for it
@@ -352,24 +373,8 @@ export const shellCommand = new Command('shell')
         // `whoami`. exec is the same primitive used at create-time and for
         // file ops; it returns when the command exits.
         if (oneShot) {
-          // Resume first if the box isn't running. `exec` goes straight at the
-          // sandbox, so against a paused one it just fails (daytona: a 502 from
-          // the proxy). Every other cloud entry point — the interactive attach
-          // below, `cloudAgentAttach`, `cloudAgentStartDetached` — already does
-          // this; the one-shot path was the hole, and a box can be paused by the
-          // user, by a provider TTL, or by the relay's idle sweep. `start()`
-          // returns the record with refreshed preview URLs / relay tokens, so
-          // exec must use it rather than the stale `box`.
-          let target = box;
-          const state = await provider.probeState(target);
-          if (state === 'missing') {
-            throw new Error(`cloud sandbox for ${target.name} is missing; was it destroyed?`);
-          }
-          if (state !== 'running') {
-            target = await provider.start(target);
-          }
           const argv = oneShotBashArgv(effectiveCmd, login);
-          const r = await provider.exec(target, argv, { user });
+          const r = await provider.exec(box, argv, { user });
           if (r.stdout) process.stdout.write(r.stdout);
           if (r.stderr) process.stderr.write(r.stderr);
           process.exit(r.exitCode);
