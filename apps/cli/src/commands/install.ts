@@ -42,7 +42,7 @@ import {
 } from '../lib/doctor-checks.js';
 import { PROVIDER_NAMES, providerMeta, type ProviderKind } from '@agentbox/config';
 import { isRuntimeProvider, loadProviderModule } from '../provider/loaders.js';
-import { markSetupComplete } from '../lib/first-run.js';
+import { isFirstRun, markSetupComplete } from '../lib/first-run.js';
 import { maybePromptStar } from '../lib/star-prompt.js';
 import { readUpdateState, writeUpdateState } from '../lib/update-state.js';
 import { AGENTBOX_VERSION } from '../version.js';
@@ -119,8 +119,9 @@ function paintLine(line: string, center: number): string {
  * TTY isn't present or motion is suppressed (NO_COLOR / CI / AGENTBOX_NO_ANIM),
  * leaving identical output to `BANNER` so `intro(...)` always starts clean.
  */
-async function animateBanner(): Promise<void> {
+async function animateBanner(animate: boolean): Promise<void> {
   if (
+    !animate ||
     process.env.NO_COLOR ||
     process.env.CI ||
     process.env.AGENTBOX_NO_ANIM ||
@@ -249,6 +250,20 @@ function writableReason(target: string, force: boolean): 'new' | 'managed' | 'fo
   return force ? 'forced' : 'skip';
 }
 
+/**
+ * Is `dest` already byte-identical to the file we'd install? Lets an idempotent
+ * re-install skip the work rather than redo it — for the fork skill that work is
+ * a network round-trip (`npx skills add`), so "already current" is worth a read.
+ * A dest that doesn't exist (or can't be read) is not current.
+ */
+function sameContent(src: string, dest: string): boolean {
+  try {
+    return readFileSync(dest, 'utf8') === readFileSync(src, 'utf8');
+  } catch {
+    return false;
+  }
+}
+
 export interface InstallHostSkillsOptions {
   force?: boolean;
   dryRun?: boolean;
@@ -370,6 +385,17 @@ export async function installForkSkill(
     return { written: [dest], skipped: 0, blocked: [], method: 'symlink' };
   }
 
+  // Already the file we would install → nothing to do. `writableReason` only
+  // refuses a USER-MODIFIED file, so without this an identical, up-to-date skill
+  // still sent us through `npx skills add` — an npm fetch plus a git clone of the
+  // repo, seconds of network, on EVERY `agentbox install`. The wizard is re-run
+  // routinely (adding a provider, re-preparing), and that cost was silent: it
+  // hides behind the "installing host /agentbox skill…" spinner.
+  if (!force && sameContent(src, dest)) {
+    if (!quiet) log.info(`host /agentbox skill already up to date (${dest})`);
+    return { written: [], skipped: 1, blocked: [], method: 'skip' };
+  }
+
   // Installed package → register via the open `skills` CLI; copy on any failure.
   try {
     await execa(
@@ -473,11 +499,21 @@ function isProviderName(s: string): s is ProviderName {
 export async function runInstallWizard(opts: RunInstallWizardOptions = {}): Promise<boolean> {
   if (!ensureTty()) return false;
 
-  await animateBanner();
+  // The sweep is a first-run flourish, and it costs ~2s of `sleep`. Re-running
+  // the wizard (adding a second provider, re-preparing) shouldn't pay that every
+  // time, so later runs just print the banner. `isFirstRun()` reads the setup
+  // marker this wizard writes at the end (see markSetupComplete below).
+  //
+  // The checks start FIRST and are awaited after: the animation's status line
+  // claims "Checking system…", and until now nothing was — the probes only began
+  // once the sweep had finished. Now the sweep actually covers them, so the first
+  // run gets the flourish for free instead of paying for it.
+  const sysPromise = runSystemChecks();
+  await animateBanner(isFirstRun());
   intro('Check system compatibility');
 
   // 1) Compact system check (full detail lives in `agentbox doctor`).
-  const sysResults = await runSystemChecks();
+  const sysResults = await sysPromise;
   const sysGroup: CheckGroup = { title: 'system', results: sysResults };
   process.stdout.write('  ' + formatCompact([sysGroup]) + '\n');
   const hardFail = sysResults.find((r: CheckResult) => r.status === 'fail');

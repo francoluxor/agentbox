@@ -848,11 +848,14 @@ brief:
 
 ## 4. Authentication
 
-`agentbox daytona login` is the supported path. It prompts for
-`DAYTONA_API_KEY` (required) and `DAYTONA_ORGANIZATION_ID` (optional)
-and persists them to `~/.agentbox/secrets.env`. Subsequent runs read
-that file; project `.env` is never harvested. First-time use of
-`--provider daytona` triggers the login prompt automatically.
+`agentbox daytona login` is the supported path. There is **no browser sign-in** —
+it offers to open the dashboard's keys page for convenience, then prompts you to
+paste a **`DAYTONA_API_KEY`**, and persists it to `~/.agentbox/secrets.env`.
+`DAYTONA_ORGANIZATION_ID` is asked for **only** when the pasted value is a JWT
+(it starts with `eyJ`), and there it's required — an API key doesn't need one,
+since the SDK derives the org from the key. Subsequent runs read that file;
+project `.env` is never harvested. First-time use of `--provider daytona`
+triggers the login prompt automatically.
 
 `agentbox hetzner login` is the analogous command for Hetzner. It
 prompts for `HCLOUD_TOKEN` (Read+Write API token from a Hetzner project's

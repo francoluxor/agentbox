@@ -356,8 +356,9 @@ async function baseFreshnessRow(name: ProviderName): Promise<CheckResult | null>
 export async function runProviderChecks(name: ProviderName): Promise<CheckGroup> {
   try {
     const mod = await loadProviderModule(name);
-    const results = await mod.doctorChecks();
-    const fresh = await baseFreshnessRow(name);
+    // Independent: the provider's own probes don't feed the freshness row (it
+    // reads prepared-state + the local build context). Overlap them.
+    const [results, fresh] = await Promise.all([mod.doctorChecks(), baseFreshnessRow(name)]);
     return { title: name, results: fresh ? [...results, fresh] : results };
   } catch (err) {
     // A broken/incompatible plugin must not crash `doctor` — surface it as a warn.
@@ -369,12 +370,19 @@ export async function runProviderChecks(name: ProviderName): Promise<CheckGroup>
 }
 
 export async function runAllChecks(): Promise<CheckGroup[]> {
-  const sys: CheckGroup = { title: 'system', results: await runSystemChecks() };
-  const providerGroups = await Promise.all(
-    getRuntimeProviderNames().map((n) => runProviderChecks(n)),
-  );
-  const integrations: CheckGroup = { title: 'integrations', results: await integrationsChecks() };
-  return [sys, ...providerGroups, integrations];
+  // The three phases are independent, so run them together: wall time is the
+  // slowest phase, not their sum. (`doctor --provider X` already did this —
+  // see runDoctor's Promise.all — so unscoped doctor was the slow path.)
+  const [sysResults, providerGroups, integrationResults] = await Promise.all([
+    runSystemChecks(),
+    Promise.all(getRuntimeProviderNames().map((n) => runProviderChecks(n))),
+    integrationsChecks(),
+  ]);
+  return [
+    { title: 'system', results: sysResults },
+    ...providerGroups,
+    { title: 'integrations', results: integrationResults },
+  ];
 }
 
 function worstInResults(results: CheckResult[]): CheckStatus {
