@@ -249,8 +249,8 @@ export const COMPACT_HELP: CompactGroup[] = [
 const COMPACT_EXAMPLE = [
   'Example:',
   '  agentbox claude                  # launch Claude, one box per task/branch',
-  '  agentbox hetzner|e2b|… claude    # launch Claude on a specific provider',
-  '  ! agentbox fork hetzner|e2b|…    # from Claude chat: teleport the current session',
+  '  agentbox hetzner|e2b|… codex     # launch with other agents or providers',
+  '  ! agentbox fork hetzner|e2b|…    # teleport the current session from the chat',
   '',
   '  agentbox attach 1                # detach with Ctrl+a d, then re-attach',
   '',
