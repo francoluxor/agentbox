@@ -106,6 +106,11 @@ import { updateCommand } from './commands/update.js';
 import { urlCommand } from './commands/url.js';
 import { waitCommand } from './commands/wait.js';
 import { rewriteProviderPrefix } from './provider/argv-prefix.js';
+import { installConfigWarningSink } from './lib/config-warnings.js';
+
+// Unknown config keys are non-fatal (a plugin's bundled parser may be older than
+// the CLI that wrote them) — the host CLI is the one that tells the user.
+installConfigWarningSink();
 
 const program = new Command();
 

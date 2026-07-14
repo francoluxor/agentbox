@@ -149,12 +149,38 @@ function checkMacfuse(): CheckResult {
 }
 
 export async function runSystemChecks(): Promise<CheckResult[]> {
-  const [git, ssh, sshfs] = await Promise.all([checkGit(), checkSsh(), checkSshfs()]);
+  const [git, ssh, sshfs, config] = await Promise.all([
+    checkGit(),
+    checkSsh(),
+    checkSshfs(),
+    checkConfig(),
+  ]);
   const results = [checkNode(), checkPlatform(), checkAgentboxHome(), git, ssh, sshfs];
   // macFUSE is a macOS concept; on Linux FUSE is a kernel module and sshfs alone
   // is the signal, so don't show a spurious row.
   if (process.platform === 'darwin') results.push(checkMacfuse());
+  results.push(...config);
   return results;
+}
+
+/**
+ * Surface non-fatal config issues (unknown keys — skipped, not applied). They
+ * no longer abort commands, so doctor is where a user finds a typo'd key.
+ */
+async function checkConfig(): Promise<CheckResult[]> {
+  let loaded;
+  try {
+    loaded = await loadEffectiveConfig(process.cwd());
+  } catch (err) {
+    return [{ label: 'config', status: 'warn', detail: errSummary(err) }];
+  }
+  if (loaded.warnings.length === 0) return [];
+  return loaded.warnings.map((detail) => ({
+    label: 'config',
+    status: 'warn' as const,
+    detail,
+    hint: 'fix the key, or ignore this if it was set by a newer agentbox',
+  }));
 }
 
 /**

@@ -409,6 +409,12 @@ export interface LoadedConfig {
   projectHash: string;
   /** True if we walked up to an agentbox.yaml; false if we fell back to cwd. */
   hasAgentboxYaml: boolean;
+  /**
+   * Non-fatal issues found while parsing the layers — today, unknown keys
+   * (skipped, not applied). Empty on a clean load. `agentbox doctor` lists
+   * these; the CLI also prints them via the warning sink (see `setConfigWarningSink`).
+   */
+  warnings: string[];
 }
 
 export const BUILT_IN_DEFAULTS: EffectiveConfig = {
