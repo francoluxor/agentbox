@@ -11,15 +11,23 @@ export interface HelpGroup {
   commands: string[];
 }
 
+// A `parent sub` entry (e.g. 'git push') renders that subcommand as a nested
+// row under its parent — only the parent name must exist at the top level.
 export const HELP_GROUPS: HelpGroup[] = [
-  { title: 'Create & run', commands: ['create', 'claude', 'fork', 'codex', 'opencode'] },
+  {
+    title: 'Create & run',
+    commands: ['create', 'attach', 'fork', 'claude', 'codex', 'opencode'],
+  },
   {
     title: 'Access',
-    commands: ['dashboard', 'attach', 'url', 'screen', 'code', 'shell', 'open', 'logs', 'drive'],
+    commands: ['dashboard', 'url', 'screen', 'code', 'shell', 'open', 'logs', 'drive'],
   },
   { title: 'Inspect', commands: ['list', 'status', 'services', 'top', 'agent'] },
   { title: 'Lifecycle', commands: ['start', 'stop', 'destroy', 'pause', 'unpause', 'recover'] },
-  { title: 'Git & sync', commands: ['git', 'download', 'cp', 'checkpoint', 'queue'] },
+  {
+    title: 'Git & sync',
+    commands: ['git', 'git push', 'git pull', 'git pr', 'download', 'cp', 'checkpoint', 'queue'],
+  },
   {
     title: 'Providers',
     commands: [
@@ -78,6 +86,7 @@ export const SHORT_DESCRIPTIONS: Record<string, string> = {
   download: "Download a box's /workspace back to the host (gitignore-aware)",
   cp: 'Copy files between host and box (like `docker cp`)',
   checkpoint: 'List and manage project checkpoints (warm state new boxes start from)',
+  'git pull': 'Fetch via the relay then merge in /workspace (or switch branch first)',
   prepare: "Build provider base images / snapshots, or show what's prepared",
   docker: 'Local Docker provider (the default) — sugar for `--provider docker`',
   daytona: 'Daytona cloud provider — credentials + `--provider daytona` sugar',
@@ -119,20 +128,31 @@ function isHiddenCommand(cmd: Command): boolean {
 export function buildGroupedHelp(program: Command): string {
   const visible = program.commands.filter((c) => !isHiddenCommand(c));
   const byName = new Map(visible.map((c) => [c.name(), c] as const));
-  const grouped = new Set(HELP_GROUPS.flatMap((g) => g.commands));
+  const grouped = new Set(HELP_GROUPS.flatMap((g) => g.commands.map((n) => n.split(' ')[0]!)));
   const orphans = visible.map((c) => c.name()).filter((n) => !grouped.has(n));
 
   const groups: HelpGroup[] = [...HELP_GROUPS];
   if (orphans.length) groups.push({ title: 'Other', commands: orphans });
 
-  const terms: string[] = [];
+  // 'parent sub' entries resolve to the nested Command; depth drives the
+  // extra indent that renders them as a tree under their parent row.
+  const resolve = (name: string): { cmd: Command; depth: number } | undefined => {
+    const parts = name.split(' ');
+    let cmd = byName.get(parts[0]!);
+    for (const part of parts.slice(1)) {
+      cmd = cmd?.commands.find((c) => c.name() === part || c.aliases().includes(part));
+    }
+    return cmd ? { cmd, depth: parts.length - 1 } : undefined;
+  };
+
+  const termWidths: number[] = [];
   for (const g of groups) {
     for (const name of g.commands) {
-      const cmd = byName.get(name);
-      if (cmd) terms.push(term(cmd));
+      const row = resolve(name);
+      if (row) termWidths.push(term(row.cmd).length + row.depth * 2);
     }
   }
-  const pad = Math.max(0, ...terms.map((t) => t.length)) + 2;
+  const pad = Math.max(0, ...termWidths) + 2;
   const descBudget = MAX_HELP_LINE - 4 - pad;
 
   const lines: string[] = ['Commands:'];
@@ -140,10 +160,13 @@ export function buildGroupedHelp(program: Command): string {
     const title = g.hint ? `${g.title}  (${g.hint})` : g.title;
     lines.push('', `  ${title}`);
     for (const name of g.commands) {
-      const cmd = byName.get(name);
-      if (!cmd) continue;
-      const description = SHORT_DESCRIPTIONS[name] ?? cmd.description();
-      lines.push(`    ${term(cmd).padEnd(pad)}${clip(description, descBudget)}`);
+      const row = resolve(name);
+      if (!row) continue;
+      const description = SHORT_DESCRIPTIONS[name] ?? row.cmd.description();
+      const indent = '    ' + '  '.repeat(row.depth);
+      lines.push(
+        `${indent}${term(row.cmd).padEnd(pad - row.depth * 2)}${clip(description, descBudget)}`,
+      );
     }
   }
   lines.push('', 'Run `agentbox <command> --help` for command-specific options.');

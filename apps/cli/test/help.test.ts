@@ -125,10 +125,16 @@ function buildProgram(): Command {
 
 describe('grouped --help', () => {
   it('every group command name resolves to a registered command', () => {
-    const registered = new Set(buildProgram().commands.map((c) => c.name()));
+    const program = buildProgram();
     for (const g of HELP_GROUPS) {
       for (const name of g.commands) {
-        expect(registered.has(name), `${name} in group "${g.title}"`).toBe(true);
+        // 'parent sub' entries resolve through the parent's subcommands.
+        const [parent, ...subs] = name.split(' ');
+        let cmd = program.commands.find((c) => c.name() === parent);
+        for (const sub of subs) {
+          cmd = cmd?.commands.find((c) => c.name() === sub || c.aliases().includes(sub));
+        }
+        expect(cmd, `${name} in group "${g.title}"`).toBeDefined();
       }
     }
   });
@@ -136,7 +142,10 @@ describe('grouped --help', () => {
   it('groups cover every registered command (no Other group / drift)', () => {
     const help = buildGroupedHelp(buildProgram());
     expect(help).not.toContain('Other');
-    const grouped = HELP_GROUPS.flatMap((g) => g.commands).sort();
+    // Nested 'parent sub' rows count as their parent for coverage.
+    const grouped = [
+      ...new Set(HELP_GROUPS.flatMap((g) => g.commands.map((n) => n.split(' ')[0]!))),
+    ].sort();
     // Hidden internal commands (e.g. `_run-queued-job`) are intentionally
     // excluded from HELP_GROUPS; mirror that filter when comparing.
     const registered = buildProgram()
@@ -162,14 +171,23 @@ describe('grouped --help', () => {
     // Provider commands render as rows in the Providers group.
     expect(help).toMatch(/^\s+hetzner\s/m);
     expect(help).toMatch(/^\s+digitalocean\s/m);
+    // git subcommands render as nested rows (extra indent) under git.
+    expect(help).toMatch(/^\s{6}push\s/m);
+    expect(help).toMatch(/^\s{6}pull\s/m);
+    expect(help).toMatch(/^\s{6}pr\s/m);
     // `path` was folded into `open --path`; not a standalone command.
     expect(help).not.toMatch(/^\s+path\s/m);
   });
 
   it('every SHORT_DESCRIPTIONS key resolves to a registered command', () => {
-    const registered = new Set(buildProgram().commands.map((c) => c.name()));
+    const program = buildProgram();
     for (const name of Object.keys(SHORT_DESCRIPTIONS)) {
-      expect(registered.has(name), `${name} in SHORT_DESCRIPTIONS`).toBe(true);
+      const [parent, ...subs] = name.split(' ');
+      let cmd = program.commands.find((c) => c.name() === parent);
+      for (const sub of subs) {
+        cmd = cmd?.commands.find((c) => c.name() === sub || c.aliases().includes(sub));
+      }
+      expect(cmd, `${name} in SHORT_DESCRIPTIONS`).toBeDefined();
     }
   });
 
