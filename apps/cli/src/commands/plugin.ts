@@ -13,7 +13,6 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Command } from 'commander';
@@ -51,25 +50,34 @@ function resolutionPaths(): string[] {
 
 /**
  * Resolve `arg` (a package name OR a filesystem path) to its package.json +
- * ESM entry. For a bare name we resolve `<name>/package.json` from the global
- * install root / cwd / NODE_PATH, then read the entry from `exports`/`main`.
+ * ESM entry. For a bare name we locate `<name>/package.json` on disk from the
+ * global install root / cwd / NODE_PATH, then read the entry from `exports`/`main`.
+ *
+ * Exported for tests.
  */
-function resolvePackage(arg: string): ResolvedPackage {
+export function resolvePackage(arg: string): ResolvedPackage {
   let pkgDir: string;
   if ((arg.startsWith('.') || arg.startsWith('/') || isAbsolute(arg)) && existsSync(arg)) {
     pkgDir = statSync(arg).isDirectory() ? resolve(arg) : dirname(resolve(arg));
   } else {
-    const req = createRequire(pathToFileURL(resolve(process.cwd(), 'noop.js')).href);
+    // Locate `<name>/package.json` on disk rather than via Node's conditional
+    // resolver: a provider package legitimately ships ESM-only exports
+    // (`exports: { ".": { "import": ... } }`), which `createRequire().resolve`
+    // (CJS conditions) can't reach — and `<name>/package.json` isn't an
+    // exported subpath anyway, so it throws ERR_PACKAGE_PATH_NOT_EXPORTED. We
+    // only need the directory; the entry is picked from `exports` below.
     let pkgJsonPath: string | undefined;
     for (const base of resolutionPaths()) {
-      try {
-        pkgJsonPath = req.resolve(`${arg}/package.json`, {
-          paths: [base, resolve(base, 'node_modules')],
-        });
-        break;
-      } catch {
-        // try the next base
+      for (const candidate of [
+        resolve(base, arg, 'package.json'),
+        resolve(base, 'node_modules', arg, 'package.json'),
+      ]) {
+        if (existsSync(candidate)) {
+          pkgJsonPath = candidate;
+          break;
+        }
       }
+      if (pkgJsonPath) break;
     }
     if (!pkgJsonPath) {
       throw new Error(
