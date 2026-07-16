@@ -1,4 +1,3 @@
-import type { ProviderKind } from '@agentbox/config';
 import type { HubState, ProviderOption } from './types';
 
 // Result of a lifecycle server action.
@@ -88,9 +87,11 @@ export interface CreateBoxInput {
   projectId: string;
   // 'none' = just create the box (like `agentbox create`), don't start an agent.
   agent: 'claude' | 'codex' | 'opencode' | 'none';
-  // Sandbox provider to create on. Defaults to 'docker'. The backend rejects a
-  // provider that isn't configured (baked) on this host.
-  provider?: ProviderKind;
+  // Sandbox provider to create on. Defaults to 'docker'. A bare provider name
+  // (ProviderKind) OR a host-qualified `docker:<alias>` / `remote-docker:<alias>`
+  // spec targeting a registered remote-docker host. The backend rejects a provider
+  // that isn't configured (baked) on this host, or an unknown host alias.
+  provider?: string;
   name?: string;
   prompt?: string;
   // Base ref the box's per-box branch forks from (branch / tag / SHA), instead
@@ -180,7 +181,9 @@ export interface HubBackend {
   // `baseStaleReason`). Off the getData() hot path — computing it loads provider
   // code + hashes the runtime build context (memoized with a short TTL). Backs
   // GET /api/v1/providers?freshness=1 so the default endpoint stays fast.
-  providersWithFreshness(): Promise<ProviderOption[]>;
+  // `expandRemoteDockerHosts` (create pickers only) replaces the single
+  // remote-docker entry with one `docker:<alias>` option per registered host.
+  providersWithFreshness(opts?: { expandRemoteDockerHosts?: boolean }): Promise<ProviderOption[]>;
   // Enqueue a background create job for a registered project; returns the jobId.
   create(input: CreateBoxInput): Promise<CreateBoxResult>;
   // Persist a provider's credentials (validated against the cloud, then written
@@ -240,4 +243,38 @@ export interface HubBackend {
   // <id> --in <app>` (which owns all the SSH-alias / deep-link / terminal-spawn
   // logic). Refuses when openTargets() would report unsupported.
   openIn(id: string, app: OpenInApp): Promise<ActionResult>;
+
+  // ── remote-docker host aliases (~/.agentbox/remote-docker-hosts.json) ──
+  // List the registered remote-docker host aliases with their baked/default state.
+  listRemoteDockerHosts(): Promise<RemoteDockerHostView[]>;
+  // Register an alias -> SSH connection: validates + probes the host (ssh + docker)
+  // before saving. Does NOT bake the image (would block for minutes). `default`
+  // also pins it as box.remoteDockerHost (global).
+  addRemoteDockerHost(
+    alias: string,
+    ssh: string,
+    opts?: { default?: boolean },
+  ): Promise<ActionResult>;
+  // Forget an alias: drops it from the registry + baked-image record, clears the
+  // global default if it pointed here. Returns the box names created against the
+  // alias (now unreachable) so the caller can warn. Local record only.
+  removeRemoteDockerHost(
+    alias: string,
+  ): Promise<{ ok: true; boxesAffected: string[] } | { ok: false; error: string }>;
+  // Enqueue a background bake of the box image on one host (async; returns the
+  // jobId — progress streams over GET /jobs/{id}/logs, like prepareProvider).
+  // Reuses an in-flight bake for the same host if one exists.
+  bakeRemoteDockerHost(alias: string): Promise<CreateBoxResult>;
+}
+
+// One remote-docker host alias, as surfaced by the hub API.
+export interface RemoteDockerHostView {
+  alias: string;
+  /** The SSH connection string the alias resolves to. */
+  ssh: string;
+  /** Whether the box image is baked on this host (from the prepared-state record). */
+  baked: boolean;
+  bakedImageRef?: string;
+  /** Whether this alias is the configured default (box.remoteDockerHost). */
+  default: boolean;
 }

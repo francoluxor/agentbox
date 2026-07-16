@@ -38,8 +38,21 @@ export function parseCreateBox(body: unknown): Parsed<CreateBoxInput> {
   if (typeof agent !== 'string' || !(AGENTS as readonly string[]).includes(agent)) {
     return { ok: false, message: `agent must be one of ${AGENTS.join(', ')}`, details: { got: agent } };
   }
-  if (provider !== undefined && (typeof provider !== 'string' || !(PROVIDERS as readonly string[]).includes(provider))) {
-    return { ok: false, message: `provider must be one of ${PROVIDERS.join(', ')}`, details: { got: provider } };
+  // A host-qualified `docker:<alias>` / `remote-docker:<alias>` spec picks a
+  // registered remote-docker host (alias rule mirrors the hosts registry). The
+  // backend validates the alias exists; here we only gate the shape.
+  const isHostSpec =
+    typeof provider === 'string' && /^(?:docker|remote-docker):[A-Za-z0-9][A-Za-z0-9._-]*$/.test(provider);
+  if (
+    provider !== undefined &&
+    !isHostSpec &&
+    (typeof provider !== 'string' || !(PROVIDERS as readonly string[]).includes(provider))
+  ) {
+    return {
+      ok: false,
+      message: `provider must be one of ${PROVIDERS.join(', ')} (or a docker:<host> spec)`,
+      details: { got: provider },
+    };
   }
   if (name !== undefined && typeof name !== 'string') return { ok: false, message: 'name must be a string' };
   if (prompt !== undefined && typeof prompt !== 'string') return { ok: false, message: 'prompt must be a string' };
@@ -145,6 +158,34 @@ export function parseProviderPrepare(
     ok: true,
     value: { force: fb.value, claudeInstall: claudeInstall as 'native' | 'npm' | undefined },
   };
+}
+
+// ── remote-docker host aliases ──
+// Mirrors isValidAlias in @agentbox/sandbox-remote-docker; replicated (not imported)
+// to keep that package out of the Next bundle, like PROVIDERS/AGENTS above.
+const HOST_ALIAS_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+export function isValidHostAlias(v: string): boolean {
+  return HOST_ALIAS_RE.test(v);
+}
+
+export function parseHostUpsert(
+  body: unknown,
+): Parsed<{ alias: string; ssh: string; default?: boolean }> {
+  if (!isObject(body)) return { ok: false, message: 'body must be a JSON object' };
+  const { alias, ssh, default: dflt } = body;
+  if (typeof alias !== 'string' || !isValidHostAlias(alias)) {
+    return {
+      ok: false,
+      message: 'alias must be a plain name (letters, digits, ., _, -; no @, :, /)',
+    };
+  }
+  if (typeof ssh !== 'string' || ssh.trim().length === 0) {
+    return { ok: false, message: 'ssh is required (an ~/.ssh/config alias or [user@]host[:port])' };
+  }
+  const db = optionalBool(dflt, 'default');
+  if (!db.ok) return db;
+  return { ok: true, value: { alias, ssh: ssh.trim(), default: db.value } };
 }
 
 // ── git operations ──

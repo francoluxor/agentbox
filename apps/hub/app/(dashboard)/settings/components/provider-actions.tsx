@@ -17,6 +17,7 @@ import { cn } from '@/lib/utils';
 import { useStore } from '@/lib/boxes/store';
 import type { ProviderOption } from '@/lib/boxes/types';
 import { JobLogStream } from '../../boxes/components/job-log-stream';
+import { RemoteDockerHosts } from './remote-docker-hosts';
 
 interface CredField {
   key: string;
@@ -117,6 +118,18 @@ function statusBadge(p: ProviderOption) {
   return <Badge className="gap-1.5 normal-case">needs credentials</Badge>;
 }
 
+// remote-docker's badge counts registered host aliases (null = still loading).
+function hostCountBadge(n: number | null) {
+  if (n === null) return <Badge className="gap-1.5 normal-case">…</Badge>;
+  if (n === 0) return <Badge className="gap-1.5 normal-case">no hosts</Badge>;
+  return (
+    <Badge className="badge-run gap-1.5 normal-case">
+      <span className="badge-dot" />
+      {n} {n === 1 ? 'host' : 'hosts'}
+    </Badge>
+  );
+}
+
 // A fixed-length dot mask shown in a field that already has a saved value — a
 // placeholder signal (the API never returns the real secret), never submitted.
 const MASK = '••••••••••••';
@@ -141,6 +154,11 @@ function ProviderRow({ provider: p }: { provider: ProviderOption }) {
   const [jobId, setJobId] = useState<string | null>(p.jobId ?? null);
   const [baking, setBaking] = useState(false);
   const [bakeError, setBakeError] = useState<string | null>(null);
+  // remote-docker has no credential and no single base image — it manages a set
+  // of SSH host aliases, each baked on its own. The row nests that UI instead of
+  // the credential form + provider Bake button, and its badge counts hosts.
+  const isRD = p.id === 'remote-docker';
+  const [hostCount, setHostCount] = useState<number | null>(null);
 
   const saveCreds = async (): Promise<void> => {
     setSavingCreds(true);
@@ -203,36 +221,45 @@ function ProviderRow({ provider: p }: { provider: ProviderOption }) {
 
   const canBake = p.id === 'docker' || p.hasCredentials;
   const hasFields = fields.length > 0;
+  const expandable = hasFields || isRD;
 
   return (
     <div className="flex flex-col gap-3 p-4 px-5">
       {/* Whole header row toggles the credential form (cloud providers). The
           Re-bake button stops propagation so it never toggles. */}
       <div
-        className={cn('flex items-center gap-3', hasFields && 'cursor-pointer')}
-        onClick={hasFields ? () => setShowForm((s) => !s) : undefined}
+        className={cn('flex items-center gap-3', expandable && 'cursor-pointer')}
+        onClick={expandable ? () => setShowForm((s) => !s) : undefined}
       >
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 text-[14px] font-semibold">
             {p.label}
-            {statusBadge(p)}
+            {isRD ? hostCountBadge(hostCount) : statusBadge(p)}
           </div>
-          {p.reason ? <div className="mt-0.5 text-[12.5px] text-muted-foreground">{p.reason}</div> : null}
+          {isRD ? (
+            <div className="mt-0.5 text-[12.5px] text-muted-foreground">
+              No login — connects over your own SSH.
+            </div>
+          ) : p.reason ? (
+            <div className="mt-0.5 text-[12.5px] text-muted-foreground">{p.reason}</div>
+          ) : null}
         </div>
-        <div className="flex flex-none items-center gap-2" onClick={(e) => e.stopPropagation()}>
-          <Button
-            type="button"
-            size="sm"
-            variant={p.configured ? 'outline' : 'default'}
-            disabled={!canBake || baking || !!jobId}
-            onClick={() => void bake()}
-            title={canBake ? undefined : 'Add credentials first'}
-          >
-            <Icons.refresh className="size-3.5" />
-            {jobId ? 'Baking…' : baking ? 'Starting…' : p.configured ? 'Re-bake' : 'Bake image'}
-          </Button>
-        </div>
-        {hasFields ? (
+        {isRD ? null : (
+          <div className="flex flex-none items-center gap-2" onClick={(e) => e.stopPropagation()}>
+            <Button
+              type="button"
+              size="sm"
+              variant={p.configured ? 'outline' : 'default'}
+              disabled={!canBake || baking || !!jobId}
+              onClick={() => void bake()}
+              title={canBake ? undefined : 'Add credentials first'}
+            >
+              <Icons.refresh className="size-3.5" />
+              {jobId ? 'Baking…' : baking ? 'Starting…' : p.configured ? 'Re-bake' : 'Bake image'}
+            </Button>
+          </div>
+        )}
+        {expandable ? (
           <Icons.chevR
             className={cn(
               'size-4 flex-none text-muted-foreground transition-transform',
@@ -244,6 +271,14 @@ function ProviderRow({ provider: p }: { provider: ProviderOption }) {
           <span className="size-4 flex-none" aria-hidden />
         )}
       </div>
+
+      {isRD ? (
+        // Mounted always so it fetches on mount and feeds the collapsed count
+        // badge; only shown when the row is expanded.
+        <div className={cn(!showForm && 'hidden')}>
+          <RemoteDockerHosts onCount={setHostCount} />
+        </div>
+      ) : null}
 
       {showForm && fields.length > 0 ? (
         <div className="flex flex-col gap-2 rounded-lg border border-border/70 bg-card/50 p-3">

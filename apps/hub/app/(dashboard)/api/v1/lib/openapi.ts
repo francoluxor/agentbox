@@ -30,6 +30,7 @@ export function buildOpenApi(): Record<string, unknown> {
       { name: 'Box services', description: "A box's agentbox.yaml service/task/port status." },
       { name: 'Projects', description: 'Register folders as projects and list their branches.' },
       { name: 'Providers', description: 'Sandbox providers: status, credentials, base-image bake.' },
+      { name: 'Hosts', description: 'Remote-docker host aliases (name -> SSH connection).' },
       { name: 'Approvals', description: 'Pending host-action approvals.' },
       { name: 'Jobs', description: 'Async create/bake job status and log streams.' },
     ],
@@ -356,6 +357,59 @@ export function buildOpenApi(): Record<string, unknown> {
             '400': errorResponse,
             '401': errorResponse,
             '409': errorResponse,
+            '503': errorResponse,
+          },
+        },
+      },
+      '/hosts': {
+        get: {
+          tags: ['Hosts'],
+          summary: 'List remote-docker host aliases',
+          description: 'Each with its SSH connection and baked/default state.',
+          responses: {
+            '200': { description: 'Hosts', content: { 'application/json': { schema: { type: 'object', properties: { hosts: { type: 'array', items: { type: 'object', properties: { alias: { type: 'string' }, ssh: { type: 'string' }, baked: { type: 'boolean' }, bakedImageRef: { type: 'string' }, default: { type: 'boolean' } }, required: ['alias', 'ssh', 'baked', 'default'] } } }, required: ['hosts'] } } } },
+            '401': errorResponse,
+            '503': errorResponse,
+          },
+        },
+        post: {
+          tags: ['Hosts'],
+          summary: 'Register a remote-docker host alias',
+          description: 'Probes the host (ssh + docker) before saving. Does not bake the image (builds on first create). `default` also pins box.remoteDockerHost.',
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { alias: { type: 'string' }, ssh: { type: 'string', description: 'an ~/.ssh/config alias or [user@]host[:port]' }, default: { type: 'boolean' } }, required: ['alias', 'ssh'] } } } },
+          responses: {
+            '201': { description: 'Registered', content: { 'application/json': { schema: { type: 'object', properties: { ok: { const: true } }, required: ['ok'] } } } },
+            '400': errorResponse,
+            '401': errorResponse,
+            '409': errorResponse,
+            '503': errorResponse,
+          },
+        },
+      },
+      '/hosts/{alias}': {
+        delete: {
+          tags: ['Hosts'],
+          summary: 'Forget a remote-docker host alias',
+          description: 'Drops the alias + baked-image record + default. Local record only. Returns boxes created against it (now unreachable).',
+          parameters: [{ name: 'alias', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: {
+            '200': { description: 'Removed', content: { 'application/json': { schema: { type: 'object', properties: { ok: { const: true }, boxesAffected: { type: 'array', items: { type: 'string' } } }, required: ['ok', 'boxesAffected'] } } } },
+            '401': errorResponse,
+            '404': errorResponse,
+            '503': errorResponse,
+          },
+        },
+      },
+      '/hosts/{alias}/bake': {
+        post: {
+          tags: ['Hosts'],
+          summary: 'Bake the box image on a host',
+          description: 'Async — returns a job id. Progress streams over GET /jobs/{id}/logs (pull from GHCR is fast; a registry-miss build is slow).',
+          parameters: [{ name: 'alias', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: {
+            '202': { description: 'Bake enqueued', content: { 'application/json': { schema: { type: 'object', properties: { jobId: { type: 'string' } }, required: ['jobId'] } } } },
+            '401': errorResponse,
+            '404': errorResponse,
             '503': errorResponse,
           },
         },

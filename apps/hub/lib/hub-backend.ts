@@ -14,7 +14,9 @@ import {
   providerMeta,
   registerProject,
   resolveDefaultCheckpoint,
+  setConfigValue,
   unregisterProject,
+  unsetConfigValue,
   type ProviderKind,
 } from '@agentbox/config';
 import { normalizeLastAgent, type BoxRecord, type ExecResult, type Provider } from '@agentbox/core';
@@ -76,6 +78,7 @@ import type {
   OpenInApp,
   OpenTargets,
   OpenTargetsReport,
+  RemoteDockerHostView,
   ServicesResult,
 } from './boxes/backend-types';
 import { hubProfile } from './auth-config';
@@ -358,8 +361,26 @@ function mapJobToBox(job: QueueJob, status: BoxStatus): Box {
  * offline (no cloud SDK), so it's cheap to compute on every getData(). A prepared
  * marker implies a prior `<provider> login`, so it's a sufficient readiness proxy.
  */
+// remote-docker keeps no single base image — it's a set of SSH host aliases in
+// `~/.agentbox/remote-docker-hosts.json`, each baked (or lazily built) on its own.
+// A direct sync read (mirrors readPreparedStateRaw/readSecretsKeys) keeps the hot
+// `listProviders` path off the remote-docker package's dynamic import.
+function remoteDockerHostCount(): number {
+  try {
+    const raw = JSON.parse(
+      readFileSync(path.join(os.homedir(), '.agentbox', 'remote-docker-hosts.json'), 'utf8'),
+    ) as { hosts?: Record<string, unknown> };
+    return raw.hosts && typeof raw.hosts === 'object' ? Object.keys(raw.hosts).length : 0;
+  } catch {
+    return 0;
+  }
+}
+
 function isProviderConfigured(id: ProviderKind): boolean {
   if (id === 'docker') return true;
+  // remote-docker is usable as soon as one host alias is registered (the image
+  // builds lazily on first create); it never writes a top-level `base` marker.
+  if (id === 'remote-docker') return remoteDockerHostCount() > 0;
   const raw = readPreparedStateRaw(id);
   return !!(raw && typeof raw === 'object' && (raw as { base?: unknown }).base);
 }
@@ -464,9 +485,12 @@ function listProviders(jobs: QueueJob[]): ProviderOption[] {
     );
     let reason: string | undefined;
     if (!configured) {
-      reason = hasCredentials
-        ? 'Credentials set — bake the base image to finish setup.'
-        : 'Not set up — add credentials, then bake the base image.';
+      reason =
+        id === 'remote-docker'
+          ? 'Add a host in Settings to run boxes on your own machine over SSH.'
+          : hasCredentials
+            ? 'Credentials set — bake the base image to finish setup.'
+            : 'Not set up — add credentials, then bake the base image.';
     }
     return { id, label, configured, hasCredentials, jobId: bake?.id, reason };
   });
@@ -550,6 +574,49 @@ async function listProvidersWithFreshness(base: ProviderOption[]): Promise<Provi
       };
     }),
   );
+}
+
+/** The registered remote-docker host aliases as create/settings-facing views. */
+async function loadRemoteDockerHostViews(): Promise<RemoteDockerHostView[]> {
+  const rd = await import('@agentbox/sandbox-remote-docker');
+  const prepared = rd.readPreparedState();
+  const cfg = await loadEffectiveConfig(os.homedir());
+  const dflt = (cfg.effective.box.remoteDockerHost || '').trim();
+  return rd.listHostAliases().map(({ alias, entry }) => {
+    const baked = prepared?.hosts[alias];
+    return {
+      alias,
+      ssh: entry.ssh,
+      baked: Boolean(baked),
+      ...(baked ? { bakedImageRef: baked.imageRef } : {}),
+      default: alias === dflt,
+    };
+  });
+}
+
+/**
+ * For the create pickers only: replace the single `remote-docker` provider entry
+ * with one `docker:<alias>` option per registered host, so a user can create a box
+ * on a specific machine. Keeps the single entry (guiding to Settings) when there
+ * are no hosts. Settings never asks for this — it renders one Remote Docker row and
+ * nests the hosts itself.
+ */
+async function expandRemoteDockerHosts(base: ProviderOption[]): Promise<ProviderOption[]> {
+  const idx = base.findIndex((p) => p.id === 'remote-docker');
+  if (idx < 0) return base;
+  const hosts = await loadRemoteDockerHostViews();
+  if (hosts.length === 0) return base;
+  const perHost: ProviderOption[] = hosts.map((h) => ({
+    // id stays the `docker:<alias>` create spec; the label reads like "Docker (local)".
+    id: `docker:${h.alias}`,
+    label: `Docker (${h.alias})`,
+    configured: true,
+    hasCredentials: true,
+    reason: h.baked
+      ? undefined
+      : 'Image builds on first create — bake it in Settings for a faster start.',
+  }));
+  return [...base.slice(0, idx), ...perHost, ...base.slice(idx + 1)];
 }
 
 function currentUser(): User {
@@ -908,8 +975,9 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
         providers: listProviders(jobs),
       };
     },
-    async providersWithFreshness(): Promise<ProviderOption[]> {
-      return listProvidersWithFreshness(listProviders(await loadQueue()));
+    async providersWithFreshness(opts): Promise<ProviderOption[]> {
+      const fresh = await listProvidersWithFreshness(listProviders(await loadQueue()));
+      return opts?.expandRemoteDockerHosts ? expandRemoteDockerHosts(fresh) : fresh;
     },
     start: (id) =>
       runLifecycle(id, async (box, provider) => {
@@ -1009,10 +1077,22 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
         if (!workspace) return { ok: false, error: `unknown project ${input.projectId}` };
         // Provider gate (defense-in-depth: a client could bypass the disabled UI
         // option). Default docker; reject unknown kinds and unconfigured providers.
-        const provider = input.provider ?? 'docker';
-        if (!isProviderKind(provider)) return { ok: false, error: `unknown provider ${provider}` };
-        if (!isProviderConfigured(provider)) {
-          return { ok: false, error: `provider ${provider} is not set up on this host` };
+        const provider = (input.provider ?? 'docker').trim();
+        // A host-qualified `docker:<alias>` / `remote-docker:<alias>` spec targets a
+        // registered remote-docker host — validate the alias (the worker parses the
+        // spec out of providerName). Bare names take the configured-provider gate.
+        const hostSpec = provider.match(/^(?:docker|remote-docker):(.+)$/);
+        if (hostSpec) {
+          const alias = hostSpec[1];
+          const rd = await import('@agentbox/sandbox-remote-docker');
+          if (!rd.getHostAlias(alias)) {
+            return { ok: false, error: `unknown remote-docker host '${alias}' — add it in Settings` };
+          }
+        } else {
+          if (!isProviderKind(provider)) return { ok: false, error: `unknown provider ${provider}` };
+          if (!isProviderConfigured(provider)) {
+            return { ok: false, error: `provider ${provider} is not set up on this host` };
+          }
         }
         const noAgent = input.agent === 'none';
         // For a no-agent box `agent` is inert (the worker ignores it when noAgent);
@@ -1262,6 +1342,83 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
         // rather than execFile's generic "Command failed: node …".
         const e = err as { stderr?: string; stdout?: string; message?: string };
         return { ok: false, error: cleanCliError(e) };
+      }
+    },
+
+    // ── remote-docker host aliases ──
+    async listRemoteDockerHosts(): Promise<RemoteDockerHostView[]> {
+      return loadRemoteDockerHostViews();
+    },
+    async addRemoteDockerHost(alias, ssh, opts): Promise<ActionResult> {
+      try {
+        const rd = await import('@agentbox/sandbox-remote-docker');
+        const trimmedSsh = ssh.trim();
+        if (!rd.isValidAlias(alias)) {
+          return {
+            ok: false,
+            error: `invalid host alias "${alias}" — use a plain name (letters, digits, ., _, -; no @, :, /)`,
+          };
+        }
+        if (!trimmedSsh) return { ok: false, error: 'SSH connection is required' };
+        if (rd.getHostAlias(alias)) {
+          return { ok: false, error: `host alias "${alias}" already exists` };
+        }
+        // Probe before saving so an unreachable host / missing docker is rejected.
+        const probe = await rd.probeRemoteEngine(trimmedSsh);
+        if (!probe.ok) return { ok: false, error: probe.error ?? `${trimmedSsh}: remote engine unusable` };
+        rd.upsertHostAlias(alias, trimmedSsh);
+        if (opts?.default) {
+          await setConfigValue('global', 'box.remoteDockerHost', alias, os.homedir(), { raw: true });
+        }
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    async removeRemoteDockerHost(alias) {
+      try {
+        const rd = await import('@agentbox/sandbox-remote-docker');
+        rd.removeHostAlias(alias);
+        rd.removePreparedHost(alias);
+        // Clear the global default if it pointed at this alias.
+        const cfg = await loadEffectiveConfig(os.homedir());
+        if (cfg.layers.global.values.box?.remoteDockerHost === alias) {
+          await unsetConfigValue('global', 'box.remoteDockerHost', os.homedir());
+        }
+        // Boxes whose sandbox id was baked against this alias are now unreachable.
+        const { boxes } = await readState();
+        const boxesAffected = boxes
+          .filter(
+            (b) =>
+              b.provider === 'remote-docker' &&
+              typeof b.cloud?.sandboxId === 'string' &&
+              b.cloud.sandboxId.startsWith(`${alias}/`),
+          )
+          .map((b) => b.name);
+        return { ok: true, boxesAffected };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    async bakeRemoteDockerHost(alias): Promise<CreateBoxResult> {
+      try {
+        const rd = await import('@agentbox/sandbox-remote-docker');
+        if (!rd.getHostAlias(alias)) return { ok: false, error: `no such host alias ${alias}` };
+        // The `docker:<alias>` spec bakes THIS host (the worker parses it out).
+        const spec = `docker:${alias}`;
+        // Reuse an in-flight bake for the same host if present.
+        const existing = (await loadQueue()).find(
+          (j) =>
+            j.kind === 'prepare' &&
+            j.providerName === spec &&
+            (j.status === 'queued' || j.status === 'running'),
+        );
+        if (existing) return { ok: true, jobId: existing.id };
+        const { job } = await enqueuePrepareJob({ providerName: spec });
+        handle.pokeQueue();
+        return { ok: true, jobId: job.id };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
   };
