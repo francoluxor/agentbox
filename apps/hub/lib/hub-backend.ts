@@ -14,7 +14,9 @@ import {
   providerMeta,
   registerProject,
   resolveDefaultCheckpoint,
+  setConfigValue,
   unregisterProject,
+  unsetConfigValue,
   type ProviderKind,
 } from '@agentbox/config';
 import { normalizeLastAgent, type BoxRecord, type ExecResult, type Provider } from '@agentbox/core';
@@ -76,6 +78,7 @@ import type {
   OpenInApp,
   OpenTargets,
   OpenTargetsReport,
+  RemoteDockerHostView,
   ServicesResult,
 } from './boxes/backend-types';
 import { hubProfile } from './auth-config';
@@ -1262,6 +1265,75 @@ export function createHubBackend(handle: RelayServerHandle): HubBackend {
         // rather than execFile's generic "Command failed: node …".
         const e = err as { stderr?: string; stdout?: string; message?: string };
         return { ok: false, error: cleanCliError(e) };
+      }
+    },
+
+    // ── remote-docker host aliases ──
+    async listRemoteDockerHosts(): Promise<RemoteDockerHostView[]> {
+      const rd = await import('@agentbox/sandbox-remote-docker');
+      const prepared = rd.readPreparedState();
+      const cfg = await loadEffectiveConfig(os.homedir());
+      const dflt = (cfg.effective.box.remoteDockerHost || '').trim();
+      return rd.listHostAliases().map(({ alias, entry }) => {
+        const baked = prepared?.hosts[alias];
+        return {
+          alias,
+          ssh: entry.ssh,
+          baked: Boolean(baked),
+          ...(baked ? { bakedImageRef: baked.imageRef } : {}),
+          default: alias === dflt,
+        };
+      });
+    },
+    async addRemoteDockerHost(alias, ssh, opts): Promise<ActionResult> {
+      try {
+        const rd = await import('@agentbox/sandbox-remote-docker');
+        const trimmedSsh = ssh.trim();
+        if (!rd.isValidAlias(alias)) {
+          return {
+            ok: false,
+            error: `invalid host alias "${alias}" — use a plain name (letters, digits, ., _, -; no @, :, /)`,
+          };
+        }
+        if (!trimmedSsh) return { ok: false, error: 'SSH connection is required' };
+        if (rd.getHostAlias(alias)) {
+          return { ok: false, error: `host alias "${alias}" already exists` };
+        }
+        // Probe before saving so an unreachable host / missing docker is rejected.
+        const probe = await rd.probeRemoteEngine(trimmedSsh);
+        if (!probe.ok) return { ok: false, error: probe.error ?? `${trimmedSsh}: remote engine unusable` };
+        rd.upsertHostAlias(alias, trimmedSsh);
+        if (opts?.default) {
+          await setConfigValue('global', 'box.remoteDockerHost', alias, os.homedir(), { raw: true });
+        }
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    async removeRemoteDockerHost(alias) {
+      try {
+        const rd = await import('@agentbox/sandbox-remote-docker');
+        rd.removeHostAlias(alias);
+        rd.removePreparedHost(alias);
+        // Clear the global default if it pointed at this alias.
+        const cfg = await loadEffectiveConfig(os.homedir());
+        if (cfg.layers.global.values.box?.remoteDockerHost === alias) {
+          await unsetConfigValue('global', 'box.remoteDockerHost', os.homedir());
+        }
+        // Boxes whose sandbox id was baked against this alias are now unreachable.
+        const { boxes } = await readState();
+        const boxesAffected = boxes
+          .filter(
+            (b) =>
+              b.provider === 'remote-docker' &&
+              typeof b.cloud?.sandboxId === 'string' &&
+              b.cloud.sandboxId.startsWith(`${alias}/`),
+          )
+          .map((b) => b.name);
+        return { ok: true, boxesAffected };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
   };

@@ -240,4 +240,34 @@ export interface HubBackend {
   // <id> --in <app>` (which owns all the SSH-alias / deep-link / terminal-spawn
   // logic). Refuses when openTargets() would report unsupported.
   openIn(id: string, app: OpenInApp): Promise<ActionResult>;
+
+  // ── remote-docker host aliases (~/.agentbox/remote-docker-hosts.json) ──
+  // List the registered remote-docker host aliases with their baked/default state.
+  listRemoteDockerHosts(): Promise<RemoteDockerHostView[]>;
+  // Register an alias -> SSH connection: validates + probes the host (ssh + docker)
+  // before saving. Does NOT bake the image (would block for minutes). `default`
+  // also pins it as box.remoteDockerHost (global).
+  addRemoteDockerHost(
+    alias: string,
+    ssh: string,
+    opts?: { default?: boolean },
+  ): Promise<ActionResult>;
+  // Forget an alias: drops it from the registry + baked-image record, clears the
+  // global default if it pointed here. Returns the box names created against the
+  // alias (now unreachable) so the caller can warn. Local record only.
+  removeRemoteDockerHost(
+    alias: string,
+  ): Promise<{ ok: true; boxesAffected: string[] } | { ok: false; error: string }>;
+}
+
+// One remote-docker host alias, as surfaced by the hub API.
+export interface RemoteDockerHostView {
+  alias: string;
+  /** The SSH connection string the alias resolves to. */
+  ssh: string;
+  /** Whether the box image is baked on this host (from the prepared-state record). */
+  baked: boolean;
+  bakedImageRef?: string;
+  /** Whether this alias is the configured default (box.remoteDockerHost). */
+  default: boolean;
 }

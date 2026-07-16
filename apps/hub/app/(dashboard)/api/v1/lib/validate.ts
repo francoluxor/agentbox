@@ -147,6 +147,34 @@ export function parseProviderPrepare(
   };
 }
 
+// ── remote-docker host aliases ──
+// Mirrors isValidAlias in @agentbox/sandbox-remote-docker; replicated (not imported)
+// to keep that package out of the Next bundle, like PROVIDERS/AGENTS above.
+const HOST_ALIAS_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+export function isValidHostAlias(v: string): boolean {
+  return HOST_ALIAS_RE.test(v);
+}
+
+export function parseHostUpsert(
+  body: unknown,
+): Parsed<{ alias: string; ssh: string; default?: boolean }> {
+  if (!isObject(body)) return { ok: false, message: 'body must be a JSON object' };
+  const { alias, ssh, default: dflt } = body;
+  if (typeof alias !== 'string' || !isValidHostAlias(alias)) {
+    return {
+      ok: false,
+      message: 'alias must be a plain name (letters, digits, ., _, -; no @, :, /)',
+    };
+  }
+  if (typeof ssh !== 'string' || ssh.trim().length === 0) {
+    return { ok: false, message: 'ssh is required (an ~/.ssh/config alias or [user@]host[:port])' };
+  }
+  const db = optionalBool(dflt, 'default');
+  if (!db.ok) return db;
+  return { ok: true, value: { alias, ssh: ssh.trim(), default: db.value } };
+}
+
 // ── git operations ──
 export const GIT_OPS = ['checkout', 'branch', 'pull', 'push', 'push-host'] as const;
 export type GitOp = (typeof GIT_OPS)[number];
