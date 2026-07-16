@@ -66,6 +66,24 @@ The [hub](/docs/hub) web UI and the macOS tray also list each registered host as
 
 Everything else is the same as any other box: `list`, `shell`, `logs`, `url`, `checkpoint`, `pause`, `destroy`.
 
+## Use a Mac Mini as dev box
+
+Enable Remote Login from: System Settings → General → Sharing → turn on Remote Login
+
+then from your pc:
+
+```bash
+ssh username@mac-mini-ip
+```
+
+Then for extra safety enable key-based auth:
+
+```bash
+ssh-copy-id username@mac-mini-ip
+```
+
+The Mac must have either Docker or OrbStack installed.
+
 ## How it works
 
 Remote Docker is a **cloud** provider that happens to speak Docker. That sounds like a contradiction, and the reason it isn't is worth understanding, because it explains the one real behavioral difference.
