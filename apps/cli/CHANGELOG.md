@@ -9,7 +9,15 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
-## [Unreleased]
+## [0.27.0] - 2026-07-16
+
+### Added
+
+- Hub UI: create and manage **remote-docker hosts** from the dashboard. Each
+  registered host shows up as a `Docker (<alias>)` option in the create-box
+  picker, and the Settings page nests a host list under the Remote Docker row —
+  add a host (probes ssh + docker before saving), per-host Bake/Re-bake, and
+  remove.
 
 ### Changed
 
@@ -22,6 +30,16 @@ CLI, not the raw commits.
   host by default (`--no-bake` to skip), and `agentbox install` → Remote Docker prompts
   for the alias + SSH connection. (Subcommands were also renamed from the old
   `check`/`use`/`hosts` to `doctor`/`add`/`list`.)
+- `agentbox remote-docker rm <alias>` now confirms before forgetting a host (the
+  prompt names the ssh target and how many boxes go unreachable); pass `-y`/`--yes`
+  to skip, and it refuses rather than deleting silently on a non-interactive shell.
+
+### Fixed
+
+- remote-docker onboarding/comms fixes surfaced against a real macOS/OrbStack +
+  Hetzner remote: the SSH ControlMaster socket path could overrun the `sun_path`
+  limit, attach ran the remote command in a non-login shell (docker off `PATH`),
+  and the credential seed assumed in-box passwordless sudo the image doesn't grant.
 
 ## [0.26.1] - 2026-07-15
 
