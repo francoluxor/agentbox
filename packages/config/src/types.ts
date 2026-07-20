@@ -12,7 +12,7 @@ export type IdeFlavor = 'vscode' | 'cursor' | 'auto';
 export type EngineKind = 'orbstack' | 'docker-desktop' | 'other' | 'auto';
 export type BrowserKind = 'agent-browser' | 'playwright' | 'both';
 /** Sandbox backend new boxes are created on. */
-export type ProviderKind = 'docker' | 'daytona' | 'hetzner' | 'vercel' | 'e2b';
+export type ProviderKind = 'docker' | 'daytona' | 'hetzner' | 'vercel' | 'e2b' | 'tenki';
 /** Where `agentbox claude|codex|opencode` opens the attached session when the host
  *  shell is running inside tmux, cmux, Herdr, or iTerm2. `same` keeps today's inline behavior. */
 export type AttachOpenIn = 'split' | 'window' | 'tab' | 'same';
@@ -41,6 +41,7 @@ export interface UserConfig {
     defaultCheckpointHetzner?: string;
     defaultCheckpointVercel?: string;
     defaultCheckpointE2b?: string;
+    defaultCheckpointTenki?: string;
     /**
      * Generic VM-size fallback for cloud providers. Provider-interpreted:
      * Hetzner = server type string (e.g. `cx33`); Daytona = `cpu-memory-disk`
@@ -54,6 +55,7 @@ export interface UserConfig {
     sizeHetzner?: string;
     sizeVercel?: string;
     sizeE2b?: string;
+    sizeTenki?: string;
     withPlaywright?: boolean;
     withEnv?: boolean;
     resyncOnStart?: boolean;
@@ -73,6 +75,7 @@ export interface UserConfig {
     imageHetzner?: string;
     imageVercel?: string;
     imageE2b?: string;
+    imageTenki?: string;
     imageRegistry?: string;
     dockerCacheShared?: boolean;
     memory?: number;
@@ -179,12 +182,14 @@ export interface EffectiveConfig {
     defaultCheckpointHetzner: string;
     defaultCheckpointVercel: string;
     defaultCheckpointE2b: string;
+    defaultCheckpointTenki: string;
     size: string;
     sizeDocker: string;
     sizeDaytona: string;
     sizeHetzner: string;
     sizeVercel: string;
     sizeE2b: string;
+    sizeTenki: string;
     withPlaywright: boolean;
     withEnv: boolean;
     resyncOnStart: boolean;
@@ -199,6 +204,7 @@ export interface EffectiveConfig {
     imageHetzner: string;
     imageVercel: string;
     imageE2b: string;
+    imageTenki: string;
     imageRegistry: string;
     dockerCacheShared: boolean;
     memory: number;
@@ -324,12 +330,14 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     defaultCheckpointHetzner: '',
     defaultCheckpointVercel: '',
     defaultCheckpointE2b: '',
+    defaultCheckpointTenki: '',
     size: '',
     sizeDocker: '',
     sizeDaytona: '',
     sizeHetzner: '',
     sizeVercel: '',
     sizeE2b: '',
+    sizeTenki: '',
     withPlaywright: false,
     withEnv: false,
     resyncOnStart: true,
@@ -344,6 +352,7 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     imageHetzner: '',
     imageVercel: '',
     imageE2b: '',
+    imageTenki: '',
     // Mirrors BOX_IMAGE_REGISTRY in @agentbox/sandbox-docker. Empty disables the
     // registry pull (always build the docker base image locally).
     imageRegistry: 'ghcr.io/madarco/agentbox/box',
@@ -452,9 +461,9 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
   {
     key: 'box.provider',
     type: 'enum',
-    enumValues: ['docker', 'daytona', 'hetzner', 'vercel', 'e2b'] as const,
+    enumValues: ['docker', 'daytona', 'hetzner', 'vercel', 'e2b', 'tenki'] as const,
     description:
-      'Sandbox backend new boxes are created on: local Docker containers, Daytona Cloud sandboxes, Hetzner Cloud VPSes, Vercel Sandboxes, or E2B microVMs.',
+      'Sandbox backend new boxes are created on: local Docker containers, Daytona Cloud sandboxes, Hetzner Cloud VPSes, Vercel Sandboxes, E2B microVMs, or Tenki sandboxes.',
   },
   {
     key: 'box.hostSnapshot',
@@ -504,6 +513,13 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     advanced: true,
   },
   {
+    key: 'box.defaultCheckpointTenki',
+    type: 'string',
+    description:
+      'Per-provider override of `box.defaultCheckpoint` for tenki. Wins over the global when set; set via `agentbox checkpoint set-default --provider tenki`.',
+    advanced: true,
+  },
+  {
     key: 'box.size',
     type: 'string',
     description:
@@ -542,6 +558,13 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     type: 'string',
     description:
       'Per-provider override of `box.size` for e2b. Reserved — e2b sizing is template-level (set at `agentbox prepare --provider e2b` time via --vcpus / --memory).',
+    advanced: true,
+  },
+  {
+    key: 'box.sizeTenki',
+    type: 'string',
+    description:
+      'Per-provider override of `box.size` for tenki. Reserved — tenki sizing is controlled per-box via `box.cpus`/`box.memory` (vCPU / MiB), applied at create.',
     advanced: true,
   },
   {
@@ -628,6 +651,12 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     key: 'box.imageE2b',
     type: 'string',
     description: 'Per-provider override of `box.image` for e2b (template id or `name:tag`, e.g. `agentbox-base:latest`). Written by `agentbox prepare --provider e2b`.',
+    advanced: true,
+  },
+  {
+    key: 'box.imageTenki',
+    type: 'string',
+    description: 'Per-provider override of `box.image` for tenki (Tenki registry ref, e.g. `ws-slug/agentbox-box:latest`). Written by `agentbox prepare --provider tenki`.',
     advanced: true,
   },
   {
