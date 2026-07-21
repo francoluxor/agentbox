@@ -89,6 +89,3 @@ Run with a real `TENKI_AUTH_TOKEN` set, against a workspace with credits:
 - **Volumes / agent-credential volume** — `ensureVolume` is not implemented, so
   agent credentials are seeded per-box (the e2b/vercel/hetzner model) rather than
   via a shared volume. Fine, but a Tenki volume could cache them.
-- **`box.tenkiTimeoutMs` config key** — the session lifetime is currently a
-  constant in `lib/cloud-sizing.ts` (45 min); promote to a config key if users
-  need to tune it (mirrors `box.e2bTimeoutMs`).

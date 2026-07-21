@@ -174,5 +174,8 @@ export const prepareTenkiProvider: NonNullable<Provider['prepare']> = (req) =>
     name: req.name,
     hostWorkspace: req.hostWorkspace ?? process.cwd(),
     force: req.force,
+    // Box size is applied at create (see `box.sizeTenki` → the backend's
+    // create-time resources), so `--size` is intentionally not baked into the
+    // template here. A pre-published ref is pinned via `AGENTBOX_TENKI_BASE_IMAGE`.
     onLog: req.onLog,
   });

@@ -128,7 +128,7 @@ export const PROVIDERS = [
     rebuildMinutes: '5-10',
     blurb: 'Tenki sandboxes',
     sizeDesc:
-      'Per-provider override of `box.size` for tenki. Reserved — tenki sizing is controlled per-box via `box.cpus` / `box.memory` (vCPU / MiB), applied at create.',
+      'Per-provider override of `box.size` for tenki. A `cpu-memory` or `cpu-memory-disk` GB spec (e.g. `4-8` or `4-8-20`), applied at create (Tenki `createAndWait` cpuCores / memoryMb / diskSizeGb).',
     imageDesc:
       'Per-provider override of `box.image` for tenki (a Tenki workspace registry ref, e.g. `<workspace>/agentbox-box:latest`). Written by `agentbox prepare --provider tenki`.',
   },

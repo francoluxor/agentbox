@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isUnderWorkdir, mapState, previewSlug, safeName } from '../src/backend.js';
+import { isUnderWorkdir, mapState, parseTenkiSize, previewSlug, safeName } from '../src/backend.js';
 
 describe('mapState', () => {
   it('maps running-ish states to running', () => {
@@ -76,5 +76,22 @@ describe('isUnderWorkdir', () => {
 
   it('normalizes traversal before comparing', () => {
     expect(isUnderWorkdir('/home/tenki/../etc/passwd', '/home/tenki')).toBe(false);
+  });
+});
+
+describe('parseTenkiSize', () => {
+  it('parses cpu-memory (GB)', () => {
+    expect(parseTenkiSize('4-8')).toEqual({ cpu: 4, memoryGb: 8, diskGb: undefined });
+  });
+
+  it('parses cpu-memory-disk (GB)', () => {
+    expect(parseTenkiSize('4-8-20')).toEqual({ cpu: 4, memoryGb: 8, diskGb: 20 });
+  });
+
+  it('rejects malformed / non-positive / wrong-arity specs', () => {
+    for (const s of ['', '4', '4-8-20-1', '0-8', '4-0', '-1-8', 'a-b', '4.5-8']) {
+      expect(parseTenkiSize(s)).toBeUndefined();
+    }
+    expect(parseTenkiSize(undefined)).toBeUndefined();
   });
 });
