@@ -120,7 +120,7 @@ See [local Docker](/docs/local-docker), [Hetzner](/docs/hetzner), [Daytona](/doc
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `box.size` | string | empty | generic cloud size; hetzner reads a server type (`cx33`), daytona reads `cpu-memory-disk` GB (`4-8-20`); docker and vercel ignore it |
-| `box.sizeDaytona` / `box.sizeHetzner` | string (advanced) | empty | per-provider override of `box.size` |
+| `box.sizeDaytona` / `box.sizeHetzner` / `box.sizeTenki` | string (advanced) | empty | per-provider override of `box.size` |
 | `box.sizeDocker` / `box.sizeVercel` | string (advanced) | empty | reserved — docker uses memory/cpus/disk; vercel uses `vercelVcpus` |
 
 ### Box image
@@ -128,7 +128,7 @@ See [local Docker](/docs/local-docker), [Hetzner](/docs/hetzner), [Daytona](/doc
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `box.image` | string (advanced) | `agentbox/box:dev` | generic image ref; the default is a sentinel cloud backends read as "boot from the prepared base snapshot" |
-| `box.imageDocker` / `box.imageDaytona` / `box.imageHetzner` / `box.imageVercel` | string (advanced) | empty | per-provider override; the cloud ones are written by `agentbox prepare --provider <name>` |
+| `box.imageDocker` / `box.imageDaytona` / `box.imageHetzner` / `box.imageVercel` / `box.imageTenki` | string (advanced) | empty | per-provider override; the cloud ones are written by `agentbox prepare --provider <name>` |
 | `box.imageRegistry` | string (advanced, docker only) | `ghcr.io/madarco/agentbox/box` | registry to pull the prebuilt base from before building locally; empty = always build |
 
 <Callout type="warn" title="HEADS UP">
@@ -140,7 +140,7 @@ Setting the generic `box.image` to a provider-native snapshot id breaks creates 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `box.defaultCheckpoint` | string | empty | checkpoint new boxes start from when `--snapshot` isn't given; set via `agentbox checkpoint set-default` |
-| `box.defaultCheckpointDocker` / `…Daytona` / `…Hetzner` / `…Vercel` | string (advanced) | empty | per-provider overrides; set via `checkpoint set-default --provider <name>` |
+| `box.defaultCheckpointDocker` / `…Daytona` / `…Hetzner` / `…Vercel` / `…Tenki` | string (advanced) | empty | per-provider overrides; set via `checkpoint set-default --provider <name>` |
 
 See [checkpoints and pausing](/docs/checkpoints-and-pausing).
 
@@ -165,7 +165,7 @@ See [teleport a project](/docs/teleport-a-project), [environment](/docs/environm
 | --- | --- | --- | --- |
 | `box.isolateClaudeConfig` / `box.isolateCodexConfig` / `box.isolateOpencodeConfig` | bool | `false` | give the box its own agent config volume instead of the shared one |
 
-### Vercel only
+### Provider-specific tuning (Vercel / E2B / Tenki)
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -173,8 +173,9 @@ See [teleport a project](/docs/teleport-a-project), [environment](/docs/environm
 | `box.vercelTimeoutMs` | int | `2700000` (45 min) | max session length before auto-snapshot; persistent mode auto-resumes |
 | `box.vercelNetworkPolicy` | string | empty (`allow-all`) | egress lock: `allow-all`, `deny-all`, or a comma-separated domain allowlist (`github.com,*.npmjs.org`) |
 | `box.e2bTimeoutMs` | int | `2700000` (45 min) | session timeout a new `--provider e2b` box is created with before E2B auto-pauses it on inactivity; the host keepalive holds it open while the agent works (Hobby caps total session at ~1 h) |
+| `box.tenkiTimeoutMs` | int | `2700000` (45 min) | session lifetime a new `--provider tenki` box is created with (Tenki `maxDurationMs`); the host keepalive pushes it forward via `session.extend` while the agent works |
 
-See [Vercel](/docs/vercel).
+See [Vercel](/docs/vercel), [E2B](/docs/e2b), and [Tenki](/docs/tenki).
 
 ## checkpoint.*
 
