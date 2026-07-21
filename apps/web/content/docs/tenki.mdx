@@ -116,7 +116,7 @@ agentbox prune --provider tenki -y
 - **No live stats** — `agentbox top` / `dashboard` render `—` for cloud boxes, and `list` reports them optimistically from the last known state.
 - **Privileged ports** — the WebProxy runs on 8080 (not 80), matching the other microVM providers; `agentbox url` resolves the 8080 preview.
 - **Push through the relay** — use `agentbox-ctl git push` from a box; the relay holds the credentials. See [sync-and-git](/docs/sync-and-git).
-- **Tenki-only config keys are ignored by other providers** — `box.imageTenki` / `box.defaultCheckpointTenki` / `box.sizeTenki` only apply to tenki.
+- **Tenki-only config keys are ignored by other providers** — `box.imageTenki` / `box.defaultCheckpointTenki` / `box.sizeTenki` / `box.tenkiTimeoutMs` only apply to tenki. `box.tenkiTimeoutMs` (default 2700000, 45 min) tunes the session lifetime new boxes are created with; the host keepalive extends it while the agent works. See [configuration](/docs/configuration).
 - **In-box docker is off by default** — DinD inside a Tenki microVM is unverified; a `docker`-based `agentbox.yaml` service won't start until it's confirmed and enabled.
 - **Attach window size** — the SDK's SSH channel exposes no resize hook, so the attached tmux session renders at a default size (no live SIGWINCH propagation yet).
 
