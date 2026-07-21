@@ -87,6 +87,7 @@ export interface UserConfig {
     vercelTimeoutMs?: number;
     vercelNetworkPolicy?: string;
     e2bTimeoutMs?: number;
+    tenkiTimeoutMs?: number;
     cpMaxBytes?: number;
   };
   checkpoint?: {
@@ -216,6 +217,7 @@ export interface EffectiveConfig {
     vercelTimeoutMs: number;
     vercelNetworkPolicy: string;
     e2bTimeoutMs: number;
+    tenkiTimeoutMs: number;
     cpMaxBytes: number;
   };
   checkpoint: {
@@ -366,6 +368,7 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     vercelTimeoutMs: 2_700_000,
     vercelNetworkPolicy: '',
     e2bTimeoutMs: 2_700_000,
+    tenkiTimeoutMs: 2_700_000,
     cpMaxBytes: 100 * 1024 * 1024,
   },
   checkpoint: {
@@ -719,6 +722,12 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     type: 'int',
     description:
       'Session timeout (ms) a new --provider e2b box is created with, before E2B auto-pauses it on inactivity. The host keepalive loop pushes this forward while the agent is working. Default 2700000 (45 min); the Hobby tier caps total session at ~1 h regardless. E2B-only.',
+  },
+  {
+    key: 'box.tenkiTimeoutMs',
+    type: 'int',
+    description:
+      'Session lifetime (ms) a new --provider tenki box is created with (maps to Tenki maxDurationMs). The host keepalive loop pushes this forward via session.extend while the agent is working. Default 2700000 (45 min). Tenki-only.',
   },
   {
     key: 'box.cpMaxBytes',

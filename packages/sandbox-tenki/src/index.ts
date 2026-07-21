@@ -120,12 +120,14 @@ const tenkiCheckpoint: ProviderCheckpoint = {
   async remove(projectRoot: string, ref: string) {
     const entry = await resolveCloudCheckpoint(projectRoot, BACKEND_NAME, ref);
     if (!entry) return;
-    try {
-      await deleteTenkiSnapshot(entry.manifest.snapshotName);
-    } catch {
-      // best-effort: drop the local manifest even if the remote delete failed
-      // (network / perms / already-gone) so the user isn't left with a dead pointer.
-    }
+    // Delete the remote snapshot FIRST and only drop the local manifest once it
+    // is gone. A missing snapshot is already swallowed as success by
+    // deleteTenkiSnapshot (idempotent), and withTenkiRetry has exhausted its
+    // transient retries by the time this throws — so a throw is a real,
+    // persistent failure. Preserve the manifest and surface it rather than
+    // orphaning a billable, quota-limited snapshot the user can no longer
+    // reference to retry the delete.
+    await deleteTenkiSnapshot(entry.manifest.snapshotName);
     await removeCloudCheckpointDir(projectRoot, BACKEND_NAME, ref);
   },
 };

@@ -33,7 +33,7 @@ export function cloudSizingProviderOptions(
     // Session lifetime the box is created with (maps to Tenki's maxDurationMs)
     // and records as `cloud.sessionTimeoutMs` so the host keepalive loop can
     // push the deadline forward (via `session.extend`) while the agent works.
-    return { timeoutMs: 2_700_000 };
+    return { timeoutMs: cfg.box.tenkiTimeoutMs };
   }
   return {};
 }
