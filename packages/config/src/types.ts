@@ -72,6 +72,7 @@ export interface UserConfig {
     defaultCheckpointHetzner?: string;
     defaultCheckpointVercel?: string;
     defaultCheckpointE2b?: string;
+    defaultCheckpointTenki?: string;
     defaultCheckpointDigitalocean?: string;
     defaultCheckpointRemoteDocker?: string;
     /**
@@ -88,6 +89,7 @@ export interface UserConfig {
     sizeHetzner?: string;
     sizeVercel?: string;
     sizeE2b?: string;
+    sizeTenki?: string;
     sizeDigitalocean?: string;
     sizeRemoteDocker?: string;
     withPlaywright?: boolean;
@@ -116,6 +118,7 @@ export interface UserConfig {
     imageHetzner?: string;
     imageVercel?: string;
     imageE2b?: string;
+    imageTenki?: string;
     imageDigitalocean?: string;
     imageRemoteDocker?: string;
     imageRegistry?: string;
@@ -136,6 +139,7 @@ export interface UserConfig {
     vercelTimeoutMs?: number;
     vercelNetworkPolicy?: string;
     e2bTimeoutMs?: number;
+    tenkiTimeoutMs?: number;
     cpMaxBytes?: number;
     credentialSync?: boolean;
     inbound?: string;
@@ -257,6 +261,7 @@ export interface EffectiveConfig {
     defaultCheckpointHetzner: string;
     defaultCheckpointVercel: string;
     defaultCheckpointE2b: string;
+    defaultCheckpointTenki: string;
     defaultCheckpointDigitalocean: string;
     defaultCheckpointRemoteDocker: string;
     size: string;
@@ -265,6 +270,7 @@ export interface EffectiveConfig {
     sizeHetzner: string;
     sizeVercel: string;
     sizeE2b: string;
+    sizeTenki: string;
     sizeDigitalocean: string;
     sizeRemoteDocker: string;
     withPlaywright: boolean;
@@ -283,6 +289,7 @@ export interface EffectiveConfig {
     imageHetzner: string;
     imageVercel: string;
     imageE2b: string;
+    imageTenki: string;
     imageDigitalocean: string;
     imageRemoteDocker: string;
     imageRegistry: string;
@@ -303,6 +310,7 @@ export interface EffectiveConfig {
     vercelTimeoutMs: number;
     vercelNetworkPolicy: string;
     e2bTimeoutMs: number;
+    tenkiTimeoutMs: number;
     cpMaxBytes: number;
     credentialSync: boolean;
     inbound: string;
@@ -435,6 +443,7 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     defaultCheckpointHetzner: '',
     defaultCheckpointVercel: '',
     defaultCheckpointE2b: '',
+    defaultCheckpointTenki: '',
     defaultCheckpointDigitalocean: '',
     defaultCheckpointRemoteDocker: '',
     size: '',
@@ -443,6 +452,7 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     sizeHetzner: '',
     sizeVercel: '',
     sizeE2b: '',
+    sizeTenki: '',
     sizeDigitalocean: '',
     sizeRemoteDocker: '',
     withPlaywright: false,
@@ -461,6 +471,7 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     imageHetzner: '',
     imageVercel: '',
     imageE2b: '',
+    imageTenki: '',
     imageDigitalocean: '',
     // Empty = the provider derives the fingerprint-tagged ref itself and ensures
     // it on the remote engine; set only to pin a hand-built image there.
@@ -492,6 +503,7 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     vercelTimeoutMs: 2_700_000,
     vercelNetworkPolicy: '',
     e2bTimeoutMs: 2_700_000,
+    tenkiTimeoutMs: 2_700_000,
     cpMaxBytes: 100 * 1024 * 1024,
     credentialSync: true,
     inbound: 'locked',
@@ -655,12 +667,26 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
   },
   ...perProviderCheckpointKeys(),
   {
+    key: 'box.defaultCheckpointTenki',
+    type: 'string',
+    description:
+      'Per-provider override of `box.defaultCheckpoint` for tenki. Wins over the global when set; set via `agentbox checkpoint set-default --provider tenki`.',
+    advanced: true,
+  },
+  {
     key: 'box.size',
     type: 'string',
     description:
       'Default VM size for cloud providers. Provider-interpreted: hetzner = server type (e.g. `cx33`); daytona = `cpu-memory-disk` GB (e.g. `4-8-20`); vercel = vCPU count (1, 2, 4, 8); e2b = `cpu-memory` GB (e.g. `4-8`). Used as fallback when no per-provider override is set. Docker ignores it.',
   },
   ...perProviderSizeKeys(),
+  {
+    key: 'box.sizeTenki',
+    type: 'string',
+    description:
+      'Per-provider override of `box.size` for tenki. Reserved — tenki sizing is controlled per-box via `box.cpus`/`box.memory` (vCPU / MiB), applied at create.',
+    advanced: true,
+  },
   {
     key: 'checkpoint.maxLayers',
     type: 'int',
@@ -731,6 +757,12 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     advanced: true,
   },
   ...perProviderImageKeys(),
+  {
+    key: 'box.imageTenki',
+    type: 'string',
+    description: 'Per-provider override of `box.image` for tenki (Tenki registry ref, e.g. `ws-slug/agentbox-box:latest`). Written by `agentbox prepare --provider tenki`.',
+    advanced: true,
+  },
   {
     key: 'box.imageRegistry',
     type: 'string',
@@ -833,6 +865,12 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     type: 'int',
     description:
       'Session timeout (ms) a new --provider e2b box is created with, before E2B auto-pauses it on inactivity. The host keepalive loop pushes this forward while the agent is working. Default 2700000 (45 min); the Hobby tier caps total session at ~1 h regardless. E2B-only.',
+  },
+  {
+    key: 'box.tenkiTimeoutMs',
+    type: 'int',
+    description:
+      'Session lifetime (ms) a new --provider tenki box is created with (maps to Tenki maxDurationMs). The host keepalive loop pushes this forward via session.extend while the agent is working. Default 2700000 (45 min). Tenki-only.',
   },
   {
     key: 'box.cpMaxBytes',

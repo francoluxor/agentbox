@@ -120,6 +120,18 @@ export const PROVIDERS = [
     imageDesc:
       'Per-provider override of `box.image` for remote-docker (a docker image ref on the REMOTE engine). Normally left empty: the provider derives a fingerprint-tagged ref (`agentbox/box:<sha12>`) and ensures it on the remote itself.',
   },
+  {
+    name: 'tenki',
+    kind: 'cloud',
+    label: 'Tenki (cloud microVM)',
+    loginHint: 'paste an auth token from the Tenki dashboard',
+    rebuildMinutes: '5-10',
+    blurb: 'Tenki sandboxes',
+    sizeDesc:
+      'Per-provider override of `box.size` for tenki. Reserved — Tenki sizing is baked into the prepared template (cpu/memory/disk) at `agentbox prepare --provider tenki`.',
+    imageDesc:
+      'Per-provider override of `box.image` for tenki (a Tenki workspace registry ref, e.g. `<workspace>/agentbox-box:latest`). Written by `agentbox prepare --provider tenki`.',
+  },
 ] as const satisfies readonly ProviderMeta[];
 
 /** Sandbox backend new boxes are created on. Derived from the `PROVIDERS` table. */
