@@ -667,26 +667,12 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
   },
   ...perProviderCheckpointKeys(),
   {
-    key: 'box.defaultCheckpointTenki',
-    type: 'string',
-    description:
-      'Per-provider override of `box.defaultCheckpoint` for tenki. Wins over the global when set; set via `agentbox checkpoint set-default --provider tenki`.',
-    advanced: true,
-  },
-  {
     key: 'box.size',
     type: 'string',
     description:
       'Default VM size for cloud providers. Provider-interpreted: hetzner = server type (e.g. `cx33`); daytona = `cpu-memory-disk` GB (e.g. `4-8-20`); vercel = vCPU count (1, 2, 4, 8); e2b = `cpu-memory` GB (e.g. `4-8`). Used as fallback when no per-provider override is set. Docker ignores it.',
   },
   ...perProviderSizeKeys(),
-  {
-    key: 'box.sizeTenki',
-    type: 'string',
-    description:
-      'Per-provider override of `box.size` for tenki. Reserved — tenki sizing is controlled per-box via `box.cpus`/`box.memory` (vCPU / MiB), applied at create.',
-    advanced: true,
-  },
   {
     key: 'checkpoint.maxLayers',
     type: 'int',
@@ -757,12 +743,6 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     advanced: true,
   },
   ...perProviderImageKeys(),
-  {
-    key: 'box.imageTenki',
-    type: 'string',
-    description: 'Per-provider override of `box.image` for tenki (Tenki registry ref, e.g. `ws-slug/agentbox-box:latest`). Written by `agentbox prepare --provider tenki`.',
-    advanced: true,
-  },
   {
     key: 'box.imageRegistry',
     type: 'string',
@@ -1120,6 +1100,17 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
       'Enable the in-box Linear integration shim (`linear` commands routed via the host relay; backed by `@schpet/linear-cli`). When false (default), the relay refuses dispatch with a clear "disabled" error and no host process is touched.',
   },
 ];
+
+// Guard against duplicate keys — e.g. a manual per-provider entry that also
+// gets emitted by the perProvider*Keys() generators above. A dupe would make
+// `agentbox config list` print the key twice.
+{
+  const seen = new Set<string>();
+  for (const d of KEY_REGISTRY) {
+    if (seen.has(d.key)) throw new Error(`KEY_REGISTRY has a duplicate key: ${d.key}`);
+    seen.add(d.key);
+  }
+}
 
 const REGISTRY_BY_KEY = new Map<string, KeyDescriptor>(KEY_REGISTRY.map((d) => [d.key, d]));
 

@@ -35,7 +35,7 @@ import { withTenkiRetry } from './retry.js';
 import { prepareTenkiProvider } from './prepare.js';
 import { buildTenkiAttach } from './build-attach.js';
 import { currentTenkiBaseFingerprintLive } from './prepared-state.js';
-import { ensureTenkiCredentials } from './credentials.js';
+import { ensureTenkiCredentials, setTenkiCredentials } from './credentials.js';
 import { doctorChecks, readCredStatusSummary } from './provider-module.js';
 
 const BACKEND_NAME = 'tenki';
@@ -148,6 +148,7 @@ export const providerModule: ProviderModule = {
   backend: tenkiBackend,
   ensureCredentials: ensureTenkiCredentials,
   readCredStatus: readCredStatusSummary,
+  setCredentials: (fields) => Promise.resolve(setTenkiCredentials(fields)),
   currentBaseFingerprintLive: () => currentTenkiBaseFingerprintLive(),
   doctorChecks,
 };
@@ -156,6 +157,7 @@ export { tenkiBackend };
 export { ensureTenkiEnvLoaded, reloadTenkiEnv } from './env-loader.js';
 export {
   ensureTenkiCredentials,
+  setTenkiCredentials,
   readTenkiCredStatus,
   secretsPath,
   maskKey,

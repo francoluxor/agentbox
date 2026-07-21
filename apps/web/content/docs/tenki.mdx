@@ -8,7 +8,7 @@ Run your agents in a [Tenki](https://tenki.cloud) cloud sandbox — a disposable
 Switch per box with `--provider tenki`, or pin it project-wide with `box.provider: tenki` in [`agentbox.yaml`](/docs/agentbox-yaml). Comparing options? See [local-docker](/docs/local-docker), [hetzner](/docs/hetzner), [daytona](/docs/daytona), [vercel](/docs/vercel), and [e2b](/docs/e2b).
 
 <Callout type="warn" title="EXPERIMENTAL">
-The Tenki provider is newly added. The implementation follows the same `CloudBackend` contract as the other clouds and is fully typechecked and unit-tested, but the end-to-end path (provision → seed → exec → checkpoint → attach) should be verified against a live Tenki workspace before relying on it. See the live-verify checklist in [`docs/tenki-backlog.md`](https://github.com/madarco/agentbox) in the repo.
+The Tenki provider is newly added. The implementation follows the same `CloudBackend` contract as the other clouds and is fully typechecked and unit-tested, but the end-to-end path (provision → seed → exec → checkpoint → attach) should be verified against a live Tenki workspace before relying on it. See the live-verify checklist in [`docs/tenki-backlog.md`](https://github.com/madarco/agentbox/blob/main/docs/tenki-backlog.md) in the repo.
 </Callout>
 
 ## Set up
